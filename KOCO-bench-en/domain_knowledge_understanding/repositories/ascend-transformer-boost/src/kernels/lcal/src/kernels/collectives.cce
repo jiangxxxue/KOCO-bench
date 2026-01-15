@@ -1,0 +1,729 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#ifndef LCAL_COLLECTIVES_H
+#define LCAL_COLLECTIVES_H
+
+#if !defined(__DAV_C220_VEC__) && !defined(__DAV_M200_VEC__) && !defined(__DAV_C220_CUBE__)
+#define __aicore__
+#define __ubuf__
+#define __gm__
+#endif
+
+#include <cstdint>
+#include <type_traits>
+#include "kernel_operator.h"
+#include "comm_args.h"
+#include "../ascendc_kernels/datacopy_gm2gm.h"
+#include "coc_internal.cce"
+using namespace AscendC;
+using namespace Lcal;
+constexpr int64_t UB_MAX_SIZE = 196608;
+
+constexpr int64_t MEM_DMA_UNIT_BYTE = 32;
+
+constexpr int64_t DMA_SIZE_PER_FLAG = UB_SINGLE_DMA_SIZE_MAX;
+
+constexpr int64_t EXCEPTION_VALUE = -11327;
+
+constexpr int64_t SIZE_OF_2M = 2 * 1024 * 1024;
+
+constexpr int64_t SIZE_OF_8M = 8 * 1024 * 1024;
+
+constexpr int64_t SIZE_OF_1M = 1 * 1024 * 1024;
+
+constexpr int64_t MAX_RANK_NUM_OF_ONE_910B2C = 16;
+
+constexpr int64_t MAX_SEND_COUNT_MATRIX_SIZ_OF_ONE_910B2C = MAX_RANK_NUM_OF_ONE_910B2C * MAX_RANK_NUM_OF_ONE_910B2C;
+
+constexpr int64_t ALL2ALL_V_C_BUFF_SIZE_PER_PARAGRAPH_910B2C = IPC_BUFF_MAX_SIZE / MAX_RANK_NUM_OF_ONE_910B2C / 2 * 2;
+
+constexpr int64_t DETERMINISTIC_BUFF_SIZE = (IPC_BUFF_MAX_SIZE >> 1) - 4 * 1024;
+
+#define ALLREDUCE_ARGS_FUN(T) \
+__gm__ T *input, __gm__ T *output, int rank, int rankSize, int64_t len, int64_t magic, int op, int root, \
+int localRankSize, int64_t loopTime, __gm__ int64_t *sendCountMatrix, GM_ADDR dumpAddr,      \
+__gm__ T *buff0, __gm__ T *buff1, __gm__ T *buff2, __gm__ T *buff3, __gm__ T *buff4,\
+__gm__ T *buff5, __gm__ T *buff6, __gm__ T *buff7
+
+#define ALLREDUCE_ARGS_CALL(type) \
+(__gm__ type *)input,  (__gm__ type *) output, rank, rankSize, len, \
+magic, op, root, localRankSize, 0, nullptr, dumpAddr, shareAddrs[0], shareAddrs[1], shareAddrs[2], \
+shareAddrs[3], shareAddrs[4], shareAddrs[5], shareAddrs[6], shareAddrs[7]
+
+#define ALLREDUCE_ARGS_FUN_16P(T) \
+__gm__ T *input, __gm__ T *output, int rank, int rankSize, int64_t len, int64_t magic, int op, int root, \
+int localRankSize, int64_t loopTime, __gm__ int64_t *sendCountMatrix, GM_ADDR dumpAddr,          \
+__gm__ T *buff0, __gm__ T *buff1, __gm__ T *buff2, __gm__ T *buff3, __gm__ T *buff4,            \
+__gm__ T *buff5, __gm__ T *buff6, __gm__ T *buff7, __gm__ T *buff8, __gm__ T *buff9,            \
+__gm__ T *buff10, __gm__ T *buff11, __gm__ T *buff12, __gm__ T *buff13, __gm__ T *buff14, __gm__ T *buff15
+
+#define ALLREDUCE_ARGS_CALL_16P(type) \
+(__gm__ type *)input,  (__gm__ type *) output, rank, rankSize, len, \
+magic, op, root, localRankSize, 0, nullptr, dumpAddr, shareAddrs[0], shareAddrs[1], shareAddrs[2], \
+shareAddrs[3], shareAddrs[4], shareAddrs[5], shareAddrs[6], shareAddrs[7], shareAddrs[8], shareAddrs[9], \
+shareAddrs[10], shareAddrs[11], shareAddrs[12], shareAddrs[13], shareAddrs[14], shareAddrs[15] \
+
+#define ALLREDUCE_ARGS_FUN_16P_Origin(T) \
+__gm__ T *input, __gm__ T *output, int rank, int rankSize, int64_t len, int64_t magic, int op, int root, \
+int localRankSize, __gm__ int64_t *sendCountMatrix, GM_ADDR dumpAddr, __gm__ T* buff[MAX_RANK_NUM_OF_ONE_910B2C]
+
+#define ALLREDUCE_ARGS_CALL_16P_Origin() \
+input, output, rank, rankSize, len, magic, op, root, localRankSize, sendCountMatrix, dumpAddr, buff
+
+#define MODIFIABLE_MAGIC_PROCESSED_NUM_ALLREDUCE_ARGS_CALL_16P_Origin(processedNum, remainNum, magic) \
+(input + (processedNum)), (output + (processedNum)), rank, rankSize, (remainNum), (magic), op, root, \
+localRankSize, sendCountMatrix, dumpAddr, buff
+
+#define MODIFIABLE_MAGIC_ALLREDUCE_ARGS_CALL_16P(magic) \
+input, output, rank, rankSize, len, (magic), op, root, localRankSize, sendCountMatrix, dumpAddr, \
+buff0, buff1, buff2, buff3, buff4, buff5, buff6, buff7, buff8, buff9, buff10, buff11, \
+buff12, buff13, buff14, buff15
+
+__attribute__((always_inline)) inline __aicore__ int64_t CeilDiv(int64_t source, int64_t cardinality)
+{
+    return (((source) + (cardinality) - 1) / (cardinality));
+}
+
+constexpr int64_t UB_SINGLE_ADD_SIZE_MAX = UB_SINGLE_DMA_SIZE_MAX;
+
+__attribute__((always_inline)) inline __aicore__ void CpUB2GMAlignB16(__gm__ void* gmAddr, __ubuf__ void* ubAddr, uint32_t size)
+{
+    CopyUbufToGmAlignB16(gmAddr, ubAddr, 1, size, 0, 0);
+}
+
+__attribute__((always_inline)) inline __aicore__ void CpGM2UBAlignB16(__ubuf__ void* ubAddr, __gm__ void* gmAddr, uint32_t size)
+{
+    CopyGmToUbufAlignB16(ubAddr, gmAddr, 1, size, 0, 0);
+}
+
+__attribute__((always_inline)) inline __aicore__ void DumpLcclLogInfo(GM_ADDR workspaceDumpAddr, LogId logId, Op operationType)
+{
+#ifdef ENABLE_LCCL_DUMP
+    constexpr int32_t UB_HEAD_OFFSET = 96;
+
+    AscendC::PipeBarrier<PIPE_ALL>();
+    GM_ADDR blockGm = (GM_ADDR)(workspaceDumpAddr + LCCL_DUMP_UINT_SIZE * GetBlockIdx());
+    __ubuf__ LcclDumpBlockInfo *blockUb = (__ubuf__ LcclDumpBlockInfo*)(UB_HEAD_OFFSET);
+    __ubuf__ LcclDumpLogInfo *logUb = (__ubuf__ LcclDumpLogInfo*)(UB_HEAD_OFFSET + sizeof(LcclDumpBlockInfo));
+
+    CpGM2UB((__ubuf__ uint8_t*)blockUb, blockGm, sizeof(LcclDumpBlockInfo));
+    AscendC::PipeBarrier<PIPE_ALL>();
+
+    if (blockUb->dumpOffset < sizeof(LcclDumpLogInfo)) {
+        return;
+    }
+
+    logUb->logId = logId;
+    logUb->blockId = GetBlockIdx();
+    logUb->syscyc = static_cast<uint64_t>(GetSystemCycle());
+    logUb->curPc = static_cast<uint64_t>(get_pc());
+    logUb->operationType = operationType;
+    logUb->rsv = 0;
+    CpUB2GM((GM_ADDR) blockUb->dumpAddr, (__ubuf__ uint8_t*)logUb, sizeof(LcclDumpLogInfo));
+
+    blockUb->dumpAddr += sizeof(LcclDumpBlockInfo);
+    blockUb->dumpOffset -= sizeof(LcclDumpLogInfo);
+    CpUB2GM(blockGm, (__ubuf__ uint8_t*)blockUb, sizeof(LcclDumpBlockInfo));
+    AscendC::PipeBarrier<PIPE_ALL>();
+#endif
+}
+
+__attribute__((always_inline)) inline __aicore__ void SetFlag(__ubuf__ int64_t *ctrlFlagsUB, __gm__ int64_t *ctrlFlagGM,
+    int64_t checkValue)
+{
+    AscendC::PipeBarrier<PIPE_ALL>();
+    *ctrlFlagsUB = checkValue;
+    AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID1); 
+    AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID1);
+    CpUB2GM(ctrlFlagGM, ctrlFlagsUB, sizeof(int64_t));
+    AscendC::PipeBarrier<PIPE_ALL>();
+}
+
+__attribute__((always_inline)) inline __aicore__ void SetFlagNonPipeBarrier(__ubuf__ int64_t *ctrlFlagsUB, __gm__ int64_t *ctrlFlagGM,
+    int64_t checkValue)
+{
+    *ctrlFlagsUB = checkValue;
+    AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    CpUB2GM(ctrlFlagGM, ctrlFlagsUB, sizeof(int64_t));
+}
+
+__attribute__((always_inline)) inline __aicore__ void SetFlag(__ubuf__ int64_t *ctrlFlagsUB,
+    __gm__ int64_t *ctrlFlagGM1, __gm__ int64_t *ctrlFlagGM2, int64_t checkValue)
+{
+    AscendC::PipeBarrier<PIPE_ALL>();
+    *ctrlFlagsUB = checkValue;
+    AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    CpUB2GM(ctrlFlagGM1, ctrlFlagsUB, sizeof(int64_t));
+    CpUB2GM(ctrlFlagGM2, ctrlFlagsUB, sizeof(int64_t));
+    AscendC::PipeBarrier<PIPE_ALL>();
+}
+
+__attribute__((always_inline)) inline __aicore__ void SetFlagNonPipeBarrier(__ubuf__ int64_t *ctrlFlagsUB,
+    __gm__ int64_t *ctrlFlagGM1, __gm__ int64_t *ctrlFlagGM2, int64_t checkValue)
+{
+    *ctrlFlagsUB = checkValue;
+    AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    CpUB2GM(ctrlFlagGM1, ctrlFlagsUB, sizeof(int64_t));
+    CpUB2GM(ctrlFlagGM2, ctrlFlagsUB, sizeof(int64_t));
+}
+
+__attribute__((always_inline)) inline __aicore__ void CheckFlag(__ubuf__ int64_t *ctrlFlagsUB,
+    __gm__ int64_t *ctrlFlagGM, int64_t checkValue)
+{
+    while (true) {
+        AscendC::PipeBarrier<PIPE_ALL>();
+        CpGM2UB(ctrlFlagsUB, ctrlFlagGM, sizeof(int64_t));
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(EVENT_ID0);
+        if (*ctrlFlagsUB == checkValue) {
+            break;
+        }
+    }
+}
+
+__attribute__((always_inline)) inline __aicore__ void CheckFlagNew(__ubuf__ int64_t *ctrlFlagsUB,
+    __gm__ int64_t *ctrlFlagGM, int64_t checkValue)
+{
+    while (true) {
+        AscendC::PipeBarrier<PIPE_ALL>();
+        CpGM2UB(ctrlFlagsUB, ctrlFlagGM, sizeof(int64_t));
+        AscendC::PipeBarrier<PIPE_ALL>();
+        if (*ctrlFlagsUB == checkValue || (*ctrlFlagsUB) == (checkValue + 1)) {
+            break;
+        }
+    }
+}
+
+__attribute__((always_inline)) inline __aicore__ int64_t GetLcalBlockNum() {
+    #ifdef ENABLE_LCCL_MIX
+    constexpr int32_t aivNumPerAic = 2;
+    return GetBlockNum() * aivNumPerAic;
+    #else
+    return GetBlockNum();
+    #endif
+}
+
+__attribute__((always_inline)) inline __aicore__ void SyncWithinNPU(__ubuf__ int64_t* ctrlFlagsUB, __gm__ int64_t* buffRank, int64_t magic) {
+    SetFlag(ctrlFlagsUB, (__gm__ int64_t*)buffRank + (GetBlockIdx() * MEM_DMA_UNIT_INT_NUM), magic);
+    for (int64_t i = 0; i < GetLcalBlockNum(); i++) {
+        if (i == GetBlockIdx()) {
+            continue;
+        }
+        CheckFlag((__ubuf__ int64_t*)ctrlFlagsUB, (__gm__ int64_t*)buffRank + i * MEM_DMA_UNIT_INT_NUM, magic);
+    }
+}
+
+__attribute__((always_inline)) inline __aicore__ void SyncWithinNPUNew(__ubuf__ int64_t* ctrlFlagsUB, __gm__ int64_t* buffRank, int64_t magic) {
+    SetFlag(ctrlFlagsUB, (__gm__ int64_t*)buffRank + (GetBlockIdx() * MEM_DMA_UNIT_INT_NUM), magic);
+    for (int64_t i = 0; i < GetLcalBlockNum(); i++) {
+        if (i == GetBlockIdx()) {
+            continue;
+        }
+        CheckFlagNew((__ubuf__ int64_t*)ctrlFlagsUB, (__gm__ int64_t*)buffRank + i * MEM_DMA_UNIT_INT_NUM, magic);
+    }
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void GM2GM(
+    int64_t dataSizeRemain, __ubuf__ T *inputUB, __gm__ T *receiveBuff,
+    int64_t revBuffOffsetNum, __gm__ T *sendBuff, int64_t sendBuffOffsetNum)
+{
+    int64_t times = 0;
+    while (dataSizeRemain >= UB_SINGLE_DMA_SIZE_MAX) {
+        CpGM2UB(inputUB, (__gm__ T*)sendBuff + sendBuffOffsetNum + UB_SINGLE_DMA_SIZE_MAX / sizeof(T) * times,
+            UB_SINGLE_DMA_SIZE_MAX);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        CpUB2GM(
+            (__gm__ T*)receiveBuff + revBuffOffsetNum + UB_SINGLE_DMA_SIZE_MAX / sizeof(T) * times,
+            inputUB, UB_SINGLE_DMA_SIZE_MAX);
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+        times += 1;
+        dataSizeRemain -= UB_SINGLE_DMA_SIZE_MAX;
+    }
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+    CpGM2UB(inputUB, (__gm__ T*)sendBuff + sendBuffOffsetNum + times * UB_SINGLE_DMA_SIZE_MAX / sizeof(T),
+                dataSizeRemain);
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    CpUB2GM(
+        (__gm__ T*)receiveBuff + revBuffOffsetNum + times * UB_SINGLE_DMA_SIZE_MAX / sizeof(T),
+        inputUB, dataSizeRemain);
+    AscendC::PipeBarrier<PIPE_ALL>();
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void GM2GMPingPong(
+    int64_t dataSizeRemain, __ubuf__ T *inputUB[2], __gm__ T *receiveBuff,
+    int64_t revBuffOffsetNum, __gm__ T *sendBuff, int64_t sendBuffOffsetNum)
+{
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+    AscendC::PipeBarrier<PIPE_ALL>();
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+    for (int64_t i = 0; dataSizeRemain > 0; i++) {
+        uint32_t size = dataSizeRemain > UB_SINGLE_PING_PONG_ADD_SIZE_MAX ? UB_SINGLE_PING_PONG_ADD_SIZE_MAX : dataSizeRemain;
+        event_t eventId = (i & 1) ? EVENT_ID0 : EVENT_ID1;
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(eventId);
+        CpGM2UB((i & 1) ? inputUB[0] : inputUB[1], (__gm__ T*)sendBuff + sendBuffOffsetNum, size);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
+        CpUB2GM((__gm__ T*)receiveBuff + revBuffOffsetNum, (i & 1) ? inputUB[0] : inputUB[1], size);
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(eventId);
+        dataSizeRemain -= size;
+        sendBuffOffsetNum += (size / sizeof(T));
+        revBuffOffsetNum += (size / sizeof(T));
+    }
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+    AscendC::PipeBarrier<PIPE_ALL>();
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void GM2GMPingPongNonPipeBarrier(
+    int64_t dataSizeRemain, __ubuf__ T *inputUB[2], __gm__ T *receiveBuff,
+    int64_t revBuffOffsetNum, __gm__ T *sendBuff, int64_t sendBuffOffsetNum)
+{
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+    const int64_t offsetNumPerLoop = UB_SINGLE_PING_PONG_ADD_SIZE_MAX / sizeof(T);
+    uint32_t size = 0;
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+    for (int64_t i = 0; dataSizeRemain > 0; i++) {
+        size = dataSizeRemain > UB_SINGLE_PING_PONG_ADD_SIZE_MAX ? UB_SINGLE_PING_PONG_ADD_SIZE_MAX : dataSizeRemain;
+        event_t eventId = (i & 1) ? EVENT_ID0 : EVENT_ID1;
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(eventId);
+        CpGM2UB((i & 1) ? inputUB[0] : inputUB[1], (__gm__ T*)sendBuff + sendBuffOffsetNum, size);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
+        CpUB2GM((__gm__ T*)receiveBuff + revBuffOffsetNum, (i & 1) ? inputUB[0] : inputUB[1], size);
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(eventId);
+        dataSizeRemain -= size;
+        sendBuffOffsetNum += offsetNumPerLoop;
+        revBuffOffsetNum += offsetNumPerLoop;
+    }
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void input2BuffRankMagic(
+    int64_t dataSizeRemain, __ubuf__ T *inputUB, __gm__ T *ipcReceiveBuff, int64_t revBuffOffsetNum,
+    __gm__ T *sendBuff, int64_t sendBuffOffsetNum, __ubuf__ int64_t* ctrlFlagsUB, __gm__ int64_t* ctrlFlagGM,
+    int64_t magic)
+{
+    int64_t times = 0;
+    int64_t flag = 0;
+
+    while (dataSizeRemain >= UB_SINGLE_DMA_SIZE_MAX) {
+        CpGM2UB(inputUB, (__gm__ T*)sendBuff + sendBuffOffsetNum + UB_SINGLE_DMA_SIZE_MAX / sizeof(T) * times,
+            UB_SINGLE_DMA_SIZE_MAX);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        CpUB2GM(
+            (__gm__ T*)ipcReceiveBuff + revBuffOffsetNum + UB_SINGLE_DMA_SIZE_MAX / sizeof(T) * times,
+            inputUB, UB_SINGLE_DMA_SIZE_MAX);
+        times += 1;
+        flag = times * UB_SINGLE_DMA_SIZE_MAX / DMA_SIZE_PER_FLAG + magic;
+        if (flag != *ctrlFlagsUB && flag > 0) {
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID0);
+            AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID0);
+            *ctrlFlagsUB = flag;
+            AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+            AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+            CpUB2GM(ctrlFlagGM, ctrlFlagsUB, sizeof(int64_t));
+        }
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+        dataSizeRemain -= UB_SINGLE_DMA_SIZE_MAX;
+    }
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+    CpGM2UB(inputUB, (__gm__ T*)sendBuff + sendBuffOffsetNum + times * UB_SINGLE_DMA_SIZE_MAX / sizeof(T),
+                dataSizeRemain);
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    CpUB2GM(
+        (__gm__ T*)ipcReceiveBuff + revBuffOffsetNum + times * UB_SINGLE_DMA_SIZE_MAX / sizeof(T),
+        inputUB, dataSizeRemain);
+    flag = CeilDiv(times * UB_SINGLE_DMA_SIZE_MAX + dataSizeRemain, DMA_SIZE_PER_FLAG) + magic;
+    AscendC::PipeBarrier<PIPE_ALL>();
+    *ctrlFlagsUB = flag;
+    AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    CpUB2GM(ctrlFlagGM, ctrlFlagsUB, sizeof(int64_t));
+    AscendC::PipeBarrier<PIPE_ALL>();
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void input2BuffRank(
+    int64_t dataSizeRemain, __ubuf__ T *inputUB, __gm__ T *ipcReceiveBuff, int64_t revBuffOffsetNum,
+    __gm__ T *sendBuff, int64_t sendBuffOffsetNum, __ubuf__ int64_t* ctrlFlagsUB, __gm__ int64_t* ctrlFlagGM)
+{
+    int64_t times = 0;
+    int64_t flag = 0;
+
+    while (dataSizeRemain >= UB_SINGLE_DMA_SIZE_MAX) {
+        CpGM2UB(inputUB, (__gm__ T*)sendBuff + sendBuffOffsetNum + UB_SINGLE_DMA_SIZE_MAX / sizeof(T) * times,
+            UB_SINGLE_DMA_SIZE_MAX);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        CpUB2GM(
+            (__gm__ T*)ipcReceiveBuff + revBuffOffsetNum + UB_SINGLE_DMA_SIZE_MAX / sizeof(T) * times,
+            inputUB, UB_SINGLE_DMA_SIZE_MAX);
+        times += 1;
+        flag = times * UB_SINGLE_DMA_SIZE_MAX / DMA_SIZE_PER_FLAG;
+        if (flag != *ctrlFlagsUB && flag > 0) {
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID0);
+            AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID0);
+            *ctrlFlagsUB = flag;
+            AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID1);
+            AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID1);
+            CpUB2GM(ctrlFlagGM, ctrlFlagsUB, sizeof(int64_t));
+        }
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+        dataSizeRemain -= UB_SINGLE_DMA_SIZE_MAX;
+    }
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+    CpGM2UB(inputUB, (__gm__ T*)sendBuff + sendBuffOffsetNum + times * UB_SINGLE_DMA_SIZE_MAX / sizeof(T),
+                dataSizeRemain);
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    CpUB2GM(
+        (__gm__ T*)ipcReceiveBuff + revBuffOffsetNum + times * UB_SINGLE_DMA_SIZE_MAX / sizeof(T),
+        inputUB, dataSizeRemain);
+    flag = CeilDiv(times * UB_SINGLE_DMA_SIZE_MAX + dataSizeRemain, DMA_SIZE_PER_FLAG);
+    AscendC::PipeBarrier<PIPE_ALL>();
+    *ctrlFlagsUB = flag;
+    AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    CpUB2GM(ctrlFlagGM, ctrlFlagsUB, sizeof(int64_t));
+    AscendC::PipeBarrier<PIPE_ALL>();    
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void PostSyncBigData(
+    __ubuf__ int64_t *ctrlFlagsUB, __gm__ T* buff[8], uint32_t rank, uint32_t rankSize,
+    int64_t dataOffsetNum, int64_t ipcBuffMaxNum, int64_t magic, int64_t i)
+{
+    if (i <= 0) {
+        return;
+    }
+
+    const int64_t postSyncFlagIdx = MEM_DMA_UNIT_INT_NUM + (GetLcalBlockNum() + GetBlockIdx()) * MEM_DMA_UNIT_INT_NUM;
+
+    SyncWithinNPUNew(ctrlFlagsUB, (__gm__ int64_t *)((__gm__ T *)buff[rank] + ipcBuffMaxNum) + dataOffsetNum + MEM_DMA_UNIT_INT_NUM, magic + i);
+
+    __gm__ int64_t* ctrlFlagsGM = (__gm__ int64_t *)((__gm__ T *)buff[rank] + ipcBuffMaxNum) + dataOffsetNum + postSyncFlagIdx;
+    SetFlag((__ubuf__ int64_t*)ctrlFlagsUB, ctrlFlagsGM, (int64_t)magic + i);
+
+    for (int64_t targetNPU = 0; targetNPU < rankSize; targetNPU++) {
+        if (targetNPU == rank) {
+            continue;
+        }
+        __gm__ int64_t* ctrlFlagsGMX = (__gm__ int64_t *)((__gm__ T *)buff[targetNPU] + ipcBuffMaxNum) + dataOffsetNum + postSyncFlagIdx;
+        CheckFlagNew(ctrlFlagsUB, ctrlFlagsGMX, (int64_t)magic + i);
+    }
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void PostSyncBigData910B2C(
+    __ubuf__ int64_t *ctrlFlagsUB, __gm__ T* buff[MAX_RANK_NUM_OF_ONE_910B2C], uint32_t rank, uint32_t rankSize,
+    int64_t dataOffsetNum, int64_t ipcBuffMaxNum, int64_t magic, int64_t i, const int64_t peerRankId,
+    const int64_t singleNodeRankSize)
+{
+    if (i <= 0) {
+        return;
+    }
+
+    const int64_t postSyncFlagIdx = MEM_DMA_UNIT_INT_NUM + (GetLcalBlockNum() + GetBlockIdx()) * MEM_DMA_UNIT_INT_NUM;
+
+    SyncWithinNPUNew(ctrlFlagsUB, (__gm__ int64_t *)((__gm__ T *)buff[rank] + ipcBuffMaxNum) + dataOffsetNum + MEM_DMA_UNIT_INT_NUM, magic + i);
+
+    __gm__ int64_t* ctrlFlagsGM = (__gm__ int64_t *)((__gm__ T *)buff[rank] + ipcBuffMaxNum) + dataOffsetNum + postSyncFlagIdx;
+    SetFlag((__ubuf__ int64_t*)ctrlFlagsUB, ctrlFlagsGM, (int64_t)magic + i);
+
+    int64_t targetNPUBegin = rank < singleNodeRankSize ? 0 : singleNodeRankSize;
+    int64_t targetNPUEnd = rank < singleNodeRankSize ? singleNodeRankSize : rankSize;
+    for (int64_t targetNPU = targetNPUBegin; targetNPU < targetNPUEnd; targetNPU++) {
+        if (targetNPU == rank) {
+            continue;
+        }
+        __gm__ int64_t* ctrlFlagsGMX = (__gm__ int64_t *)((__gm__ T *)buff[targetNPU] + ipcBuffMaxNum) + dataOffsetNum + postSyncFlagIdx;
+        CheckFlagNew(ctrlFlagsUB, ctrlFlagsGMX, (int64_t)magic + i);
+    }
+    const int64_t postSyncPeerFlagIdx = MEM_DMA_UNIT_INT_NUM + dataOffsetNum + GetBlockIdx() * MEM_DMA_UNIT_INT_NUM;
+    __gm__ int64_t* ctrlFlagsGMPeer =
+        (__gm__ int64_t *)((__gm__ T *)buff[peerRankId] + ipcBuffMaxNum) + dataOffsetNum + postSyncPeerFlagIdx;
+    SetFlag((__ubuf__ int64_t*)ctrlFlagsUB, ctrlFlagsGMPeer, (int64_t)magic + i);
+    CheckFlagNew(ctrlFlagsUB,
+        (__gm__ int64_t *)((__gm__ T *)buff[rank] + ipcBuffMaxNum) + dataOffsetNum + postSyncPeerFlagIdx,
+        (int64_t)magic + i);
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void PostSyncBigDataWriteAcrossCard(
+    __ubuf__ int64_t *ctrlFlagsUB, __gm__ T* buff[8], uint32_t rank, uint32_t rankSize,
+    int64_t dataOffsetNum, int64_t ipcBuffMaxNum, int64_t magic, int64_t i)
+{
+    const int64_t postSyncFlagIdx = MEM_DMA_UNIT_INT_NUM + (GetLcalBlockNum() + GetBlockIdx()) * MEM_DMA_UNIT_INT_NUM;
+    int64_t x = (rank == 0) ? 1 : 0;
+    if (i > 0) {
+        SyncWithinNPUNew(ctrlFlagsUB, (__gm__ int64_t *)((__gm__ T *)buff[rank] + ipcBuffMaxNum) + dataOffsetNum + MEM_DMA_UNIT_INT_NUM, magic + i);
+
+        __gm__ int64_t* ctrlFlagsGM =  (__gm__ int64_t *)((__gm__ T *)buff[x] + ipcBuffMaxNum) + dataOffsetNum + postSyncFlagIdx;
+        SetFlag((__ubuf__ int64_t*)ctrlFlagsUB, ctrlFlagsGM, (int64_t)magic + i);
+
+        __gm__ int64_t* ctrlFlagsGMX =  (__gm__ int64_t *)((__gm__ T *)buff[rank] + ipcBuffMaxNum) + dataOffsetNum + postSyncFlagIdx;
+        CheckFlagNew(ctrlFlagsUB, ctrlFlagsGMX, (int64_t)magic + i);
+    }
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void SetAtomicOp(int op)
+{
+    switch (op) {
+        case 0:
+            AscendC::SetAtomicAdd<T>();
+            break;
+        case 1:
+            break;
+        case 2:
+            AscendC::SetAtomicMax<T>();
+            break;
+        case 3:
+             AscendC::SetAtomicMin<T>();
+            break;
+        default:
+            ;
+    }
+}
+
+__attribute__((always_inline)) inline __aicore__ void PostSync(__ubuf__ int64_t *ctrlFlagsUB, __gm__ int64_t **buff,
+    int32_t rank, int32_t rankSize, int64_t magic)
+{
+    if (GetBlockIdx() == 0) {
+        AscendC::PipeBarrier<PIPE_ALL>();
+        *ctrlFlagsUB = rank + magic;
+        AscendC::PipeBarrier<PIPE_ALL>();
+        CpUB2GM(buff[rank] + 1, ctrlFlagsUB, sizeof(int64_t));
+
+        AscendC::PipeBarrier<PIPE_ALL>();
+
+        for (int64_t x = 0; x < rankSize; ++x) {
+            if (x == rank) {
+                continue;
+            }
+            CheckFlag(ctrlFlagsUB, buff[x] + 1, x + magic);
+        }
+    }
+}
+
+template <typename T>
+__attribute__((always_inline)) inline __aicore__ void ProcessData(int64_t dataSizeRemain, __ubuf__ T *inputUB,
+    __gm__ T *buff, int64_t dataOffsetNum, int64_t buffOffsetNum, __gm__ T *output, int64_t outputOffsetNum, int op)
+{
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+    AscendC::PipeBarrier<PIPE_ALL>();
+    #ifdef __DAV_C220_VEC__
+    SetAtomicOpType<T>(op);
+    #endif
+    AscendC::PipeBarrier<PIPE_ALL>();
+
+    while (dataSizeRemain >= UB_SINGLE_ADD_SIZE_MAX) {
+        CpGM2UB(inputUB, (__gm__ T *)((__gm__ int64_t *)buff + dataOffsetNum) + buffOffsetNum, UB_SINGLE_ADD_SIZE_MAX);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        CpUB2GM((__gm__ T *)output + outputOffsetNum, inputUB, UB_SINGLE_ADD_SIZE_MAX);
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+        dataSizeRemain -= UB_SINGLE_ADD_SIZE_MAX;
+        buffOffsetNum += (UB_SINGLE_ADD_SIZE_MAX / sizeof(T));
+        outputOffsetNum += (UB_SINGLE_ADD_SIZE_MAX / sizeof(T));
+    }
+    if (dataSizeRemain <= 0) {
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID3);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID3);
+        AscendC::SetAtomicNone();
+        AscendC::PipeBarrier<PIPE_ALL>();
+        return;
+    }
+
+    CpGM2UB(inputUB, (__gm__ T *)((__gm__ int64_t *)buff + dataOffsetNum) + buffOffsetNum, dataSizeRemain);
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    CpUB2GM((__gm__ T *)output + outputOffsetNum, (__ubuf__ T *)inputUB, dataSizeRemain);
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID3);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID3);
+    AscendC::SetAtomicNone();
+    AscendC::PipeBarrier<PIPE_ALL>();
+}
+
+template <typename T>
+__attribute__((always_inline)) inline __aicore__ void ProcessDataNew(int64_t dataSizeRemain, __ubuf__ T *inputUB[2],
+    __gm__ T *buff, int64_t dataOffsetNum, int64_t buffOffsetNum, __gm__ T *output, int64_t outputOffsetNum, int op)
+{
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+
+    AscendC::PipeBarrier<PIPE_ALL>();
+#ifdef __DAV_C220_VEC__
+    SetAtomicOpType<T>(op);
+#endif
+    AscendC::PipeBarrier<PIPE_ALL>();
+
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+    for (int64_t i = 0; dataSizeRemain > 0; i++) {
+        uint32_t size = dataSizeRemain > UB_SINGLE_PING_PONG_ADD_SIZE_MAX ? UB_SINGLE_PING_PONG_ADD_SIZE_MAX : dataSizeRemain;
+        event_t eventId = (i & 1) ? EVENT_ID0 : EVENT_ID1;
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(eventId);
+        CpGM2UB((i & 1) ? inputUB[0] : inputUB[1], (__gm__ T*)((__gm__ int64_t*)buff + dataOffsetNum) + buffOffsetNum, size);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
+        CpUB2GM((__gm__ T*)output + outputOffsetNum, (i & 1) ? inputUB[0] : inputUB[1], size);
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(eventId);
+
+        dataSizeRemain -= size;
+        buffOffsetNum += (size / sizeof(T));
+        outputOffsetNum += (size / sizeof(T));
+    }
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID3);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID3);
+    AscendC::SetAtomicNone();
+    AscendC::PipeBarrier<PIPE_ALL>();
+    return;
+}
+
+
+template <typename T>
+__attribute__((always_inline)) inline __aicore__ void ProcessDataNewNonBarrier(int64_t dataSizeRemain, __ubuf__ T *inputUB[2],
+    __gm__ T *buff, int64_t dataOffsetNum, int64_t buffOffsetNum, __gm__ T *output, int64_t outputOffsetNum, int op)
+{
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID0);
+#ifdef __DAV_C220_VEC__
+    SetAtomicOpType<T>(op);
+#endif
+    AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+    for (int64_t i = 0; dataSizeRemain > 0; i++) {
+        uint32_t size = dataSizeRemain > UB_SINGLE_PING_PONG_ADD_SIZE_MAX ? UB_SINGLE_PING_PONG_ADD_SIZE_MAX : dataSizeRemain;
+        event_t eventId = (i & 1) ? EVENT_ID0 : EVENT_ID1;
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(eventId);
+        CpGM2UB((i & 1) ? inputUB[0] : inputUB[1], (__gm__ T*)((__gm__ int64_t*)buff + dataOffsetNum) + buffOffsetNum, size);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
+        CpUB2GM((__gm__ T*)output + outputOffsetNum, (i & 1) ? inputUB[0] : inputUB[1], size);
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(eventId);
+
+        dataSizeRemain -= size;
+        buffOffsetNum += (size / sizeof(T));
+        outputOffsetNum += (size / sizeof(T));
+    }
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID3);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID3);
+    AscendC::SetAtomicNone();
+    AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(EVENT_ID0);
+    return;
+}
+
+__attribute__((always_inline)) inline __aicore__ void CheckFlagGE(__ubuf__ int64_t *ctrlFlagsUB,
+                                                                  __gm__ int64_t *ctrlFlagGM, int64_t checkValue)
+{
+    while (true) {
+        AscendC::PipeBarrier<PIPE_ALL>();
+        CpGM2UBAlignB16(ctrlFlagsUB, ctrlFlagGM, sizeof(int64_t));
+        AscendC::PipeBarrier<PIPE_ALL>();
+        if ((*ctrlFlagsUB >> 10) == (checkValue >> 10) && (*ctrlFlagsUB & 0x3FF) >= (checkValue & 0x3FF)) {
+            break;
+        }
+    }
+}
+
+__attribute__((always_inline)) inline __aicore__ void NewCheckFlagGE(__ubuf__ int64_t *ctrlFlagsUB,
+                                                                  __gm__ int64_t *ctrlFlagGM, int64_t checkValue, event_t eventId)
+{
+    AscendC::SetFlag<AscendC::HardEvent::S_MTE2>(eventId); 
+    while (true) {
+        AscendC::WaitFlag<AscendC::HardEvent::S_MTE2>(eventId); 
+        CpGM2UBAlignB16(ctrlFlagsUB, ctrlFlagGM, sizeof(int64_t));
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(eventId);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(eventId);
+        if ((*ctrlFlagsUB >> 20) == (checkValue >> 20) && (*ctrlFlagsUB & 0xFFFFF) >= (checkValue & 0xFFFFF)) {
+            break;
+        }
+        AscendC::SetFlag<AscendC::HardEvent::S_MTE2>(eventId); 
+    }
+}
+
+__attribute__((always_inline)) inline __aicore__ int64_t GetDeterministicRankOffset(int64_t x) {
+    int64_t count = 1;
+    while (!(x & 1)) {
+        x >>= 1;
+        count <<= 1;
+    }
+    return count;
+}
+
+__attribute__((always_inline)) inline __aicore__ void CopyInput2BuffBroadCast(__ubuf__ char* inputUB, __gm__ char* buff,
+                                                                              __gm__ char* input, int64_t singleCoreDataNum,
+                                                                              int64_t blockDataOffset)
+{
+    if (singleCoreDataNum <= 0) {
+        return;
+    }
+    CpGM2UBAlignB16(inputUB, input + blockDataOffset, singleCoreDataNum * sizeof(char));
+    AscendC::PipeBarrier<PIPE_ALL>();
+
+    CpUB2GMAlignB16((__gm__ char*)((__gm__ int64_t * )buff + GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM) + blockDataOffset,
+    inputUB, singleCoreDataNum * sizeof(char));
+    AscendC::PipeBarrier<PIPE_ALL>();
+}
+
+
+#endif

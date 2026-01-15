@@ -1,0 +1,6 @@
+dataset_name: yandiwanba
+rgb_hz: 30.0
+url_download_root: " "
+sequence_names:
+  - test1
+  - test4

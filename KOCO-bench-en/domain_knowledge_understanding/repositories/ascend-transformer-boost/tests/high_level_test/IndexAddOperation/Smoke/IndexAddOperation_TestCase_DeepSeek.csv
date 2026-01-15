@@ -1,0 +1,4 @@
+CaseNum|CaseName             |OpName                 |OpParam                      |InNum|InDType                         |InFormat              |InShape                        |OutNum|OutDType  |OutFormat |OutShape    |DataGenType                                       |DataGenRange                            |InTensorFile|OutTensorFile|TestType   |TestLevel|FromModel|SocVersion          |ExpectedError
+1|deepseek_IndexAddCase1|IndexAddOperation|{"indexType":2,"axis":0}|4|float16;int32;float16;int32|nd;nd;nd;nd|3072,7168;25856;25856,7168;1|1|float16|nd|3072,7168|random;customize;random;customize|-5,5;0,0;-5,5;0,0|||||deepseek|Ascend910B|NO_ERROR
+
+

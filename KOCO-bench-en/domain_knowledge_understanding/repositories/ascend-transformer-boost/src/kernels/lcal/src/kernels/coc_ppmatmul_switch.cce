@@ -1,0 +1,146 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include "coc_internal.cce"
+#include "coc_ppmatmul.cce"
+#include "tiling_args.h"
+#include "coc_matmulmoe.cce"
+
+
+#ifdef __DAV_C220_CUBE__
+
+template<typename TData, uint32_t RUN_TYPE>
+FORCE_INLINE_AICORE void RunPpMatmul(int32_t tiling_key, PP_MATMUL_AIC_ARGS_FUN(TData, TData)) {
+    constexpr bool IS_MOE = (RUN_TYPE == PPMATMUL_RUN_ALL_TO_ALL_ALL_GATHER_MATMUL_HIDDEN) || (RUN_TYPE == PPMATMUL_RUN_MATMUL_REDUCE_SCATTER_ALL_TO_ALL_HIDDEN)
+        || (RUN_TYPE == PPMATMUL_RUN_ALL_TO_ALL_ALL_GATHER_MATMUL);
+    if (IS_MOE) {
+        PpMatmulMoe<RUN_TYPE, TData, TData, false, false> matmul_z;
+        PpMatmulMoe<RUN_TYPE, TData, TData, false, true> matmul_tb_z;
+        PpMatmulMoe<RUN_TYPE, int8_t, TData, false, false> matmul_z_int8;
+        PpMatmulMoe<RUN_TYPE, int8_t, TData, false, true> matmul_tb_z_int8;
+        int32_t tiling_key_sel = tiling_key & 0b011101;
+        switch (tiling_key_sel) {
+            case 0b000000 :
+                matmul_z.SetArgs(PP_MATMUL_AIC_ARGS_CALL());
+                matmul_z.Run();
+                break;
+            case 0b001000 :
+                matmul_tb_z.SetArgs(PP_MATMUL_AIC_ARGS_CALL());
+                matmul_tb_z.Run();
+                break;
+            case 0b000100 :
+                matmul_z_int8.SetArgs(PP_MATMUL_AIC_ARGS_CALL());
+                matmul_z_int8.Run();
+                break;
+            case 0b001100 :
+                matmul_tb_z_int8.SetArgs(PP_MATMUL_AIC_ARGS_CALL());
+                matmul_tb_z_int8.Run();
+                break;
+            default :
+                break;
+        }
+    } else {
+        PpMatmul<RUN_TYPE, TData, TData, false, false> matmul_z;
+        PpMatmul<RUN_TYPE, TData, TData, false, true> matmul_tb_z;
+        PpMatmul<RUN_TYPE, int8_t, TData, false, false> matmul_z_int8;
+        PpMatmul<RUN_TYPE, int8_t, TData, false, true> matmul_tb_z_int8;
+        int32_t tiling_key_sel = tiling_key & 0b011101;
+        switch (tiling_key_sel) {
+            case 0b000000 :
+                matmul_z.SetArgs(PP_MATMUL_AIC_ARGS_CALL());
+                matmul_z.Run();
+                break;
+            case 0b001000 :
+                matmul_tb_z.SetArgs(PP_MATMUL_AIC_ARGS_CALL());
+                matmul_tb_z.Run();
+                break;
+            case 0b000100 :
+                matmul_z_int8.SetArgs(PP_MATMUL_AIC_ARGS_CALL());
+                matmul_z_int8.Run();
+                break;
+            case 0b001100 :
+                matmul_tb_z_int8.SetArgs(PP_MATMUL_AIC_ARGS_CALL());
+                matmul_tb_z_int8.Run();
+                break;
+            default :
+                break;
+        }
+    }
+    // 创建不同类型的PpMatmul实例
+    
+}
+
+template<typename TData, uint32_t RUN_TYPE>
+inline __aicore__ void CocPpmatmulSwitchAic(COC_ARGS_FUN(TData)) {
+    CoCBuffAddrAndArgs coc_buff_and_args(COC_ARGS_CALL());
+    __gm__ TData* buff[LCAL_MAX_RANK_SIZE];
+    for (int i = 0; i < coc_buff_and_args.rankSize; ++i) {
+        buff[i] = coc_buff_and_args.buff[i];
+    }
+    bool is_deterministic = coc_buff_and_args.DETERMINISTIC;
+    set_padding(0);
+    SetAtomicNone();
+    uint64_t config = 0x1;
+    set_nd_para(config);
+    SetSyncBaseAddr((uint64_t)ffts_addr);
+
+    // 获取 tiling 参数
+    auto para = reinterpret_cast<__gm__ Lcal::CoCKernelParam *>(para_gm);
+    auto cocTilingData = &para->cocTilingData;
+    auto quantInfo = &para->quantInfo;
+    auto twoDimTPInfo = &para->twoDimTPInfo;
+    auto moeInfo = &para->moeInfo;
+
+    bool weight_nz = para->weightNz;
+    int32_t batch_size = cocTilingData->batchSize;
+    int32_t m = cocTilingData->m;
+    int32_t k = cocTilingData->k;
+    int32_t n = cocTilingData->n;
+
+    int32_t m0 = cocTilingData->m0;
+    int32_t k0 = cocTilingData->k0;
+    int32_t n0 = cocTilingData->n0;
+
+    int32_t m_loop = cocTilingData->mLoop;
+    int32_t k_loop = cocTilingData->kLoop;
+    int32_t n_loop = cocTilingData->nLoop;
+
+    int32_t core_loop = cocTilingData->coreLoop;
+    int32_t swizzl_count = cocTilingData->swizzlCount;
+    int32_t tiling_key = cocTilingData->tilingKey;
+    int32_t rank = cocTilingData->rank;
+    int32_t rank_size = cocTilingData->rankSize;
+    int32_t p_value = cocTilingData->pValue;
+    int32_t withSerialMode = cocTilingData->withSerialMode;
+    bool is_91093 = cocTilingData->is91093;
+    int32_t buffer_size = cocTilingData->bufferSize;
+
+    int32_t swizzl_direct = (tiling_key & SWIZZL_MASK) ? 1 : 0;
+    bool is_int8 = (tiling_key & INT8_MASK) != 0;
+    QuantGranularity dequant_granularity = static_cast<QuantGranularity>(quantInfo->dequantGranularity);
+    int32_t dequant_group_size = quantInfo->dequantGroupSize;
+    QuantGranularity quant_granularity = static_cast<QuantGranularity>(quantInfo->quantGranularity);
+    int32_t quant_group_size = quantInfo->quantGroupSize;
+    __gm__ TData* gm_peer_mem = buff[rank];
+    __gm__ TData* gm_c = gm_out;
+    int32_t ag_dim = twoDimTPInfo->agDim;
+    int32_t rs_dim = twoDimTPInfo->rsDim;
+    bool inner_dim_is_Ag = twoDimTPInfo->innerDimIsAg;
+    
+    int32_t local_expert_nums = moeInfo->local_expert_nums;
+    int32_t TP = moeInfo->TP;
+    int32_t EP = moeInfo->EP;
+    int32_t maxOutputSize = moeInfo->maxOutputSize;
+    int32_t is_moe = moeInfo->isMoe;
+
+    RunPpMatmul<TData, RUN_TYPE>(tiling_key, PP_MATMUL_AIC_ARGS_CALL());
+    PipeBarrier<PIPE_ALL>();
+}
+
+#endif

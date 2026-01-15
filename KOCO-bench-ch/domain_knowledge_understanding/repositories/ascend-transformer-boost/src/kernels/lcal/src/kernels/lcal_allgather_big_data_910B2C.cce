@@ -1,0 +1,199 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include <cstdint>
+#include "collectives.cce"
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void CheckThenDMAGM2GM(__ubuf__ int64_t* ctrlFlagsUB, __ubuf__ int64_t* ctrlFlagsUB1,
+    __gm__ int64_t *ctrlFlagsGMStep1ToCheck, int64_t newMagic, int64_t allDataSizeNeedDMA,
+    int64_t revBuffOffsetNumOrigin, int64_t processedDataNum, __gm__ T *sendBuff, __gm__ T *revBuff,
+    int64_t sendBuffOffsetNumOrigin, __ubuf__ T* inputUB[2], int64_t &processedDataGroupCount, int64_t multipleTimes)
+{
+    PipeBarrier<PIPE_ALL>();
+    CpGM2UB(ctrlFlagsUB1, ctrlFlagsGMStep1ToCheck, sizeof(int64_t));
+    SetFlag<HardEvent::MTE2_S>(EVENT_ID0);
+    WaitFlag<HardEvent::MTE2_S>(EVENT_ID0);
+
+    if (*ctrlFlagsUB1 == 0 || ((*ctrlFlagsUB1 >> 10) != (newMagic >> 10))) {
+        return;
+    }
+
+    int64_t preparedDataGroupCount = (*ctrlFlagsUB1 & 0x3FF);
+    if (processedDataGroupCount >= preparedDataGroupCount) {
+        return;
+    }
+
+    int64_t curDataSizeRemain = (preparedDataGroupCount - processedDataGroupCount) * DMA_SIZE_PER_FLAG;
+    if (preparedDataGroupCount >= multipleTimes) {
+        curDataSizeRemain = allDataSizeNeedDMA - processedDataGroupCount * DMA_SIZE_PER_FLAG;
+    }
+    PipeBarrier<PIPE_ALL>();
+    GM2GMPingPongNonPipeBarrier<T>(curDataSizeRemain, inputUB, revBuff,
+                                   revBuffOffsetNumOrigin + processedDataGroupCount * DMA_SIZE_PER_FLAG / sizeof(T),
+                                   sendBuff, sendBuffOffsetNumOrigin + processedDataGroupCount * DMA_SIZE_PER_FLAG / sizeof(T));
+    processedDataGroupCount = preparedDataGroupCount;
+    PipeBarrier<PIPE_ALL>();
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void LcalAllGatherBigData910B2C(ALLREDUCE_ARGS_FUN_16P(T))
+{
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, Op::COPYONLY);
+    magic *= 1024;
+
+    const int64_t singleNodeRankSize = rankSize >> 1;
+
+    const int64_t allGatherBuffSizePerParagraph910B2C = IPC_BUFF_MAX_SIZE / 2 / sizeof(T) * sizeof(T);
+
+    const int64_t allGatherBuffNumPerParagraph910B2C = allGatherBuffSizePerParagraph910B2C / sizeof(T);
+
+    if (GetBlockIdx() >= singleNodeRankSize + 2) {
+        DumpLcclLogInfo(dumpAddr, LogId::INIT, Op::COPYONLY);
+        return;
+    }
+    const int64_t localNodeRankId = rank >= singleNodeRankSize ? rank - singleNodeRankSize : rank;
+    const int64_t nodeId = rank < singleNodeRankSize ? 0 : 1;
+
+    const int64_t peerRankId = rank < singleNodeRankSize ? rank + singleNodeRankSize : rank - singleNodeRankSize;
+
+    const int64_t dataOffsetNum = GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM;
+    const int64_t flagOffset1st = MEM_DMA_UNIT_INT_NUM * GetBlockIdx();
+    const int64_t flagOffset2nd = MEM_DMA_UNIT_INT_NUM * GetLcalBlockNum() + flagOffset1st;
+    const int64_t corePerRank = 1;
+
+    __gm__ T *buff[16] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7,
+        buff8, buff9, buff10, buff11,
+        buff12, buff13, buff14, buff15
+    };
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t*)(0);
+    __ubuf__ int64_t* ctrlFlagsUB1 = (__ubuf__ int64_t*)(32);
+    __ubuf__ int64_t* ctrlFlagsUB2 = (__ubuf__ int64_t*)(64);
+    __ubuf__ int64_t* ctrlFlagsUB3 = (__ubuf__ int64_t*)(96);
+    __ubuf__ T* inputUB[2] = {(__ubuf__ T*)(128), (__ubuf__ T*)(98336)};
+    int64_t revBuffOffsetNumOrigin = nodeId * allGatherBuffNumPerParagraph910B2C;
+    int64_t processedDataNum = 0;
+    int64_t totalDataSizeRemain = len * sizeof(T);
+    const int64_t totalLoopTimes = CeilDiv(totalDataSizeRemain, allGatherBuffSizePerParagraph910B2C);
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, Op::COPYONLY);
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, Op::COPYONLY);
+    for (int i = 0; i < totalLoopTimes; i++) {
+        int64_t newMagic = (magic + i + 1) * 1024;
+        int64_t dataSizeRemain = (i == totalLoopTimes - 1) ?
+            (totalDataSizeRemain - processedDataNum * sizeof(T)) : allGatherBuffSizePerParagraph910B2C;
+        int64_t dataNumRemain = dataSizeRemain / sizeof(T);
+        if (GetBlockIdx() >= singleNodeRankSize) {
+            __gm__ T *receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[rank] + dataOffsetNum);
+            __gm__ int64_t *ctrlFlagsGMStep0ToSet = (__gm__ int64_t*)buff[rank] + flagOffset1st;
+            if ((nodeId == 0 && GetBlockIdx() == singleNodeRankSize + 1)) {
+                ctrlFlagsGMStep0ToSet = (__gm__ int64_t*)buff[peerRankId] + singleNodeRankSize * MEM_DMA_UNIT_INT_NUM;
+            }
+            if ((nodeId == 1 && GetBlockIdx() == singleNodeRankSize)) {
+                ctrlFlagsGMStep0ToSet = (__gm__ int64_t*)buff[peerRankId] + (singleNodeRankSize + 1) * MEM_DMA_UNIT_INT_NUM;
+            }
+            if ((nodeId == 0 && GetBlockIdx() == singleNodeRankSize + 1) ||
+                (nodeId == 1 && GetBlockIdx() == singleNodeRankSize)) {
+                receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[peerRankId] + dataOffsetNum);
+            }
+
+            input2BuffRankMagic(dataSizeRemain, inputUB[0], receiveBuff, revBuffOffsetNumOrigin, input,
+                processedDataNum, ctrlFlagsUB, ctrlFlagsGMStep0ToSet, newMagic);
+            if (i < totalLoopTimes - 1) {
+                if ((nodeId == 0 && GetBlockIdx() == singleNodeRankSize)) {
+                    int64_t checkFlagOffset = nodeId * GetLcalBlockNum() * MEM_DMA_UNIT_INT_NUM;
+                    for (int checkLogicRank = 0; checkLogicRank < singleNodeRankSize; checkLogicRank++) {
+                        CheckFlag(ctrlFlagsUB,
+                                  (__gm__ int64_t*)buff[rank] + checkFlagOffset + checkLogicRank * MEM_DMA_UNIT_INT_NUM,
+                                  newMagic);
+                    }
+                }
+                if ((nodeId == 1 && GetBlockIdx() == singleNodeRankSize + 1)) {
+                    int64_t checkFlagOffset = nodeId * GetLcalBlockNum() * MEM_DMA_UNIT_INT_NUM;
+                    for (int checkLogicRank = 0; checkLogicRank < singleNodeRankSize; checkLogicRank++) {
+                        CheckFlag(ctrlFlagsUB,
+                                  (__gm__ int64_t*)buff[rank] + checkFlagOffset + checkLogicRank * MEM_DMA_UNIT_INT_NUM,
+                                  newMagic);
+                    }
+                }
+                if (nodeId == 0 && GetBlockIdx() == singleNodeRankSize + 1) {
+                    for (int checkLogicRank = 0; checkLogicRank < singleNodeRankSize; checkLogicRank++) {
+                        CheckFlag(ctrlFlagsUB,
+                                  (__gm__ int64_t*)buff[checkLogicRank] + (GetLcalBlockNum() + localNodeRankId) * MEM_DMA_UNIT_INT_NUM,
+                            newMagic);
+                    }
+                }
+                if (nodeId == 1 && GetBlockIdx() == singleNodeRankSize) {
+                    for (int checkLogicRank = 0; checkLogicRank < singleNodeRankSize; checkLogicRank++) {
+                        CheckFlag(ctrlFlagsUB,
+                                  (__gm__ int64_t*)buff[checkLogicRank + singleNodeRankSize] + localNodeRankId * MEM_DMA_UNIT_INT_NUM,
+                            newMagic);
+                    }
+                }
+            }
+        } else {
+            *ctrlFlagsUB = 0;
+            *ctrlFlagsUB1 = 0;
+            *ctrlFlagsUB2 = 0;
+            *ctrlFlagsUB3 = 0;
+            __gm__ int64_t *ctrlFlagsGMStep1ToCheck1st = (__gm__ int64_t*)buff[GetBlockIdx()] + singleNodeRankSize * MEM_DMA_UNIT_INT_NUM;
+            __gm__ int64_t *ctrlFlagsGMStep1ToSet1st = (__gm__ int64_t*)buff[GetBlockIdx()] + localNodeRankId * MEM_DMA_UNIT_INT_NUM;
+            __gm__ int64_t *ctrlFlagsGMStep1ToCheck2nd = (__gm__ int64_t*)buff[GetBlockIdx()] + (singleNodeRankSize + 1) * MEM_DMA_UNIT_INT_NUM;
+            __gm__ int64_t *ctrlFlagsGMStep1ToSet2nd = (__gm__ int64_t*)buff[peerRankId] + GetBlockIdx() * MEM_DMA_UNIT_INT_NUM;
+            __gm__ T *sendBuff = (__gm__ T*)((__gm__ int64_t*)buff[GetBlockIdx()] + dataOffsetNum);
+            if (nodeId == 1) {
+                ctrlFlagsGMStep1ToCheck1st = (__gm__ int64_t*)buff[GetBlockIdx() + singleNodeRankSize] + singleNodeRankSize * MEM_DMA_UNIT_INT_NUM;
+                ctrlFlagsGMStep1ToSet1st = (__gm__ int64_t*)buff[peerRankId] + (GetBlockIdx() + GetLcalBlockNum()) * MEM_DMA_UNIT_INT_NUM;
+                ctrlFlagsGMStep1ToCheck2nd = (__gm__ int64_t*)buff[GetBlockIdx() + singleNodeRankSize] + (singleNodeRankSize + 1) * MEM_DMA_UNIT_INT_NUM;
+                ctrlFlagsGMStep1ToSet2nd = (__gm__ int64_t*)buff[GetBlockIdx() + singleNodeRankSize] + (localNodeRankId + GetLcalBlockNum()) * MEM_DMA_UNIT_INT_NUM;
+                sendBuff = (__gm__ T*)((__gm__ int64_t*)buff[GetBlockIdx() + singleNodeRankSize] + dataOffsetNum);
+            }
+            int64_t revBuffOffsetNumOrigin1st = GetBlockIdx() * len + processedDataNum;
+            int64_t revBuffOffsetNumOrigin2nd = (GetBlockIdx() + singleNodeRankSize) * len + processedDataNum;
+            int64_t allDataSizeNeedDMA = dataSizeRemain;
+            int64_t multipleTimes = CeilDiv(dataSizeRemain, DMA_SIZE_PER_FLAG);
+            bool step1NeedSetFirst = true;
+            bool step1NeedSetSecond = true;
+
+            int64_t processedDataGroupCount1st = 0;
+            int64_t processedDataGroupCount2nd = 0;
+            PipeBarrier<PIPE_ALL>();
+            while (true) {
+                if (processedDataGroupCount1st < multipleTimes) {
+                    CheckThenDMAGM2GM<T>(ctrlFlagsUB, ctrlFlagsUB1, ctrlFlagsGMStep1ToCheck1st, newMagic, dataSizeRemain,
+                       revBuffOffsetNumOrigin1st, processedDataNum, sendBuff, output, 0, inputUB,
+                       processedDataGroupCount1st, multipleTimes);
+                } else if (step1NeedSetFirst) {
+                    if (i < totalLoopTimes - 1) {
+                        SetFlag(ctrlFlagsUB1, ctrlFlagsGMStep1ToSet1st, newMagic);
+                    }
+                    step1NeedSetFirst = false;
+                }
+
+                if (processedDataGroupCount2nd < multipleTimes) {
+                    CheckThenDMAGM2GM<T>(ctrlFlagsUB2, ctrlFlagsUB3, ctrlFlagsGMStep1ToCheck2nd, newMagic, dataSizeRemain,
+                          revBuffOffsetNumOrigin2nd, processedDataNum, sendBuff, output, allGatherBuffNumPerParagraph910B2C, inputUB,
+                          processedDataGroupCount2nd, multipleTimes);
+                } else if (step1NeedSetSecond) {
+                    if (i < totalLoopTimes - 1) {
+                        SetFlag(ctrlFlagsUB3, ctrlFlagsGMStep1ToSet2nd, newMagic);
+                    }
+                    step1NeedSetSecond = false;
+                }
+
+                if (!step1NeedSetFirst && !step1NeedSetSecond) {
+                    break;
+                }
+            }
+        }
+        processedDataNum += allGatherBuffNumPerParagraph910B2C;
+    }
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, Op::COPYONLY);
+}

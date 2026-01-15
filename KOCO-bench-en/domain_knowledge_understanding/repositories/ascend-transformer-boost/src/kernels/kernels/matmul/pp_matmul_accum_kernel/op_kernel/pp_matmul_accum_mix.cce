@@ -1,0 +1,835 @@
+#ifdef __CCE_KT_TEST__
+#include "stub_def.h"
+#include "stub_fun.h"
+using __bf16 = bfloat16_t;
+#else
+#define __aicore__ [aicore]
+#endif
+
+#include "kernels/matmul/tiling/tiling_data.h"
+#include "kernels/utils/kernel/common.h"
+#include "kernels/utils/kernel/iterator.h"
+#include "kernels/utils/kernel/mem.h"
+#include "kernels/utils/kernel/mma.h"
+#include "kernels/utils/kernel/simd.h"
+#include "kernels/utils/kernel/utils.h"
+
+namespace {
+constexpr uint8_t INTRA_BLOCK_SYNC = 2;
+constexpr uint16_t AIV_WRITE_SUM = 1;
+constexpr uint16_t AIV_READ_RESIDUAL = 2;
+constexpr uint16_t AIC_WRITE_PRODUCT = 3;
+constexpr uint16_t CV_REV_SYNC_FLAG = 4;
+constexpr uint16_t VC_REV_SYNC_FLAG = 5;
+constexpr uint32_t L0_PINGPONG_BUFFER_LEN = 16384;
+constexpr uint32_t L1_PINGPONG_BUFFER_LEN = 131072;
+constexpr uint32_t CONST_16 = 16;
+constexpr uint32_t CONST_32 = 32;
+constexpr uint32_t CONST_64 = 64;
+constexpr uint32_t CONST_128 = 128;
+constexpr uint32_t CONST_256 = 256;
+constexpr uint64_t ND2NZ_STRIDE_LIMIT = 65536;
+constexpr uint32_t MAX_NUMEL_INST_B32 = 255 * 64;
+constexpr uint32_t MAX_HW_SYNC_COUNTER = 15;
+constexpr uint32_t VEC_ITER_REPEAT = 128;
+constexpr uint32_t VEC_ITER_NUMEL = VEC_ITER_REPEAT * 64;
+} // namespace
+
+struct MatCoord {
+    uint64_t m{0};
+    uint64_t k{0};
+    uint64_t n{0};
+};
+
+using OnChipBuffer = AsdopsBuffer<ArchType::ASCEND_V220>;
+
+template <uint32_t SwizzleDirect, bool TA, bool TB, typename InDtype, typename OutDtype, typename AccumDtype>
+class PpMatmulAccumMix {
+public:
+    __aicore__ explicit PpMatmulAccumMix(){};
+
+    __aicore__ __force_inline__ void Init(__gm__ uint8_t *__restrict__ a,
+                                          __gm__ uint8_t *__restrict__ b,
+                                          __gm__ uint8_t *__restrict__ c,
+                                          __gm__ uint8_t *__restrict__ workspace,
+                                          __gm__ uint8_t *__restrict__ tiling_data);
+    __aicore__ __force_inline__ void GetBlockIdx(const uint64_t index, MatCoord &tidx);
+    __aicore__ __force_inline__ void RunCube();
+    __aicore__ __force_inline__ void RunVector();
+
+private:
+    __aicore__ __force_inline__ void InitBufferCube(const OnChipBuffer &buf);
+    __aicore__ __force_inline__ void InitBufferVector(const OnChipBuffer &buf);
+
+private:
+    AscendC::GlobalTensor<InDtype> gm_a;
+    AscendC::GlobalTensor<InDtype> gm_b;
+    AscendC::GlobalTensor<OutDtype> gm_c;
+    AscendC::GlobalTensor<AccumDtype> gm_workspace;
+    AscendC::LocalTensor<InDtype> l1_base_a;
+    AscendC::LocalTensor<InDtype> l1_base_b;
+    AscendC::LocalTensor<InDtype> l0a_base;
+    AscendC::LocalTensor<InDtype> l0b_base;
+    AscendC::LocalTensor<AccumDtype> l0c_buf;
+    AscendC::LocalTensor<OutDtype> ub_sum;
+    AscendC::LocalTensor<AccumDtype> ub_c;
+    AscendC::LocalTensor<AccumDtype> ub_prod;
+
+    uint32_t num_core{0};
+    uint32_t batch_size{0};
+    uint32_t m{0};
+    uint32_t k{0};
+    uint32_t n{0};
+    uint32_t m0{0};
+    uint32_t k0{0};
+    uint32_t n0{0};
+    MatCoord tdim{0};
+    MatCoord fdim{0};
+    uint32_t core_loop{0};
+    uint32_t swizzle_cnt{1};
+    uint32_t core_idx{0};
+    uint32_t sub_core_idx{0};
+    uint32_t ping_flag{0};
+    uint32_t cv_sync_cnt{0};
+    uint32_t vc_sync_cnt{0};
+    bool en_shuffle_k{false};
+};
+
+template <uint32_t SwizzleDirect, bool TA, bool TB, typename InDtype, typename OutDtype, typename AccumDtype>
+__aicore__ __force_inline__ void
+PpMatmulAccumMix<SwizzleDirect, TA, TB, InDtype, OutDtype, AccumDtype>::Init(__gm__ uint8_t *__restrict__ a,
+                                                                             __gm__ uint8_t *__restrict__ b,
+                                                                             __gm__ uint8_t *__restrict__ c,
+                                                                             __gm__ uint8_t *__restrict__ workspace,
+                                                                             __gm__ uint8_t *__restrict__ tiling_data)
+{
+    gm_a.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(a));
+    gm_b.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(b));
+    gm_c.SetGlobalBuffer(reinterpret_cast<__gm__ OutDtype *>(c));
+    gm_workspace.SetGlobalBuffer(reinterpret_cast<__gm__ AccumDtype *>(workspace));
+    auto gm_tiling_data = reinterpret_cast<__gm__ AsdOps::PpMatmulTilingData *>(tiling_data);
+    batch_size = gm_tiling_data->batch;
+    m = gm_tiling_data->m;
+    k = gm_tiling_data->k;
+    n = gm_tiling_data->n;
+    m0 = gm_tiling_data->m0;
+    k0 = gm_tiling_data->k0;
+    n0 = gm_tiling_data->n0;
+    tdim.m = gm_tiling_data->mLoop;
+    tdim.k = gm_tiling_data->kLoop;
+    tdim.n = gm_tiling_data->nLoop;
+    core_loop = gm_tiling_data->coreLoop;
+    swizzle_cnt = gm_tiling_data->swizzlCount;
+    num_core = AscendC::GetBlockNum();
+#ifdef __DAV_C220_CUBE__
+    core_idx = AscendC::GetBlockIdx();
+#endif
+#ifdef __DAV_C220_VEC__
+    core_idx = AscendC::GetBlockIdx() / AscendC::GetTaskRation();
+#endif
+    sub_core_idx = AscendC::GetSubBlockIdx();
+    ping_flag = 1;
+    en_shuffle_k = gm_tiling_data->enShuffleK;
+    OnChipBuffer buf;
+    InitBufferCube(buf);
+    InitBufferVector(buf);
+}
+
+template <uint32_t SwizzleDirect, bool TA, bool TB, typename InDtype, typename OutDtype, typename AccumDtype>
+__aicore__ __force_inline__ void
+PpMatmulAccumMix<SwizzleDirect, TA, TB, InDtype, OutDtype, AccumDtype>::InitBufferCube(const OnChipBuffer &buf)
+{
+#ifdef __DAV_C220_CUBE__
+    l1_base_a = buf.template GetBuffer<BufferType::ASCEND_CB, InDtype>(0);
+    l1_base_b = buf.template GetBuffer<BufferType::ASCEND_CB, InDtype>(RoundUp<256>(m0 * k0 * sizeof(InDtype)));
+    l0a_base = buf.template GetBuffer<BufferType::ASCEND_L0A, InDtype>(0);
+    l0b_base = buf.template GetBuffer<BufferType::ASCEND_L0B, InDtype>(0);
+#endif
+}
+
+template <uint32_t SwizzleDirect, bool TA, bool TB, typename InDtype, typename OutDtype, typename AccumDtype>
+__aicore__ __force_inline__ void
+PpMatmulAccumMix<SwizzleDirect, TA, TB, InDtype, OutDtype, AccumDtype>::InitBufferVector(const OnChipBuffer &buf)
+{
+#ifdef __DAV_C220_VEC__
+    ub_c = buf.template GetBuffer<BufferType::ASCEND_UB, AccumDtype>(0);
+    ub_prod = buf.template GetBuffer<BufferType::ASCEND_UB, AccumDtype>(CONST_64 * CONST_256 * sizeof(AccumDtype));
+    ub_sum = buf.template GetBuffer<BufferType::ASCEND_UB, AccumDtype>(CONST_128 * CONST_256 * sizeof(AccumDtype));
+#endif
+}
+
+template <uint32_t SwizzleDirect, bool TA, bool TB, typename InDtype, typename OutDtype, typename AccumDtype>
+__aicore__ __force_inline__ void
+PpMatmulAccumMix<SwizzleDirect, TA, TB, InDtype, OutDtype, AccumDtype>::GetBlockIdx(const uint64_t index,
+                                                                                    MatCoord &tidx)
+{
+    uint64_t in_batch_idx = index % (tdim.m * tdim.n);
+    if constexpr (SwizzleDirect == 0) { // Zn
+        uint64_t tile_block_loop = (tdim.m + swizzle_cnt - 1) / swizzle_cnt;
+        uint64_t tile_block_idx = in_batch_idx / (swizzle_cnt * tdim.n);
+        uint64_t in_tile_block_idx = in_batch_idx % (swizzle_cnt * tdim.n);
+
+        uint64_t n_row = swizzle_cnt;
+        if (tile_block_idx == tile_block_loop - 1) {
+            n_row = tdim.m - swizzle_cnt * tile_block_idx;
+        }
+        tidx.m = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_row;
+        tidx.n = in_tile_block_idx / n_row;
+        if (tile_block_idx % 2 != 0) {
+            tidx.n = tdim.n - tidx.n - 1;
+        }
+    } else if constexpr (SwizzleDirect == 1) { // Nz
+        uint64_t tile_block_loop = (tdim.n + swizzle_cnt - 1) / swizzle_cnt;
+        uint64_t tile_block_idx = in_batch_idx / (swizzle_cnt * tdim.m);
+        uint64_t in_tile_block_idx = in_batch_idx % (swizzle_cnt * tdim.m);
+
+        uint64_t n_col = swizzle_cnt;
+        if (tile_block_idx == tile_block_loop - 1) {
+            n_col = tdim.n - swizzle_cnt * tile_block_idx;
+        }
+        tidx.m = in_tile_block_idx / n_col;
+        tidx.n = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_col;
+        if (tile_block_idx % 2 != 0) {
+            tidx.m = tdim.m - tidx.m - 1;
+        }
+    }
+}
+
+template <uint32_t SwizzleDirect, bool TA, bool TB, typename InDtype, typename OutDtype, typename AccumDtype>
+__aicore__ __force_inline__ void PpMatmulAccumMix<SwizzleDirect, TA, TB, InDtype, OutDtype, AccumDtype>::RunCube()
+{
+#ifdef __DAV_C220_CUBE__
+    using LocalTensor = AscendC::LocalTensor<InDtype>;
+    using CopyGmToCbuf = gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::ND>;
+    using CopyGmToCbufNd2Nz = gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::NZ>;
+    using LoadCbufToCa = l1_to_l0_a<ArchType::ASCEND_V220, InDtype, TA, DataFormat::VECTOR, DataFormat::VECTOR>;
+    using LoadCbufToCaNz2Zz = l1_to_l0_a<ArchType::ASCEND_V220, InDtype, TA, DataFormat::ZN, DataFormat::ZZ>;
+    using LoadCbufToCbNz2Zn = l1_to_l0_b<ArchType::ASCEND_V220, InDtype, TB, DataFormat::ZN, DataFormat::NZ>;
+    using Mad = mmad<ArchType::ASCEND_V220, InDtype, InDtype, AccumDtype, false>;
+    using CopyCcToGm = l0c_to_gm<ArchType::ASCEND_V220, DataFormat::ND, OutDtype, AccumDtype>;
+    SET_FLAG(MTE1, MTE2, EVENT_ID0);
+    SET_FLAG(MTE1, MTE2, EVENT_ID1);
+    SET_FLAG(MTE1, MTE2, EVENT_ID2);
+    SET_FLAG(MTE1, MTE2, EVENT_ID3);
+    SET_FLAG(FIX, M, EVENT_ID0);
+    SET_FLAG(M, MTE1, EVENT_ID0);
+    SET_FLAG(M, MTE1, EVENT_ID1);
+
+    for (uint64_t loop_idx = core_idx; loop_idx < core_loop; loop_idx += num_core) {
+        uint64_t batch_idx = loop_idx / (tdim.m * tdim.n);
+        MatCoord tidx{0};
+        GetBlockIdx(loop_idx, tidx);
+        uint64_t offset_a = 0, offset_b = 0, offset_a_next = 0, offset_b_next = 0;
+        uint64_t offset_c = batch_idx * m * n + tidx.m * m0 * n + tidx.n * n0;
+        uint64_t m_actual = (tidx.m == (tdim.m - 1)) ? (m - tidx.m * m0) : m0;
+        uint64_t n_actual = (tidx.n == (tdim.n - 1)) ? (n - tidx.n * n0) : n0;
+        uint64_t m_round = RoundUp<16>(m_actual);
+        uint64_t n_round = RoundUp<16>(n_actual);
+        uint64_t mn_max = m_round > n_round ? m_round : n_round;
+        uint64_t k_part_len = L0_PINGPONG_BUFFER_LEN / mn_max / CONST_16 * CONST_16;
+        uint64_t shuffle_k = en_shuffle_k ? (core_idx % tdim.k) : 0;
+        if (TA) {
+            offset_a = batch_idx * m * k + shuffle_k * k0 * m + tidx.m * m0;
+        } else {
+            offset_a = batch_idx * m * k + tidx.m * m0 * k + shuffle_k * k0;
+        }
+
+        if (TB) {
+            offset_b = batch_idx * k * n + tidx.n * n0 * k + shuffle_k * k0;
+        } else {
+            offset_b = batch_idx * k * n + shuffle_k * k0 * n + tidx.n * n0;
+        }
+
+        uint64_t k_actual = (shuffle_k == tdim.k - 1) ? k - shuffle_k * k0 : k0;
+        uint64_t k_round = (k_actual + CONST_16 - 1) / CONST_16 * CONST_16;
+
+        LocalTensor l1_buf_a = ping_flag ? l1_base_a : l1_base_a[L1_PINGPONG_BUFFER_LEN];
+        LocalTensor l1_buf_b = ping_flag ? l1_base_b : l1_base_b[L1_PINGPONG_BUFFER_LEN];
+        LocalTensor l0a_buf = ping_flag ? l0a_base : l0a_base[L0_PINGPONG_BUFFER_LEN];
+        LocalTensor l0b_buf = ping_flag ? l0b_base : l0b_base[L0_PINGPONG_BUFFER_LEN];
+        event_t event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+        if (loop_idx == core_idx) {
+            WAIT_FLAG(MTE1, MTE2, event_id);
+            // *** load matrix A to L1
+            if ((m == 1) || (m_actual == 1 && !TA)) {
+                CopyGmToCbuf(l1_buf_a,       // dst
+                             gm_a[offset_a], // src
+                             1,              // nTileActual
+                             16,             // nTileCeil
+                             1,              // nVal
+                             k_actual,       // kTileActual
+                             k_round,        // kTileCeil
+                             k);             // dVal
+            } else {
+                if (TA) {
+                    CopyGmToCbufNd2Nz(l1_buf_a,       // dst
+                                      gm_a[offset_a], // src
+                                      k_actual,       // nTileActual
+                                      k_round,        // nTileCeil
+                                      k,              // nVal
+                                      m_actual,       // dTileActual
+                                      m_round,        // dTileCeil
+                                      m);             // dVal
+                } else {
+                    CopyGmToCbufNd2Nz(l1_buf_a,       // dst
+                                      gm_a[offset_a], // src
+                                      m_actual,       // nTileActual
+                                      m_round,        // nTileCeil
+                                      m,              // nVal
+                                      k_actual,       // dTileActual
+                                      k_round,        // dTileCeil
+                                      k);             // dVal
+                }
+            }
+            SET_FLAG(MTE2, MTE1, event_id);
+            // *** load matrix B to L1
+            WAIT_FLAG(MTE1, MTE2, event_id + 2);
+            if (TB) {
+                CopyGmToCbufNd2Nz(l1_buf_b,       // dst
+                                  gm_b[offset_b], // src
+                                  n_actual,       // nTileActual
+                                  n_round,        // nTileCeil
+                                  n,              // nVal
+                                  k_actual,       // dTileActual
+                                  k_round,        // dTileCeil
+                                  k);             // dVal
+            } else {
+                CopyGmToCbufNd2Nz(l1_buf_b,       // dst
+                                  gm_b[offset_b], // src
+                                  k_actual,       // nTileActual
+                                  k_round,        // nTileCeil
+                                  k,              // nVal
+                                  n_actual,       // dTileActual
+                                  n_round,        // dTileCeil
+                                  n);             // dVal
+            }
+            SET_FLAG(MTE2, MTE1, event_id + 2);
+        }
+
+        for (tidx.k = 0; tidx.k < tdim.k; ++tidx.k) {
+            shuffle_k = en_shuffle_k ? (tidx.k + core_idx) % tdim.k : tidx.k;
+            uint64_t k_actual = (shuffle_k == (tdim.k - 1)) ? (k - shuffle_k * k0) : k0;
+            uint64_t k_round = (k_actual + CONST_16 - 1) / CONST_16 * CONST_16;
+            fdim.k = (k_actual + k_part_len - 1) / k_part_len;
+
+            LocalTensor l1_buf_a = ping_flag ? l1_base_a : l1_base_a[L1_PINGPONG_BUFFER_LEN];
+            LocalTensor l1_buf_b = ping_flag ? l1_base_b : l1_base_b[L1_PINGPONG_BUFFER_LEN];
+            auto event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+            if (tidx.k < tdim.k - 1) {
+                uint64_t shuffle_k_next = en_shuffle_k ? (core_idx + tidx.k + 1) % tdim.k : (tidx.k + 1);
+                if (TA) {
+                    offset_a_next = batch_idx * m * k + shuffle_k_next * k0 * m + tidx.m * m0;
+                } else {
+                    offset_a_next = batch_idx * m * k + tidx.m * m0 * k + shuffle_k_next * k0;
+                }
+
+                if (TB) {
+                    offset_b_next = batch_idx * k * n + tidx.n * n0 * k + shuffle_k_next * k0;
+                } else {
+                    offset_b_next = batch_idx * k * n + shuffle_k_next * k0 * n + tidx.n * n0;
+                }
+
+                uint64_t k_actual_next = (shuffle_k_next == (tdim.k - 1)) ? (k - shuffle_k_next * k0) : k0;
+                uint64_t k_round_next = (k_actual_next + CONST_16 - 1) / CONST_16 * CONST_16;
+
+                LocalTensor l1_buf_a_next = (1 - ping_flag) ? l1_base_a : l1_base_a[L1_PINGPONG_BUFFER_LEN];
+                LocalTensor l1_buf_b_next = (1 - ping_flag) ? l1_base_b : l1_base_b[L1_PINGPONG_BUFFER_LEN];
+                event_t event_id_next = (1 - ping_flag) ? EVENT_ID0 : EVENT_ID1;
+
+                WAIT_FLAG(MTE1, MTE2, event_id_next);
+                // *** load matrix A to L1
+                if ((m == 1) || (m_actual == 1 && !TA)) {
+                    CopyGmToCbuf(l1_buf_a_next,       // dst
+                                 gm_a[offset_a_next], // src
+                                 m_actual,            // nTileActual
+                                 m_round,             // nTileCeil
+                                 m,                   // nVal
+                                 k_actual_next,       // kTileActual
+                                 k_round_next,        // kTileCeil
+                                 k);                  // dVal
+                } else {
+                    if (TA) {
+                        CopyGmToCbufNd2Nz(l1_buf_a_next,       // dst
+                                          gm_a[offset_a_next], // src
+                                          k_actual_next,       // nTileActual
+                                          k_round_next,        // nTileCeil
+                                          k,                   // nVal
+                                          m_actual,            // dTileActual
+                                          m_round,             // dTileCeil
+                                          m);                  // dVal
+                    } else {
+                        CopyGmToCbufNd2Nz(l1_buf_a_next,       // dst
+                                          gm_a[offset_a_next], // src
+                                          m_actual,            // nTileActual
+                                          m_round,             // nTileCeil
+                                          m,                   // nVal
+                                          k_actual_next,       // dTileActual
+                                          k_round_next,        // dTileCeil
+                                          k);                  // dVal
+                    }
+                }
+                SET_FLAG(MTE2, MTE1, event_id_next);
+
+                // *** load matrix B to L1
+                WAIT_FLAG(MTE1, MTE2, event_id_next + 2);
+                if (TB) {
+                    CopyGmToCbufNd2Nz(l1_buf_b_next,       // dst
+                                      gm_b[offset_b_next], // src
+                                      n_actual,            // nTileActual
+                                      n_round,             // nTileCeil
+                                      n,                   // nVal
+                                      k_actual_next,       // dTileActual
+                                      k_round_next,        // dTileCeil
+                                      k);                  // dVal
+                } else {
+                    CopyGmToCbufNd2Nz(l1_buf_b_next,       // dst
+                                      gm_b[offset_b_next], // src
+                                      k_actual_next,       // nTileActual
+                                      k_round_next,        // nTileCeil
+                                      k,                   // nVal
+                                      n_actual,            // dTileActual
+                                      n_round,             // dTileCeil
+                                      n);                  // dVal
+                }
+                SET_FLAG(MTE2, MTE1, event_id_next + 2);
+            }
+
+            if (tidx.k == tdim.k - 1 && loop_idx + num_core < core_loop) {
+                uint64_t b_idx_next = (loop_idx + num_core) / tdim.n / tdim.m;
+                MatCoord tidx{0};
+                GetBlockIdx(loop_idx + num_core, tidx);
+                uint64_t shuffle_k_next = en_shuffle_k ? (core_idx % tdim.k) : 0;
+                uint64_t m_actual_next = (tidx.m == (tdim.m - 1)) ? (m - tidx.m * m0) : m0;
+                uint64_t n_actual_next = (tidx.n == (tdim.n - 1)) ? (n - tidx.n * n0) : n0;
+                uint64_t m_round_next = (m_actual_next + CONST_16 - 1) / CONST_16 * CONST_16;
+                uint64_t n_round_next = (n_actual_next + CONST_16 - 1) / CONST_16 * CONST_16;
+                uint64_t k_actual_next = (shuffle_k_next == (tdim.k - 1)) ? (k - shuffle_k_next * k0) : k0;
+                uint64_t k_round_next = (k_actual_next + CONST_16 - 1) / CONST_16 * CONST_16;
+                if (TA) {
+                    offset_a_next = b_idx_next * m * k + shuffle_k_next * k0 * m + tidx.m * m0;
+                } else {
+                    offset_a_next = b_idx_next * m * k + tidx.m * m0 * k + shuffle_k_next * k0;
+                }
+                if (TB) {
+                    offset_b_next = b_idx_next * k * n + tidx.n * n0 * k + shuffle_k_next * k0;
+                } else {
+                    offset_b_next = b_idx_next * k * n + shuffle_k_next * k0 * n + tidx.n * n0;
+                }
+
+                LocalTensor l1_buf_a_next = (1 - ping_flag) ? l1_base_a : l1_base_a[L1_PINGPONG_BUFFER_LEN];
+                LocalTensor l1_buf_b_next = (1 - ping_flag) ? l1_base_b : l1_base_b[L1_PINGPONG_BUFFER_LEN];
+                event_t event_id_next = (1 - ping_flag) ? EVENT_ID0 : EVENT_ID1;
+
+                WAIT_FLAG(MTE1, MTE2, event_id_next);
+                // *** load matrix A to L1
+                if (m == 1 || m_actual_next == 1 && !TA) {
+                    CopyGmToCbuf(l1_buf_a_next,       // dst
+                                 gm_a[offset_a_next], // src
+                                 m_actual_next,       // nTileActual
+                                 m_round_next,        // nTileCeil
+                                 m,                   // nVal
+                                 k_actual_next,       // kTileActual
+                                 k_round_next,        // kTileCeil
+                                 k);                  // dVal
+                } else {
+                    if (TA) {
+                        CopyGmToCbufNd2Nz(l1_buf_a_next,       // dst
+                                          gm_a[offset_a_next], // src
+                                          k_actual_next,       // nTileActual
+                                          k_round_next,        // nTileCeil
+                                          k,                   // nVal
+                                          m_actual_next,       // dTileActual
+                                          m_round_next,        // dTileCeil
+                                          m);                  // dVal
+                    } else {
+                        CopyGmToCbufNd2Nz(l1_buf_a_next,       // dst
+                                          gm_a[offset_a_next], // src
+                                          m_actual_next,       // nTileActual
+                                          m_round_next,        // nTileCeil
+                                          m,                   // nVal
+                                          k_actual_next,       // dTileActual
+                                          k_round_next,        // dTileCeil
+                                          k);                  // dVal
+                    }
+                }
+                SET_FLAG(MTE2, MTE1, event_id_next);
+
+                // *** load matrix B to L1
+                WAIT_FLAG(MTE1, MTE2, event_id_next + 2);
+                if (TB) {
+                    CopyGmToCbufNd2Nz(l1_buf_b_next,       // dst
+                                      gm_b[offset_b_next], // src
+                                      n_actual_next,       // nTileActual
+                                      n_round_next,        // nTileCeil
+                                      n,                   // nVal
+                                      k_actual_next,       // dTileActual
+                                      k_round_next,        // dTileCeil
+                                      k);                  // dVal
+                } else {
+                    CopyGmToCbufNd2Nz(l1_buf_b_next,       // dst
+                                      gm_b[offset_b_next], // src
+                                      k_actual_next,       // nTileActual
+                                      k_round_next,        // nTileCeil
+                                      k,                   // nVal
+                                      n_actual_next,       // dTileActual
+                                      n_round_next,        // dTileCeil
+                                      n);                  // dVal
+                }
+                SET_FLAG(MTE2, MTE1, event_id_next + 2);
+            }
+
+            MatCoord fidx{0};
+            for (fidx.k = 0; fidx.k < fdim.k; ++fidx.k) {
+                uint32_t k0_round = (fidx.k < fdim.k - 1) ? k_part_len : k_round - fidx.k * k_part_len;
+                uint32_t k0_actual = (fidx.k < fdim.k - 1) ? k_part_len : k_actual - fidx.k * k_part_len;
+
+                auto mte1_mad_ping_flag = 1 - fidx.k % 2;
+                auto mte1_mad_event_id = mte1_mad_ping_flag ? EVENT_ID0 : EVENT_ID1;
+                auto l0a_buf = l0a_base[(fidx.k % 2) * L0_PINGPONG_BUFFER_LEN];
+                auto l0b_buf = l0b_base[(fidx.k % 2) * L0_PINGPONG_BUFFER_LEN];
+
+                // *** load matrix A from L1 to L0A
+                if (fidx.k == 0) {
+                    WAIT_FLAG(MTE2, MTE1, event_id);
+                }
+                WAIT_FLAG(M, MTE1, mte1_mad_event_id);
+                if ((m == 1) || (m_actual == 1 && !TA)) {
+                    l1_to_l0_a<ArchType::ASCEND_V220, InDtype, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                        l0a_buf,                       // dst
+                        l1_buf_a[fidx.k * k_part_len], // src
+                        0,                             // mTileCeil
+                        CeilDiv<CONST_256>(k0_round),  // kPartCeil
+                        0,                             // mSrcStride
+                        1,                             // kSrcStride
+                        0,                             // mDstStride
+                        0);                            // kDstStride
+                } else {
+                    if (TA) {
+                        LoadCbufToCaNz2Zz(l0a_buf,                                  // l0Tensor
+                                          l1_buf_a[fidx.k * k_part_len * CONST_16], // l1Tensor
+                                          m_round,                                  // mTileCeil
+                                          k0_round,                                 // kPartCeil
+                                          k_round / CONST_16,                       // mSrcStride
+                                          1,                                        // kSrcStride
+                                          k0_round / CONST_16,                      // mDstStride
+                                          1);                                       // kDstStride
+                    } else {
+                        LoadCbufToCaNz2Zz(l0a_buf,                                 // l0Tensor
+                                          l1_buf_a[fidx.k * k_part_len * m_round], // l1Tensor
+                                          m_round,                                 // mTileCeil
+                                          k0_round,                                // kPartCeil
+                                          1,                                       // mSrcStride
+                                          m_round / CONST_16,                      // kSrcStride
+                                          k0_round / CONST_16,                     // mDstStride
+                                          1);                                      // kDstStride
+                    }
+                }
+                if (fidx.k == fdim.k - 1) {
+                    SET_FLAG(MTE1, MTE2, event_id);
+                }
+
+                // *** load matrix B from L1 to L0B
+                if (fidx.k == 0) {
+                    WAIT_FLAG(MTE2, MTE1, event_id + 2);
+                }
+                if (TB) {
+                    LoadCbufToCbNz2Zn(l0b_buf,                                 // l0Tensor
+                                      l1_buf_b[fidx.k * k_part_len * n_round], // l1Tensor
+                                      n_round,                                 // nTileCeil
+                                      k0_round,                                // kPartCeil
+                                      1,                                       // nSrcStride
+                                      n_round / CONST_16,                      // kSrcStride
+                                      1,                                       // nDstStride
+                                      k0_round / CONST_16);                    // kDstStride
+                } else {
+                    LoadCbufToCbNz2Zn(l0b_buf,                                  // l0Tensor
+                                      l1_buf_b[fidx.k * k_part_len * CONST_16], // l1Tensor
+                                      n_round,                                  // nTileCeil
+                                      k0_round,                                 // kPartCeil
+                                      k_round / CONST_16,                       // nSrcStride
+                                      1,                                        // kSrcStride
+                                      1,                                        // nDstStride
+                                      n_round / CONST_16);                      // kDstStride
+                }
+                if (fidx.k == fdim.k - 1) {
+                    SET_FLAG(MTE1, MTE2, event_id + 2);
+                }
+
+                SET_FLAG(MTE1, M, mte1_mad_event_id);
+                WAIT_FLAG(MTE1, M, mte1_mad_event_id);
+
+                bool init_c = (tidx.k == 0 && fidx.k == 0);
+                if (init_c) {
+                    WAIT_FLAG(FIX, M, EVENT_ID0);
+                }
+
+                if (m != 1 && m_actual == 1 && TA) {
+                    Mad(l0c_buf,   // c
+                        l0a_buf,   // a
+                        l0b_buf,   // b
+                        CONST_16,  // mTileActual
+                        n_actual,  // nTileActual
+                        k0_actual, // kTileActual
+                        init_c);   // initC
+                } else {
+                    Mad(l0c_buf,   // c
+                        l0a_buf,   // a
+                        l0b_buf,   // b
+                        m_actual,  // mTileActual
+                        n_actual,  // nTileActual
+                        k0_actual, // kTileActual
+                        init_c);   // initC
+                }
+
+                PIPE_BARRIER(M);
+                SET_FLAG(M, MTE1, mte1_mad_event_id);
+            }
+
+            ping_flag = 1 - ping_flag;
+        }
+
+        SET_FLAG(M, FIX, EVENT_ID0);
+        WAIT_FLAG(M, FIX, EVENT_ID0);
+
+        // copy from L0C to gm
+        CopyCcToGm(gm_workspace[offset_c], // dst
+                   l0c_buf,                // src
+                   m_actual,               // mTileActual
+                   n_actual,               // nTileActual
+                   m_round,                // mTileCeil
+                   n);                     // nActual
+        SET_FLAG(FIX, M, EVENT_ID0);
+        FftsCrossCoreSync<FIX, INTRA_BLOCK_SYNC>(AIC_WRITE_PRODUCT);
+        if (++cv_sync_cnt >= MAX_HW_SYNC_COUNTER) {
+            WaitFlagDev(VC_REV_SYNC_FLAG);
+            cv_sync_cnt -= MAX_HW_SYNC_COUNTER;
+        }
+    }
+
+    WAIT_FLAG(M, MTE1, EVENT_ID0);
+    WAIT_FLAG(M, MTE1, EVENT_ID1);
+    WAIT_FLAG(MTE1, MTE2, EVENT_ID0);
+    WAIT_FLAG(MTE1, MTE2, EVENT_ID1);
+    WAIT_FLAG(MTE1, MTE2, EVENT_ID2);
+    WAIT_FLAG(MTE1, MTE2, EVENT_ID3);
+    WAIT_FLAG(FIX, M, EVENT_ID0);
+    PIPE_BARRIER(ALL);
+#endif
+}
+
+template <uint32_t SwizzleDirect, bool TA, bool TB, typename InDtype, typename OutDtype, typename AccumDtype>
+__aicore__ __force_inline__ void PpMatmulAccumMix<SwizzleDirect, TA, TB, InDtype, OutDtype, AccumDtype>::RunVector()
+{
+#ifdef __DAV_C220_VEC__
+    using CopyGmToUbufAlign = gm_to_ub_align<ArchType::ASCEND_V220, AccumDtype>;
+    using CopyUbufToGmAlign = ub_to_gm_align<ArchType::ASCEND_V220, AccumDtype>;
+    SET_FLAG(MTE3, MTE2, EVENT_ID0);
+    for (uint64_t loop_idx = core_idx; loop_idx < core_loop; loop_idx += num_core) {
+        uint64_t batch_idx = loop_idx / (tdim.m * tdim.n);
+        MatCoord tidx{0};
+        GetBlockIdx(loop_idx, tidx);
+        uint64_t m_actual = (tidx.m == (tdim.m - 1)) ? (m - tidx.m * m0) : m0;
+        uint64_t n_actual = (tidx.n == (tdim.n - 1)) ? (n - tidx.n * n0) : n0;
+        uint64_t sub_m0 = (m_actual + 1) / 2;
+        uint64_t sub_m_actual = (sub_core_idx == 0) ? sub_m0 : (m_actual - sub_m0);
+        uint64_t offset_c = batch_idx * m * n + tidx.m * m0 * n + tidx.n * n0 + sub_core_idx * sub_m0 * n;
+        uint64_t numel = sub_m_actual * n_actual;
+        uint64_t count = CeilDiv<VEC_ITER_NUMEL>(numel);
+        if (sub_m_actual != 0) {
+            WAIT_FLAG(MTE3, MTE2, EVENT_ID0);
+            CopyGmToUbufAlign(ub_c,                                // dst
+                              gm_c[offset_c],                      // src
+                              0,                                   // sid
+                              sub_m_actual,                        // nBurst
+                              n_actual * sizeof(AccumDtype),       // lenBurst
+                              0,                                   // leftPaddingNum
+                              0,                                   // rightPaddingNum
+                              (n - n_actual) * sizeof(AccumDtype), // srcGap
+                              0);                                  // dstGap
+            SET_FLAG(MTE2, V, EVENT_ID0);
+        }
+        WaitFlagDev(AIC_WRITE_PRODUCT);
+        if (++cv_sync_cnt >= MAX_HW_SYNC_COUNTER) {
+            FftsCrossCoreSync<PIPE_MTE2, INTRA_BLOCK_SYNC>(VC_REV_SYNC_FLAG);
+            cv_sync_cnt -= MAX_HW_SYNC_COUNTER;
+        }
+        if (sub_m_actual != 0) {
+            CopyGmToUbufAlign(ub_prod,                             // dst
+                              gm_workspace[offset_c],              // src
+                              0,                                   // sid
+                              sub_m_actual,                        // nBurst
+                              n_actual * sizeof(AccumDtype),       // lenBurst
+                              0,                                   // leftPaddingNum
+                              0,                                   // rightPaddingNum
+                              (n - n_actual) * sizeof(AccumDtype), // srcGap
+                              0);                                  // dstGap
+            SET_FLAG(MTE2, V, EVENT_ID1);
+            WAIT_FLAG(MTE2, V, EVENT_ID1);
+            WAIT_FLAG(MTE2, V, EVENT_ID0);
+            for (int i = 0; i < count; ++i) {
+                add_v<ArchType::ASCEND_V220, AccumDtype>(ub_c[i * VEC_ITER_NUMEL],    // dst
+                                                         ub_c[i * VEC_ITER_NUMEL],    // src0
+                                                         ub_prod[i * VEC_ITER_NUMEL], // src1
+                                                         VEC_ITER_REPEAT,             // repeat
+                                                         1,                           // dstBlockStride
+                                                         1,                           // src0BlockStride
+                                                         1,                           // src1BlockStride
+                                                         8,                           // dstRepeatStride
+                                                         8,                           // src0RepeatStride
+                                                         8);                          // src1RepeatStride
+            }
+
+            SET_FLAG(V, MTE3, EVENT_ID0);
+            WAIT_FLAG(V, MTE3, EVENT_ID0);
+            CopyUbufToGmAlign(gm_c[offset_c],                     // dst
+                              ub_c,                               // src
+                              0,                                  // sid
+                              sub_m_actual,                       // nBurst
+                              n_actual * sizeof(OutDtype),        // lenBurst
+                              0,                                  // leftPaddingNum
+                              0,                                  // rightPaddingNum
+                              0,                                  // srcGap
+                              (n - n_actual) * sizeof(OutDtype)); // dstGap
+            SET_FLAG(MTE3, MTE2, EVENT_ID0);
+        }
+    }
+    WAIT_FLAG(MTE3, MTE2, EVENT_ID0);
+    PIPE_BARRIER(ALL);
+#endif
+}
+
+extern "C" __global__ __aicore__ void pp_matmul_accum_mix(__gm__ uint8_t *__restrict__ gm_ffts_addr,
+                                                          __gm__ uint8_t *__restrict__ gm_a,
+                                                          __gm__ uint8_t *__restrict__ gm_b,
+                                                          __gm__ uint8_t *__restrict__ gm_c,
+                                                          __gm__ uint8_t *__restrict__ gm_placeholder,
+                                                          __gm__ uint8_t *__restrict__ gm_workspace,
+                                                          __gm__ uint8_t *__restrict__ gm_tiling_data)
+{
+    PpMatmulAccumMix<0, false, false, half, float, float>
+        matmul_000001; // swizzleDir[0] transA[0] transB[0] DtypeA[001]
+    PpMatmulAccumMix<1, false, false, half, float, float>
+        matmul_100001;                                                  // swizzleDir[1] transA[0] transB[0] DtypeA[001]
+    PpMatmulAccumMix<0, true, false, half, float, float> matmul_010001; // swizzleDir[0] transA[1] transB[0] DtypeA[001]
+    PpMatmulAccumMix<1, true, false, half, float, float> matmul_110001; // swizzleDir[1] transA[1] transB[0] DtypeA[001]
+    PpMatmulAccumMix<0, false, true, half, float, float> matmul_001001; // swizzleDir[0] transA[0] transB[1] DtypeA[001]
+    PpMatmulAccumMix<1, false, true, half, float, float> matmul_101001; // swizzleDir[1] transA[0] transB[1] DtypeA[001]
+    PpMatmulAccumMix<0, true, true, half, float, float> matmul_011001;  // swizzleDir[0] transA[1] transB[1] DtypeA[001]
+    PpMatmulAccumMix<1, true, true, half, float, float> matmul_111001;  // swizzleDir[1] transA[1] transB[1] DtypeA[001]
+
+    PpMatmulAccumMix<0, false, false, __bf16, float, float>
+        matmul_000010; // swizzleDir[0] transA[0] transB[0] DtypeA[010]
+    PpMatmulAccumMix<1, false, false, __bf16, float, float>
+        matmul_100010; // swizzleDir[1] transA[0] transB[0] DtypeA[010]
+    PpMatmulAccumMix<0, true, false, __bf16, float, float>
+        matmul_010010; // swizzleDir[0] transA[1] transB[0] DtypeA[010]
+    PpMatmulAccumMix<1, true, false, __bf16, float, float>
+        matmul_110010; // swizzleDir[1] transA[1] transB[0] DtypeA[010]
+    PpMatmulAccumMix<0, false, true, __bf16, float, float>
+        matmul_001010; // swizzleDir[0] transA[0] transB[1] DtypeA[010]
+    PpMatmulAccumMix<1, false, true, __bf16, float, float>
+        matmul_101010; // swizzleDir[1] transA[0] transB[1] DtypeA[010]
+    PpMatmulAccumMix<0, true, true, __bf16, float, float>
+        matmul_011010; // swizzleDir[0] transA[1] transB[1] DtypeA[010]
+    PpMatmulAccumMix<1, true, true, __bf16, float, float>
+        matmul_111010; // swizzleDir[1] transA[1] transB[1] DtypeA[010]
+
+    SetFftsBaseAddr((uint64_t)gm_ffts_addr);
+    SetAtomicnone();
+#ifdef __DAV_C220_VEC__
+    AscendC::SetMaskNorm();
+    SetVectorMask<uint8_t>((uint64_t)-1, (uint64_t)-1);
+#endif
+#ifdef __DAV_C220_CUBE__
+    SetPadding<uint64_t>(0);
+    SetNdpara(1, 0, 0);
+#endif
+    auto tiling_data = reinterpret_cast<__gm__ AsdOps::PpMatmulTilingData *>(gm_tiling_data);
+    uint32_t masked_key = tiling_data->tilingKey >> 10;
+
+    switch (masked_key) {
+        case 0b000001: // SwizzleDir[0] TransA[0] TransB[0] DtypeA[001]
+            matmul_000001.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_000001.RunVector();
+            matmul_000001.RunCube();
+            break;
+        case 0b010001: // swizzleDir[0] transA[1] transB[0]
+            matmul_010001.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_010001.RunVector();
+            matmul_010001.RunCube();
+            break;
+        case 0b001001: // swizzleDir[0] transA[0] transB[1]
+            matmul_001001.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_001001.RunVector();
+            matmul_001001.RunCube();
+            break;
+        case 0b011001: // swizzleDir[0] transA[1] transB[1]
+            matmul_011001.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_011001.RunVector();
+            matmul_011001.RunCube();
+            break;
+        case 0b100001: // swizzleDir[1] transA[0] transB[0]
+            matmul_100001.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_100001.RunVector();
+            matmul_100001.RunCube();
+            break;
+        case 0b110001: // swizzleDir[1] transA[1] transB[0]
+            matmul_110001.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_110001.RunVector();
+            matmul_110001.RunCube();
+            break;
+        case 0b101001: // swizzleDir[1] transA[0] transB[1]
+            matmul_101001.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_101001.RunVector();
+            matmul_101001.RunCube();
+            break;
+        case 0b111001: // swizzleDir[1] transA[1] transB[1]
+            matmul_111001.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_111001.RunVector();
+            matmul_111001.RunCube();
+            break;
+        case 0b000010: // SwizzleDir[0] TransA[0] TransB[0] DtypeA[001]
+            matmul_000010.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_000010.RunVector();
+            matmul_000010.RunCube();
+            break;
+        case 0b010010: // swizzleDir[0] transA[1] transB[0]
+            matmul_010010.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_010010.RunVector();
+            matmul_010010.RunCube();
+            break;
+        case 0b001010: // swizzleDir[0] transA[0] transB[1]
+            matmul_001010.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_001010.RunVector();
+            matmul_001010.RunCube();
+            break;
+        case 0b011010: // swizzleDir[0] transA[1] transB[1]
+            matmul_011010.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_011010.RunVector();
+            matmul_011010.RunCube();
+            break;
+        case 0b100010: // swizzleDir[1] transA[0] transB[0]
+            matmul_100010.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_100010.RunVector();
+            matmul_100010.RunCube();
+            break;
+        case 0b110010: // swizzleDir[1] transA[1] transB[0]
+            matmul_110010.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_110010.RunVector();
+            matmul_110010.RunCube();
+            break;
+        case 0b101010: // swizzleDir[1] transA[0] transB[1]
+            matmul_101010.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_101010.RunVector();
+            matmul_101010.RunCube();
+            break;
+        case 0b111010: // swizzleDir[1] transA[1] transB[1]
+            matmul_111010.Init(gm_a, gm_b, gm_c, gm_workspace, gm_tiling_data);
+            matmul_111010.RunVector();
+            matmul_111010.RunCube();
+            break;
+        default: break;
+    }
+}

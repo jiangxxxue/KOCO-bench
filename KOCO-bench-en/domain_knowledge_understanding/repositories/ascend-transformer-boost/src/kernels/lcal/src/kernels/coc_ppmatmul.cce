@@ -1,0 +1,1471 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#ifndef __PP_MATMUL__
+#define __PP_MATMUL__
+#include "coc_internal.cce"
+#include "lcoc_workspace.h"
+template <typename T_INPUT>
+struct GetAccumType {
+    using T = float;
+};
+
+template <>
+struct GetAccumType<int8_t> {
+    using T = int32_t;
+};
+
+#ifdef __DAV_C220_CUBE__
+
+constexpr int32_t L0AB_PINGPONG_BUFFER_SIZE = 32768;             // 32 KB
+constexpr int32_t CUBE_MATRIX_SIZE_B16 = 256;                    // 16 * 16
+constexpr int32_t CUBE_MATRIX_SIZE_B8 = 16 * 32;                 // 16 * 32
+constexpr int64_t ND2NZ_STRIDE_LIMIT = 65536;
+constexpr int32_t SCALE_L1_SIZE = 256 * 8;                       // 2 KB
+
+template<typename T>
+inline __aicore__ void CopyCubfToBt(uint64_t dst, __cbuf__ T *src, uint16_t convControl, uint16_t nBurst, uint16_t lenBurst, uint16_t sourceGap, uint16_t dstGap)
+{
+    DataCopyParams intriParams(nBurst, lenBurst, sourceGap, dstGap);
+    uint32_t src_buffer_offset = reinterpret_cast<uint64_t>(src);
+    uint32_t dst_buffer_offset = reinterpret_cast<uint64_t>(dst);
+    uint8_t src_logicpos = static_cast<uint8_t>(TPosition::C1);     // L1
+    uint8_t dst_logicpos = static_cast<uint8_t>(TPosition::C2);     // Bias
+    LocalTensor<T> srcTensor;
+    LocalTensor<T> dstTensor;
+    srcTensor = CreateLocalTensor<T>(src_buffer_offset, src_logicpos);
+    dstTensor = CreateLocalTensor<T>(dst_buffer_offset, dst_logicpos);
+    DataCopy(dstTensor, srcTensor, intriParams);
+}
+
+template<typename T>
+inline __aicore__ void CopyGmToCbuf(__cbuf__ T *dst, __gm__ T *src, uint8_t sid, uint16_t nBurst, uint16_t lenBurst, uint16_t srcStride, uint16_t dstStride, pad_t padMode)
+{
+    DataCopyParams intriParams(nBurst, lenBurst, srcStride, dstStride);
+    GlobalTensor<T> srcTensor;
+    srcTensor.SetGlobalBuffer(src);
+    uint32_t dst_buffer_offset = reinterpret_cast<uint64_t>(dst);
+    uint8_t logicpos = static_cast<uint8_t>(TPosition::C1);     // L1
+    LocalTensor<T> dstTensor;
+    dstTensor = CreateLocalTensor<T>(dst_buffer_offset, logicpos);
+    DataCopy(dstTensor, srcTensor, intriParams);
+}
+
+
+template<typename T>
+inline __aicore__ void SetFpc(__fbuf__ T *src)
+{
+    LocalTensor<T> tensor;
+    uint32_t src_buffer_offset = reinterpret_cast<uint64_t>(src);
+    tensor = CreateLocalTensor<T>(src_buffer_offset);
+    SetFixPipeConfig(tensor);
+}
+
+
+template<typename T>
+inline __aicore__ void LoadCbufToCaTranspose(__ca__ T *dst, __cbuf__ T *src, uint16_t indexID, uint8_t repeat, uint16_t srcStride, uint16_t dstStride, bool addrmode, uint16_t dstFracStride)
+{
+    LoadData2dTransposeParams params(
+        indexID,
+        repeat,
+        srcStride,
+        dstStride,
+        dstFracStride,
+        addrmode
+    );
+    uint32_t src_buffer_offset = reinterpret_cast<uint64_t>(src);
+    uint32_t dst_buffer_offset = reinterpret_cast<uint64_t>(dst);
+    uint8_t src_logicpos = static_cast<uint8_t>(TPosition::C1);     // L1
+    uint8_t dst_logicpos = static_cast<uint8_t>(TPosition::A2);     // L0A
+    LocalTensor<T> srcTensor;
+    LocalTensor<T> dstTensor;
+    srcTensor = CreateLocalTensor<T>(src_buffer_offset, src_logicpos);
+    dstTensor = CreateLocalTensor<T>(dst_buffer_offset, dst_logicpos);
+    LoadDataWithTranspose(dstTensor, srcTensor, params);
+}
+
+template<typename T>
+inline __aicore__ void LoadCbufToCbTranspose(__cb__ T *dst, __cbuf__ T *src, uint16_t indexID, uint8_t repeat, uint16_t srcStride, uint16_t dstStride, bool addrmode, uint16_t dstFracStride)
+{
+    LoadData2dTransposeParams params(
+        indexID,
+        repeat,
+        srcStride,
+        dstStride,
+        dstFracStride,
+        addrmode
+    );
+    uint32_t src_buffer_offset = reinterpret_cast<uint64_t>(src);
+    uint32_t dst_buffer_offset = reinterpret_cast<uint64_t>(dst);
+    uint8_t src_logicpos = static_cast<uint8_t>(TPosition::C1);     // L1
+    uint8_t dst_logicpos = static_cast<uint8_t>(TPosition::B2);     // L0A
+    LocalTensor<T> srcTensor;
+    LocalTensor<T> dstTensor;
+    srcTensor = CreateLocalTensor<T>(src_buffer_offset, src_logicpos);
+    dstTensor = CreateLocalTensor<T>(dst_buffer_offset, dst_logicpos);
+    LoadDataWithTranspose(dstTensor, srcTensor, params);
+}
+
+template<typename T>
+inline __aicore__ void LoadCbufToCa(__ca__ T *dst, __cbuf__ T *src, uint16_t baseIdx, uint8_t repeat, uint16_t srcStride, uint16_t dstStride, uint8_t sid, bool transpose, uint8_t addr_cal_mode)
+{
+    LoadData2dParams params(
+        baseIdx,
+        repeat,
+        srcStride,
+        sid,
+        dstStride,
+        transpose,
+        addr_cal_mode
+    );
+    uint32_t src_buffer_offset = reinterpret_cast<uint64_t>(src);
+    uint32_t dst_buffer_offset = reinterpret_cast<uint64_t>(dst);
+    uint8_t src_logicpos = static_cast<uint8_t>(TPosition::C1);     // L1
+    uint8_t dst_logicpos = static_cast<uint8_t>(TPosition::A2);     // L0A
+    LocalTensor<T> srcTensor;
+    LocalTensor<T> dstTensor;
+    srcTensor = CreateLocalTensor<T>(src_buffer_offset, src_logicpos);
+    dstTensor = CreateLocalTensor<T>(dst_buffer_offset, dst_logicpos);
+    LoadData(dstTensor, srcTensor, params);
+}
+
+
+template<typename T>
+inline __aicore__ void LoadCbufToCb(__cb__ T *dst, __cbuf__ T *src, uint16_t baseIdx, uint8_t repeat, uint16_t srcStride, uint16_t dstStride, uint8_t sid, bool transpose, uint8_t addr_cal_mode)
+{
+    LoadData2dParams params(
+        baseIdx,
+        repeat,
+        srcStride,
+        sid,
+        dstStride,
+        transpose,
+        addr_cal_mode
+    );
+    uint32_t src_buffer_offset = reinterpret_cast<uint64_t>(src);
+    uint32_t dst_buffer_offset = reinterpret_cast<uint64_t>(dst);
+    uint8_t src_logicpos = static_cast<uint8_t>(TPosition::C1);     // L1
+    uint8_t dst_logicpos = static_cast<uint8_t>(TPosition::B2);     // L0B
+    LocalTensor<T> srcTensor;
+    LocalTensor<T> dstTensor;
+    srcTensor = CreateLocalTensor<T>(src_buffer_offset, src_logicpos);
+    dstTensor = CreateLocalTensor<T>(dst_buffer_offset, dst_logicpos);
+    LoadData(dstTensor, srcTensor, params);
+}
+
+template<typename T>
+struct IntrinsicCopyGmToL1Nd2Nz {
+    static inline __aicore__ void move(
+        __cbuf__ T *dst, __gm__ T *src,
+        uint8_t sid, uint16_t ndNum, uint16_t nValue, uint16_t dValue,
+        uint16_t srcNdMatrixStride, uint16_t srcDValue, uint16_t dstNzC0Stride,
+        uint16_t dstNzNStride, uint16_t dstNzMatrixStride) {
+        Nd2NzParams nd2nzParams(
+            ndNum, nValue, dValue,
+            srcNdMatrixStride, srcDValue, dstNzC0Stride,
+            dstNzNStride, dstNzMatrixStride
+        );
+        uint32_t dst_buffer_offset = reinterpret_cast<uint64_t>(dst);
+        uint8_t dst_logicpos = static_cast<uint8_t>(TPosition::C1);
+        LocalTensor<T> dstTensor;
+        dstTensor = CreateLocalTensor<T>(dst_buffer_offset, dst_logicpos);
+        GlobalTensor<T> srcTensor;
+        srcTensor.SetGlobalBuffer(src);
+        DataCopy(dstTensor, srcTensor, nd2nzParams);
+    }
+};
+
+
+
+template <typename T>
+struct CopyGmToL1Nd2zN {
+    static inline __aicore__ void move(
+            __cbuf__ T *dst, __gm__ T *src,
+            uint16_t nValue, uint16_t dValue, uint32_t srcDValue, uint16_t dstNzC0Stride) {
+        constexpr int BLOCK_LEN = 32 / sizeof(T);
+        if (srcDValue < ND2NZ_STRIDE_LIMIT) {
+            IntrinsicCopyGmToL1Nd2Nz<T>::move(
+                dst,
+                src,
+                0,                  // sid
+                1,                  // ndNum
+                nValue,             // nValue
+                dValue,             // dValue
+                0,                  // srcNdMatrixStride, unused
+                srcDValue,          // srcDValue
+                dstNzC0Stride,      // dstNzC0Stride
+                1,                  // dstNzNStride,
+                0                   // dstNzMatrixStride, unused
+            );
+        } else {
+            for (int i = 0; i < nValue; i++) {
+                IntrinsicCopyGmToL1Nd2Nz<T>::move(
+                    dst + i * BLOCK_LEN,
+                    src + i * srcDValue,
+                    0,              // sid
+                    1,              // ndNum
+                    1,              // nValue
+                    dValue,         // dValue
+                    0,              // srcNdMatrixStride, unused
+                    0,              // srcDValue, unused
+                    dstNzC0Stride,  // dstNzC0Stride
+                    0,              // dstNzNStride, unused
+                    0               // dstNzMatrixStride, unused
+                );
+            }
+        }
+    }
+};
+
+template<uint32_t RUN_TYPE, typename MmadDtype, typename OutDtype, bool TA, bool TB>
+class PpMatmul {
+    using T_ACCUM = typename GetAccumType<MmadDtype>::T;
+    static constexpr bool IS_INT8 = std::is_same<MmadDtype, int8_t>::value;
+public:
+    __aicore__ explicit PpMatmul() {};
+
+    inline __aicore__ void SetArgs(PP_MATMUL_AIC_ARGS_FUN(MmadDtype, OutDtype))
+    {
+        this->gm_c = reinterpret_cast<__gm__ OutDtype *>(gm_c);
+        this->gm_peer_mem = reinterpret_cast<__gm__ OutDtype *>(gm_peer_mem);
+        this->gm_dequant_scale = reinterpret_cast<__gm__ int64_t *>(gm_dequant_scale);
+        has_offset = gm_dequant_offset != nullptr;
+
+
+        this->batch_size = batch_size;
+        this->m = m;
+        this->k = k;
+        this->n = n;
+        this->weight_nz = weight_nz;
+
+        cube_matrix_size = IS_INT8 ? CUBE_MATRIX_SIZE_B8 : CUBE_MATRIX_SIZE_B16;
+
+        m_align = Block512B<MmadDtype>::AlignUp(m);
+        k_align = Block512B<MmadDtype>::AlignUp(k);
+        n_align = Block512B<MmadDtype>::AlignUp(n);
+
+        this->m0 = m0;
+        this->k0 = k0;
+        this->n0 = n0;
+
+        this->dequant_granularity = dequant_granularity;
+
+        AlignJudge(TA, TB, m, k, n, m_align, k_align, n_align, aligned_a, aligned_b);
+        bool has_a_align = IsQuant(quant_granularity) || aligned_a;
+        bool has_b_align = IsQuant(dequant_granularity) && !IS_INT8 || aligned_b;
+        if (weight_nz) {
+            //k_align16 = Block32B<MmadDtype>::AlignUp(k);
+            k_align16 = (k + 16 - 1) / 16 * 16;
+            n_align16 = Block32B<MmadDtype>::AlignUp(n);
+            aligned_b = 0;  // dont' do padding for nz weight
+            has_b_align = false;
+        }
+        bool has_accum = IsQuant(dequant_granularity) && IS_INT8 && std::is_same<OutDtype, bfloat16_t>::value;
+        bool has_format_dequant_offset = (dequant_granularity == QuantGranularity::PER_TENSOR) && IS_INT8 && has_offset;
+        // if allgather, workspace *= rank size
+        int32_t accum_rank_size = 1;
+        if (RUN_TYPE == PPMATMUL_RUN_ALL_GATHER_MATMUL) {
+            accum_rank_size = rank_size;
+        }
+        int32_t is_moe_averaged = 0;
+        int32_t is_alltoallvc = 0;
+
+        if (num_local_tokens_per_expert == nullptr && num_global_tokens_per_local_expert == nullptr && 
+            global_tokens_per_expert_matrix == nullptr){
+            is_moe_averaged = 1;
+        } else if(global_tokens_per_expert_matrix != nullptr) {
+            is_alltoallvc = 1;
+        } else {
+            is_alltoallvc = 0;
+        }
+        bool has_dequant_param = (dequant_granularity == QuantGranularity::PER_TOKEN || dequant_granularity == QuantGranularity::PER_TENSOR);
+        bool hasFormatDequantScale = (dequant_granularity == QuantGranularity::PER_CHANNEL);
+
+        workspace_info = GetLcalWorkspaceInfo(gm_workspace, batch_size, m, k, n, m_align, k_align, n_align,
+            TA, TB, sizeof(MmadDtype), has_a_align, has_b_align, accum_rank_size, has_accum, 0, has_dequant_param, 
+            hasFormatDequantScale,is_deterministic, is_moe, is_alltoallvc, EP, local_expert_nums, maxOutputSize);
+
+        gm_a_src = reinterpret_cast<__gm__ MmadDtype *>(has_a_align ? workspace_info.gm_a_align : gm_a);
+        gm_b_src = reinterpret_cast<__gm__ MmadDtype *>(has_b_align ? workspace_info.gm_b_align : gm_b);
+        gm_accum = reinterpret_cast<__gm__ int32_t *>(workspace_info.gm_accum);
+        gm_format_dequant_offset = reinterpret_cast<__gm__ int32_t *>(has_format_dequant_offset ?
+                workspace_info.gm_dequant_param : gm_dequant_offset);
+
+        block_size = 32 / sizeof(MmadDtype);
+
+        L1_PINGPONG_BUFFER_LEN = ((m0 * k0 + cube_matrix_size - 1) / cube_matrix_size * cube_matrix_size +
+                        (n0 * k0 + cube_matrix_size - 1) / cube_matrix_size * cube_matrix_size) * (IS_INT8 ? 2 : 1);
+        L0AB_PINGPONG_BUFFER_LEN = L0AB_PINGPONG_BUFFER_SIZE / sizeof(MmadDtype);
+
+        int32_t a_l1_size = m0 * k0 * sizeof(MmadDtype);
+        int32_t a_l1_size_round = DivCeil(a_l1_size, 512) * 512;
+        int32_t b_l1_size = n0 * k0 * sizeof(MmadDtype);
+        int32_t b_l1_size_round = DivCeil(b_l1_size, 512) * 512;
+        l1_base_a = reinterpret_cast<__cbuf__ MmadDtype *>((uintptr_t)(IS_INT8 ? SCALE_L1_SIZE : 0));
+        l1_base_b = reinterpret_cast<__cbuf__ MmadDtype *>(a_l1_size_round * (IS_INT8 ? 2 : 1) + (uintptr_t) l1_base_a);
+
+        core_num = get_block_num();
+        core_idx = get_block_idx();
+
+        this->m_loop = m_loop;
+        this->k_loop = k_loop;
+        this->n_loop = n_loop;
+        this->core_loop = core_loop;
+        this->swizzl_count = swizzl_count;
+        this->swizzl_direct = swizzl_direct;
+        this->is_91093 = is_91093;
+        ping_flag = 1;
+        this->rank = rank;
+        this->rank_size = rank_size;
+        this->p_value = p_value;
+        this->withSerialMode = withSerialMode;
+        loop_num_per_comm = p_value * core_num;
+        this->buffer_size = buffer_size;
+
+        // 2dtp 确定本卡的ag和rs分别的idx
+        this->ag_dim = ag_dim;
+        this->rs_dim = rs_dim;
+        this->inner_dim_is_Ag = inner_dim_is_Ag;
+        if (inner_dim_is_Ag) {
+            this->ag_rank_idx = rank % ag_dim;
+            this->rs_rank_idx = rank / ag_dim;
+        }else {
+            this->ag_rank_idx = rank / rs_dim;
+            this->rs_rank_idx = rank % rs_dim;
+        }
+    }
+
+    inline __aicore__ void CalLoop(int64_t batch_idx, int64_t m_idx, int64_t n_idx, int32_t m_actual, int32_t n_actual,
+                                    __gm__ MmadDtype *gm_a_src_tmp) {
+        int64_t offset_a, offset_b, offset_a_next, offset_b_next;
+        int32_t m_round, n_round;
+        if (IS_INT8) {
+            // directive Restrictions
+            if (TA) {
+                m_round = DivCeil(m_actual, BLOCK_SIZE_32) * BLOCK_SIZE_32;
+            } else {
+                m_round = DivCeil(m_actual, BLOCK_SIZE_16) * BLOCK_SIZE_16;
+            }
+            if (TB) {
+                n_round = DivCeil(n_actual, BLOCK_SIZE_16) * BLOCK_SIZE_16;
+            } else {
+                n_round = DivCeil(n_actual, BLOCK_SIZE_32) * BLOCK_SIZE_32;
+            }
+        } else {
+            m_round = DivCeil(m_actual, BLOCK_SIZE_16) * BLOCK_SIZE_16;
+            n_round = DivCeil(n_actual, BLOCK_SIZE_16) * BLOCK_SIZE_16;
+        }
+
+        int32_t mn_max = m_round > n_round ? m_round : n_round;
+        int32_t k_part_len = L0AB_PINGPONG_BUFFER_LEN / mn_max / block_size * block_size;
+        if (TA) {
+            if (aligned_a == 1) {
+                offset_a = batch_idx * k * m_align + m_idx * m0;
+            } else {
+                offset_a = batch_idx * k * m + m_idx * m0;
+            }
+        } else {
+            if (aligned_a == 1) {
+                offset_a = batch_idx * m * k_align + m_idx * m0 * k_align;
+            } else {
+                offset_a = batch_idx * m * k + m_idx * m0 * k;
+            }
+        }
+        if (TB) {
+            if (aligned_b == 1) {
+                offset_b = n_idx * n0 * k_align;
+            } else {
+                if (weight_nz) {
+                    offset_b = n_idx * n0 * block_size;
+                } else {
+                    offset_b = n_idx * n0 * k;
+                }
+            }
+        } else {
+            if (aligned_b == 1) {
+                offset_b = n_idx * n0;
+            } else {
+                if (weight_nz) {
+                    offset_b = n_idx * n0 * k_align16;
+                } else {
+                    offset_b = n_idx * n0;
+                }
+            }
+        }
+        int64_t dequant_param_offset = n_idx * n0;
+
+        int32_t k_actual = (k_loop == 1) ? k : k0;
+        int32_t k_round = DivCeil(k_actual, block_size) * block_size; // int8 ：32 fp16 ：16
+
+        auto l1_buf_a = ping_flag ? l1_base_a : l1_base_a + L1_PINGPONG_BUFFER_LEN;
+        auto l1_buf_b = ping_flag ? l1_base_b : l1_base_b + L1_PINGPONG_BUFFER_LEN;
+        auto l0a_buf = ping_flag ? l0a_base : l0a_base + L0AB_PINGPONG_BUFFER_LEN;
+        auto l0b_buf = ping_flag ? l0b_base : l0b_base + L0AB_PINGPONG_BUFFER_LEN;
+        auto event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+        if (IS_INT8 && has_offset) {
+            PipeBarrier<PIPE_MTE2>();
+            IntrinsicCopyGmToL1Nd2Nz<int32_t>::move(
+                ((__cbuf__ int32_t *)bias_l1),
+                ((__gm__ int32_t *)gm_format_dequant_offset) + dequant_param_offset,
+                0,           // sid
+                1,           // ndNum
+                1,           // nValue
+                n_actual,    // dValue
+                0,           // srcNdMatrixStride, unused
+                n,           // srcDValue
+                1,          // dstNzC0Stride
+                1,           // dstNzNStride
+                0            // dstNzMatrixStride, unused
+            );
+            SetFlag<HardEvent::MTE2_MTE1>(EVENT_ID0);
+            WaitFlag<HardEvent::MTE2_MTE1>(EVENT_ID0);
+            WaitFlag<HardEvent::FIX_MTE1>(EVENT_ID1);       // int8需要wait MTE1等FIX
+            CopyCubfToBt(((uint64_t)bias_bt), ((__cbuf__ int32_t *)bias_l1),
+                            (uint16_t)0ULL, 1, (n_actual * 4 + 63) / 64, 0, 0);
+            SetFlag<HardEvent::FIX_MTE2>(EVENT_ID1); // bias ready, mte2 can begin move A/B or scalar
+            SetFlag<HardEvent::FIX_M>(EVENT_ID1); // bias ready, mmad can begin
+            WaitFlag<HardEvent::FIX_MTE2>(EVENT_ID1); // A/B or scalar wait moving bias from L1 to BT
+        }
+
+        auto gm_src_a = gm_a_src_tmp + offset_a;
+        auto gm_src_b = gm_b_src + offset_b;
+
+        WaitFlag<HardEvent::MTE1_MTE2>(event_id);
+        // *** load matrix A to L1
+        if (m == 1 || m_actual == 1 && !TA) {
+            CopyGmToCbuf(
+                l1_buf_a,
+                gm_src_a,
+                0,             // sid
+                1,             // nBurst
+                k_round / block_size,  // lenBurst
+                0,             // srcGap
+                0,             // dstGap
+                PAD_NONE       // padMode
+            );
+        } else {
+            if (TA) {
+                auto src_len = m;
+                if (aligned_a == 1) {
+                    src_len = m_align;
+                }
+                CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_a, gm_src_a, k_actual, m_actual, src_len, k_round);
+            } else {
+                auto src_len = k;
+                if (aligned_a == 1) {
+                    src_len = k_align;
+                }
+                CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_a, gm_src_a, m_actual, k_actual, src_len, m_round);
+            }
+        }
+        SetFlag<HardEvent::MTE2_MTE1>(event_id);
+
+        // *** load matrix B to L1
+        WaitFlag<HardEvent::MTE1_MTE2>(event_id + 2);
+        if (TB) {
+            auto src_len = k;
+            if (aligned_b == 1) {
+                src_len = k_align;
+            }
+            if (weight_nz) {
+                int32_t num_col = DivCeil(k_actual, block_size);
+                CopyGmToCbuf(l1_buf_b, gm_src_b, 0, num_col, n_actual, n_align16 - n_actual, n_round - n_actual, PAD_NONE);
+            } else {
+                CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_b, gm_src_b, n_actual, k_actual, src_len, n_round);
+            }
+        } else {
+            auto src_len = n;
+            if (aligned_b == 1) {
+                src_len = n_align;
+            }
+            if (weight_nz) {
+                int32_t num_col = DivCeil(n_actual, block_size);
+                CopyGmToCbuf(l1_buf_b, gm_src_b, 0, num_col, k_actual, k_align16 - k_actual, k_round - k_actual, PAD_NONE);
+            } else {
+                CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_b, gm_src_b, k_actual, n_actual, src_len, k_round);
+            }
+        }
+        SetFlag<HardEvent::MTE2_MTE1>(event_id + 2);
+
+        int mte1_mad_ping_flag = 1;
+
+        for (int64_t k_idx = 0; k_idx < k_loop; k_idx++) {
+
+            int32_t k_actual = (k_idx == (k_loop - 1)) ? (k - k_idx * k0) : k0;
+            int32_t k_round = DivCeil(k_actual, block_size) * block_size;
+            int32_t k_part_loop = DivCeil(k_actual, k_part_len);
+
+            __cbuf__ MmadDtype *l1_buf_a = ping_flag ? l1_base_a : l1_base_a + L1_PINGPONG_BUFFER_LEN;
+            __cbuf__ MmadDtype *l1_buf_b = ping_flag ? l1_base_b : l1_base_b + L1_PINGPONG_BUFFER_LEN;
+            auto event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+            if (k_idx < k_loop - 1) {
+                if (TA) {
+                    if (aligned_a == 1) {
+                        offset_a_next = batch_idx * k * m_align + (k_idx + 1) * k0 * m_align + m_idx * m0;
+                    } else {
+                        offset_a_next = batch_idx * k * m + (k_idx + 1) * k0 * m + m_idx * m0;
+                    }
+                } else {
+                    if (aligned_a == 1) {
+                        offset_a_next = batch_idx * m * k_align + m_idx * m0 * k_align + (k_idx + 1) * k0;
+                    } else {
+                        offset_a_next = batch_idx * m * k + m_idx * m0 * k + (k_idx + 1) * k0;
+                    }
+                }
+                if (TB) {
+                    if (aligned_b == 1) {
+                        offset_b_next = batch_idx * n * k_align + n_idx * n0 * k_align + (k_idx + 1) * k0;
+                    } else {
+                        if (weight_nz) {
+                            offset_b_next = batch_idx * n * k + (k_idx + 1) * k0 * n_align16 + n_idx * n0 * block_size;
+                        } else {
+                            offset_b_next = batch_idx * n * k + n_idx * n0 * k + (k_idx + 1) * k0;
+                        }
+                    }
+                } else {
+                    if (aligned_b == 1) {
+                        offset_b_next = batch_idx * k * n_align + (k_idx + 1) * k0 * n_align + n_idx * n0;
+                    } else {
+                        if (weight_nz) {
+                            offset_b_next = batch_idx * k * n + (k_idx + 1) * k0 * block_size + n_idx * n0 * k_align16;
+                        } else {
+                            offset_b_next = batch_idx * k * n + (k_idx + 1) * k0 * n + n_idx * n0;
+                       }
+                    }
+                }
+
+                int32_t k_actual_next = ((k_idx + 1) == (k_loop - 1)) ? (k - (k_idx + 1) * k0) : k0;
+                int32_t k_round_next = DivCeil(k_actual_next, block_size) * block_size;
+
+                __cbuf__ MmadDtype *l1_buf_a_next = (1 - ping_flag) ? l1_base_a : l1_base_a + L1_PINGPONG_BUFFER_LEN;
+                __cbuf__ MmadDtype *l1_buf_b_next = (1 - ping_flag) ? l1_base_b : l1_base_b + L1_PINGPONG_BUFFER_LEN;
+                auto event_id_next = (1 - ping_flag) ? EVENT_ID0 : EVENT_ID1;
+
+                auto gm_src_a = gm_a_src_tmp + offset_a_next;
+                auto gm_src_b = gm_b_src + offset_b_next;
+
+                WaitFlag<HardEvent::MTE1_MTE2>(event_id_next);
+                // *** load matrix A to L1
+                if (m == 1 || m_actual == 1 && !TA) {
+                    CopyGmToCbuf(
+                        l1_buf_a_next,
+                        gm_src_a,
+                        0,                          // sid
+                        1,                          // nBurst
+                        k_round_next / block_size,  // lenBurst
+                        0,                          // srcGap
+                        0,                          // dstGap
+                        PAD_NONE                    // padMode
+                    );
+                } else {
+                    if (TA) {
+                        auto src_len = m;
+                        if (aligned_a == 1) {
+                            src_len = m_align;
+                        }
+                        CopyGmToL1Nd2zN<MmadDtype>::move(
+                                l1_buf_a_next, gm_src_a, k_actual_next, m_actual, src_len, k_round_next);
+                    } else {
+                        auto src_len = k;
+                        if (aligned_a == 1) {
+                            src_len = k_align;
+                        }
+                        CopyGmToL1Nd2zN<MmadDtype>::move(
+                                l1_buf_a_next, gm_src_a, m_actual, k_actual_next, src_len, m_round);
+                    }
+                }
+                SetFlag<HardEvent::MTE2_MTE1>(event_id_next);
+
+                // *** load matrix B to L1
+                WaitFlag<HardEvent::MTE1_MTE2>(event_id_next + 2);
+                if (TB) {
+                    auto src_len = k;
+                    if (aligned_b == 1) {
+                        src_len = k_align;
+                    }
+                    if (weight_nz) {
+                        int32_t num_col = DivCeil(k_actual_next, block_size);
+                        CopyGmToCbuf(l1_buf_b_next, gm_src_b, 0, num_col, n_actual, n_align16 - n_actual, n_round - n_actual, PAD_NONE);
+                    } else {
+                        CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_b_next, gm_src_b, n_actual, k_actual_next, src_len, n_round);
+                    }
+                } else {
+                    auto src_len = n;
+                    if (aligned_b == 1) {
+                        src_len = n_align;
+                    }
+                    if (weight_nz) {
+                        int32_t num_col = DivCeil(n_actual, block_size);
+                        CopyGmToCbuf(l1_buf_b_next, gm_src_b, 0, num_col, k_actual_next, k_align16 - k_actual_next, k_round_next - k_actual_next, PAD_NONE);
+                    } else {
+                        CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_b_next, gm_src_b, k_actual_next, n_actual, src_len, k_round_next);
+                    }
+                }
+                SetFlag<HardEvent::MTE2_MTE1>(event_id_next + 2);
+            }
+
+            for (int k_part_idx = 0; k_part_idx < k_part_loop; k_part_idx++) {
+                int32_t k0_round = (k_part_idx < k_part_loop - 1) ?
+                    k_part_len : k_round - k_part_idx * k_part_len;
+                int32_t k0_actual = (k_part_idx < k_part_loop - 1) ?
+                    k_part_len : k_actual - k_part_idx * k_part_len;
+
+                auto mte1_mad_event_id = mte1_mad_ping_flag ? EVENT_ID0 : EVENT_ID1;
+                auto l0a_buf = l0a_base + (1 - mte1_mad_ping_flag) * L0AB_PINGPONG_BUFFER_LEN;
+                auto l0b_buf = l0b_base + (1 - mte1_mad_ping_flag) * L0AB_PINGPONG_BUFFER_LEN;
+
+                // *** load matrix A from L1 to L0A
+                if (k_part_idx == 0) {
+                    WaitFlag<HardEvent::MTE2_MTE1>(event_id);
+                }
+                WaitFlag<HardEvent::M_MTE1>(mte1_mad_event_id);
+                if (m == 1 || m_actual == 1 && !TA) {
+                    LoadCbufToCa(
+                            l0a_buf,
+                            l1_buf_a + k_part_idx * k_part_len,
+                            0,                                                    // baseIdx
+                            DivCeil(k0_round, cube_matrix_size), // repeat
+                            1,                                                    // srcStride
+                            0,                                                    // dstStride
+                            0,                                                    // sid
+                            false,                                                // transpose
+                            inc                                                   // addr_cal_mode_t
+                    );
+                } else {
+                    if (TA) {
+                        if (IS_INT8) {
+                            for (int i = 0; i < m_round / BLOCK_SIZE_32; i++) {
+                                LoadCbufToCaTranspose(
+                                    l0a_buf + i * k0_round * BLOCK_SIZE_32,
+                                    l1_buf_a + k_part_idx * k_part_len * BLOCK_SIZE_32 +
+                                        i * k_round * BLOCK_SIZE_32,
+                                    0,   // baseIdx
+                                    k0_round / BLOCK_SIZE_32,  // repeat
+                                    1,   // srcStride
+                                    0,   // dstStride
+                                    0,   // addrmode
+                                    k0_round / BLOCK_SIZE_32 - 1 // dstFracStride
+                                );
+                            }
+                        } else {
+                            for (int i = 0; i < m_round / BLOCK_SIZE_16; i++) {
+                                LoadCbufToCa(
+                                        l0a_buf + i * k0_round * BLOCK_SIZE_16,
+                                        l1_buf_a + k_part_idx * k_part_len * BLOCK_SIZE_16 +
+                                            i * k_round * BLOCK_SIZE_16,
+                                        0,                                      // baseIdx
+                                        k0_round / BLOCK_SIZE_16,                  // repeat
+                                        1,                                      // srcStride
+                                        0,                                      // dstStride
+                                        0,                                      // sid
+                                        true,                                   // transpose
+                                        inc                                     // addr_cal_mode_t
+                                );
+                            }
+                        }
+                    } else {
+                        for (int32_t i = 0; i < k0_round / block_size; i++) {
+                            LoadCbufToCa(
+                                l0a_buf + i * cube_matrix_size,
+                                l1_buf_a + k_part_idx * k_part_len * m_round +
+                                    i * m_round * block_size,
+                                0,                          // baseIdx
+                                m_round / BLOCK_SIZE_16,    // repeat
+                                1,                          // srcStride
+                                k0_round / block_size - 1,  // dstStride
+                                0,                      // sid
+                                false,                  // transpose
+                                inc                     // addr_cal_mode_t
+                            );
+                        }
+                    }
+                }
+                if (k_part_idx == k_part_loop - 1) {
+                    SetFlag<HardEvent::MTE1_MTE2>(event_id);
+                }
+
+                // *** load matrix B from L1 to L0B
+                if (k_part_idx == 0) {
+                    WaitFlag<HardEvent::MTE2_MTE1>(event_id + 2);
+                }
+                if (TB) {
+                    LoadCbufToCb(
+                            l0b_buf,
+                            l1_buf_b + k_part_idx * k_part_len * n_round,
+                            0,                                      // baseIdx
+                            k0_round * n_round / cube_matrix_size,  // repeat
+                            1,                                      // srcStride
+                            0,                                      // dstStride
+                            0,                                      // sid
+                            false,                                  // transpose
+                            inc                                     // addr_cal_mode_t
+                    );
+                } else {
+                    if (IS_INT8) {
+                        for (int32_t i = 0; i < k0_round / BLOCK_SIZE_32; i++) {
+                            LoadCbufToCbTranspose(
+                                l0b_buf + i * ((n_actual + 15) / 16 * 16) * BLOCK_SIZE_32,
+                                l1_buf_b + (k_part_idx * k_part_len + i * BLOCK_SIZE_32) * BLOCK_SIZE_32,
+                                0,   // baseIdx
+                                n_round / BLOCK_SIZE_32,  // repeat
+                                k_round  / BLOCK_SIZE_32,   // srcStride
+                                1,   // dstStride
+                                0,   // addrmode
+                                0    // dstFracStride
+                            );
+                        }
+                    } else {
+                        for (int32_t i = 0; i < k0_round / BLOCK_SIZE_16; i++) {
+                            LoadCbufToCb(
+                                    l0b_buf + i * n_round * BLOCK_SIZE_16,
+                                    l1_buf_b + (k_part_idx * k_part_len + i * BLOCK_SIZE_16) * BLOCK_SIZE_16,
+                                    0,                              // baseIdx
+                                    n_round / BLOCK_SIZE_16,           // repeat
+                                    k_round / BLOCK_SIZE_16,           // srcStride
+                                    0,                              // dstStride
+                                    0,                              // sid
+                                    true,                           // transpose
+                                    inc                             // addr_cal_mode_t
+                            );
+                        }
+                    }
+                }
+                if (k_part_idx == k_part_loop - 1) {
+                    SetFlag<HardEvent::MTE1_MTE2>(event_id + 2);
+                }
+
+                SetFlag<HardEvent::MTE1_M>(mte1_mad_event_id);
+                WaitFlag<HardEvent::MTE1_M>(mte1_mad_event_id);
+
+                bool init_c = (k_idx == 0 && k_part_idx == 0);
+                if (init_c) {
+                    WaitFlag<HardEvent::FIX_M>(EVENT_ID0);
+                }
+
+                if (IS_INT8 && has_offset) {
+                    if (init_c) {
+                        WaitFlag<HardEvent::FIX_M>(EVENT_ID1); // wait move bias fron L1 to BT
+                    }
+                    PipeBarrier<PIPE_M>();
+                    if (m != 1 && m_actual == 1 && TA) {
+                        mad((__cc__ int32_t *)l0c_buf,
+                            (__ca__ int8_t *)l0a_buf,
+                            (__cb__ int8_t *)l0b_buf,
+                            ((uint64_t)bias_bt),
+                            16,                       // m
+                            k0_actual,                      // k
+                            n_actual,                       // n
+                            0,                              // unitFlag
+                            0,                              // kDirectionAlign
+                            init_c,                         // cmatrixSource add C from BT
+                            0                              // cmatrixInitVal
+                        );
+                    } else {
+                        mad((__cc__ int32_t *)l0c_buf,
+                            (__ca__ int8_t *)l0a_buf,
+                            (__cb__ int8_t *)l0b_buf,
+                            ((uint64_t)bias_bt),
+                            m_actual,                       // m
+                            k0_actual,                      // k
+                            n_actual,                       // n
+                            0,                              // unitFlag
+                            0,                              // kDirectionAlign
+                            init_c,                         // cmatrixSource add C from BT
+                            0                              // cmatrixInitVal
+                        );
+                    }
+                } else {
+                    PipeBarrier<PIPE_M>();
+                    if (m != 1 && m_actual == 1 && TA) {
+                        mad(l0c_buf,
+                            l0a_buf,
+                            l0b_buf,
+                            16,                             // m
+                            k0_actual,                      // k
+                            n_actual,                       // n
+                            0,                      // unitFlag
+                            0,                              // kDirectionAlign
+                            0,                              // cmatrixSource
+                            init_c                          // cmatrixInitVal
+                        );
+                    } else {
+                        mad(l0c_buf,
+                            l0a_buf,
+                            l0b_buf,
+                            m_actual,                       // m
+                            k0_actual,                      // k
+                            n_actual,                       // n
+                            0,                      // unitFlag
+                            0,                              // kDirectionAlign
+                            0,                              // cmatrixSource
+                            init_c                          // cmatrixInitVal
+                        );
+                    }
+                }
+                PipeBarrier<PIPE_M>();
+                SetFlag<HardEvent::M_MTE1>(mte1_mad_event_id);
+
+                mte1_mad_ping_flag = 1 - mte1_mad_ping_flag;
+            }
+            ping_flag = 1 - ping_flag;
+        }
+
+
+        if (IS_INT8 && std::is_same<OutDtype, half>::value && (dequant_granularity == QuantGranularity::PER_CHANNEL ||
+            dequant_granularity == QuantGranularity::PER_TOKEN)) {
+            WaitFlag<HardEvent::FIX_MTE2>(EVENT_ID0);
+            PipeBarrier<PIPE_MTE2>();
+            CopyGmToCbuf(
+                scale_l1,
+                gm_dequant_scale + dequant_param_offset,
+                0,
+                1,
+                (n_actual * sizeof(int64_t) + 31) / 32,
+                0,
+                0,
+                PAD_NONE
+            );
+            SetFlag<HardEvent::MTE2_FIX>(EVENT_ID0);
+
+            WaitFlag<HardEvent::MTE2_FIX>(EVENT_ID0);
+
+            copy_cbuf_to_fbuf(
+                scale_FB,
+                scale_l1,
+                1,
+                (n_actual * sizeof(int64_t) + 127) / 128,
+                0,
+                0
+            );
+            PipeBarrier<PIPE_FIX>();
+        }
+    }
+
+    inline __aicore__ void MoveL0CToGM(__gm__ OutDtype *gm_dst, int64_t offset_c, int32_t m_actual, int32_t n_actual, int32_t src_stride, int32_t dst_stride) {
+        #if (__CCE_AICORE__ == 220)
+        FixpipeParamsV220 FixpipeParams(
+            n_actual,           //        nSize = nSizeIn;
+            m_actual,           //        mSize = mSizeIn;
+            src_stride,         //        srcStride = srcStrideIn;
+            dst_stride,         //        dstStride = dstStrideIn;
+            false               //        reluEn = reluEnIn;
+        );
+        #elif (defined(__DAV_C310__))
+        FixpipeParamsC310 FixpipeParams(
+            n_actual,           //        nSize = nSizeIn;
+            m_actual,           //        mSize = mSizeIn;
+            src_stride,         //        srcStride = srcStrideIn;
+            dst_stride         //        dstStride = dstStrideIn;
+        );
+        #endif
+        uint64_t src_addr = reinterpret_cast<uint64_t>(l0c_buf);
+        LocalTensor<T_ACCUM> srcTensor = CreateLocalTensor<T_ACCUM>
+        (reinterpret_cast<uint64_t>(l0c_buf), static_cast<uint8_t>(TPosition::CO1));
+        GlobalTensor<OutDtype> dstTensor = CreateGlobalTensor<OutDtype>(gm_dst + offset_c);
+
+        if (IS_INT8) {
+            if constexpr (std::is_same<OutDtype, half>::value) {
+                if (dequant_granularity == QuantGranularity::PER_CHANNEL || dequant_granularity == QuantGranularity::PER_TOKEN) {
+                    SetFpc(scale_FB);
+                    FixpipeParams.quantPre = VDEQF16;
+                    Fixpipe<OutDtype, T_ACCUM, CFG_ROW_MAJOR>(dstTensor, srcTensor, FixpipeParams);
+                    SetFlag<HardEvent::FIX_MTE2>(EVENT_ID0);
+                } else if (dequant_granularity == QuantGranularity::PER_TENSOR) {
+                    FixpipeParams.quantPre = DEQF16;
+                    FixpipeParams.deqScalar = gm_dequant_scale[0];
+                    Fixpipe<OutDtype, T_ACCUM, CFG_ROW_MAJOR>(dstTensor, srcTensor, FixpipeParams);
+                }
+            } else if constexpr (std::is_same<OutDtype, bfloat16_t>::value) {
+                GlobalTensor<int32_t> dstAccum = CreateGlobalTensor<int32_t>(gm_accum + offset_c);
+                Fixpipe<int32_t, T_ACCUM, CFG_ROW_MAJOR>(dstAccum, srcTensor, FixpipeParams);
+            }
+        } else {
+            if constexpr (std::is_same<OutDtype, __bf16>::value) {
+                FixpipeParams.quantPre = F322BF16;
+                Fixpipe<OutDtype, T_ACCUM, CFG_ROW_MAJOR>(dstTensor, srcTensor, FixpipeParams);
+            } else {
+                FixpipeParams.quantPre = F322F16;
+                Fixpipe<OutDtype, T_ACCUM, CFG_ROW_MAJOR>(dstTensor, srcTensor, FixpipeParams);
+            }
+        }
+        SetFlag<HardEvent::FIX_M>(EVENT_ID0);
+        if (IS_INT8 && has_offset) {
+            SetFlag<HardEvent::FIX_MTE1>(EVENT_ID1);
+        }
+    }
+
+    inline __aicore__ void InitFlags() {
+        WaitEvent(AIC_WAIT_AIV_FINISH_ALIGN_FLAG_ID);
+        SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
+        SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID1);
+        SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID2);
+        SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID3);
+        SetFlag<HardEvent::FIX_M>(EVENT_ID0);
+        SetFlag<HardEvent::FIX_MTE2>(EVENT_ID0);
+        SetFlag<HardEvent::M_MTE1>(EVENT_ID0);
+        SetFlag<HardEvent::M_MTE1>(EVENT_ID1);
+        SetFlag<HardEvent::FIX_MTE1>(EVENT_ID1);    //
+    }
+
+    inline __aicore__ void Endflags() {
+        WaitFlag<HardEvent::FIX_MTE1>(EVENT_ID1);
+        WaitFlag<HardEvent::M_MTE1>(EVENT_ID0);
+        WaitFlag<HardEvent::M_MTE1>(EVENT_ID1);
+        WaitFlag<HardEvent::FIX_M>(EVENT_ID0);
+        WaitFlag<HardEvent::FIX_MTE2>(EVENT_ID0);
+        WaitFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
+        WaitFlag<HardEvent::MTE1_MTE2>(EVENT_ID1);
+        WaitFlag<HardEvent::MTE1_MTE2>(EVENT_ID2);
+        WaitFlag<HardEvent::MTE1_MTE2>(EVENT_ID3);
+    }
+
+    inline __aicore__ void RunPureMatmul() {
+
+        InitFlags();
+        for (int32_t loop_idx = 0; loop_idx < core_loop; loop_idx++) {
+            if (loop_idx % core_num != core_idx) {
+                continue;
+            }
+
+            int64_t batch_idx = loop_idx / (m_loop * n_loop);
+            int64_t m_idx, n_idx;
+            GetBlockIdx(loop_idx, m_loop, n_loop, swizzl_direct, swizzl_count, m_idx, n_idx);
+            int32_t m_actual = (m_idx == (m_loop - 1)) ? (m - m_idx * m0) : m0;
+            int32_t n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+            CalLoop(batch_idx, m_idx, n_idx, m_actual, n_actual, gm_a_src);
+
+            SetFlag<HardEvent::M_FIX>(EVENT_ID0);
+            WaitFlag<HardEvent::M_FIX>(EVENT_ID0);
+
+            int64_t offset_c = batch_idx * m * n + m_idx * m0 * n + n_idx * n0;
+            // copy from L0C to gm
+            MoveL0CToGM(gm_c, offset_c, m_actual, n_actual, (m_actual + 15) / 16 * 16, n);
+        }
+        Endflags();
+        PipeBarrier<PIPE_ALL>();
+
+        FFTSCrossCoreSync<PIPE_FIX>(0, AIC_FINISH_MATMUL_FLAG_ID);
+        WaitEvent(AIC_FINISH_MATMUL_FLAG_ID);
+
+        FFTSCrossCoreSync<PIPE_FIX>(2, AIV_WAIT_AIC_FINISH_MATMUL_FLAG_ID);
+        PipeBarrier<PIPE_ALL>();
+    }
+
+    inline __aicore__ void RunMatmulAllReduce() {
+        InitFlags();
+        int32_t comm_count = DivCeil(core_loop, loop_num_per_comm);
+        int32_t pipe_depth = is_91093 ? BLOCK_COUNT_4 : MAX_BLOCK_COUNT;
+        for (int32_t cal_idx = 0; cal_idx < comm_count; cal_idx++) {
+            int32_t loop_idx = cal_idx * core_num + core_idx;
+            int32_t flag_idx = cal_idx % pipe_depth;
+            if (cal_idx >= pipe_depth) {
+                WaitEvent(flag_idx);
+            }
+            int32_t actual_loop_num = loop_num_per_comm;
+            if (cal_idx == comm_count - 1){
+                actual_loop_num = core_loop - cal_idx * loop_num_per_comm;
+            }
+            for (int32_t p = 0; p < p_value; p++) {
+                int loop_idx = cal_idx * p_value * core_num + p * core_num + core_idx;
+                if (loop_idx >= core_loop)
+                    break;
+                int64_t batch_idx = loop_idx / (m_loop * n_loop);
+                int64_t m_idx, n_idx;
+                GetBlockIdx(loop_idx, m_loop, n_loop, swizzl_direct, swizzl_count, m_idx, n_idx);
+                int32_t m_actual = (m_idx == (m_loop - 1)) ? (m - m_idx * m0) : m0;
+                int32_t n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+                CalLoop(batch_idx, m_idx, n_idx, m_actual, n_actual, gm_a_src);
+
+                SetFlag<HardEvent::M_FIX>(EVENT_ID0);
+                WaitFlag<HardEvent::M_FIX>(EVENT_ID0);
+
+                int64_t offset_c;
+                int32_t n_stride;
+                // if constexpr (IS_INT8 && std::is_same<OutDtype, bfloat16_t>::value) {
+                //     offset_c = batch_idx * m * n + m_idx * m0 * n + n_idx * n0;
+                //     n_stride = n;
+                // } else {
+                offset_c = flag_idx * m0 * loop_num_per_comm * n0 +
+                        (loop_idx % loop_num_per_comm) * m0 * n0;
+                n_stride = n0;
+                //}
+                MoveL0CToGM(gm_peer_mem, offset_c, m_actual, n_actual, (m_actual + 15) / 16 * 16, n_stride);
+            }
+            FFTSCrossCoreSync<PIPE_FIX>(2, flag_idx);
+        }
+        Endflags();
+        PipeBarrier<PIPE_ALL>();
+    }
+
+    inline __aicore__ void RunMatmulReduceScatter() {
+        int32_t tail_m = (m / rank_size) % m0;
+        m_loop = m / rank_size / m0;
+        if (tail_m) {
+            m_loop += 1;
+        }
+        m_loop *= rank_size;
+        core_loop = batch_size * m_loop * n_loop;
+
+        InitFlags();
+
+        int32_t comm_num = DivCeil(core_loop, loop_num_per_comm);
+        // core_loop = batch_size * m_loop * n_loop = p_value * core_num * comm_num
+        int32_t m_loop_per_rank = m_loop / rank_size;
+        for (int32_t comm_idx = 0; comm_idx < comm_num; comm_idx++) {
+            int cur_p_value = p_value;
+            int32_t actual_loop_num = loop_num_per_comm;
+            int32_t flag_idx = is_91093 ? comm_idx % BLOCK_COUNT_3 : comm_idx % MAX_BLOCK_COUNT;
+            if (comm_idx == comm_num - 1) {
+                actual_loop_num = core_loop - comm_idx * loop_num_per_comm;
+            }
+            WaitEvent(flag_idx);
+            // core_num * p_value
+            for (int32_t p = 0; p < p_value; p++) {      // 每个core一次通信，计算了p_value次
+                int loop_idx = comm_idx * p_value * core_num + p * core_num + core_idx;
+                if (loop_idx >= core_loop)
+                    break;
+                int64_t batch_idx = loop_idx / (m_loop * n_loop);
+                int32_t in_batch_idx = loop_idx % (m_loop * n_loop);
+                int64_t rank_idx = in_batch_idx % rank_size;
+                int32_t in_rank_idx = in_batch_idx / rank_size;
+
+                int64_t m_idx, n_idx;
+                GetBlockIdx(in_rank_idx, m_loop_per_rank, n_loop, swizzl_direct, swizzl_count, m_idx, n_idx);
+
+                int32_t m_actual = (m_idx == (m_loop_per_rank - 1)) ? (m / rank_size - m_idx * m0) : m0;
+                int32_t n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+                __gm__ MmadDtype *gm_a_rank_st;
+                if (TA) {
+                    gm_a_rank_st = gm_a_src + rank_idx * m / rank_size;
+                } else {
+                    gm_a_rank_st = gm_a_src + rank_idx * m / rank_size * k_align;
+                }
+                CalLoop(batch_idx, m_idx, n_idx, m_actual, n_actual, gm_a_rank_st);
+
+                SetFlag<HardEvent::M_FIX>(EVENT_ID0);
+                WaitFlag<HardEvent::M_FIX>(EVENT_ID0);
+
+                int64_t offset_c;
+                int32_t dst_stride;
+                __gm__ OutDtype *gm_dst = nullptr;
+                if (rank_idx == rank && !(IS_INT8 && (dequant_granularity == QuantGranularity::PER_TOKEN|| std::is_same<OutDtype, bfloat16_t>::value))) {
+                    offset_c = batch_idx * m * n / rank_size + m_idx * m0 * n + n_idx * n0;
+                    gm_dst = gm_c;
+                    dst_stride = n;
+                } else {
+                    int64_t rank_offset_c = (loop_idx % rank_size) * (actual_loop_num / rank_size) * m0 * n0;
+                    offset_c = flag_idx * m0 * loop_num_per_comm * n0
+                    + rank_offset_c
+                    + ((loop_idx % loop_num_per_comm) / rank_size) * m0 * n0;
+                    gm_dst = gm_peer_mem;
+                    dst_stride = n0;
+                }
+                // copy from L0C to gm
+                MoveL0CToGM(gm_dst, offset_c, m_actual, n_actual, (m_actual + 15) / 16 * 16, dst_stride);
+            }
+            FFTSCrossCoreSync<PIPE_FIX>(2, flag_idx);
+        }
+
+        Endflags();
+        PipeBarrier<PIPE_ALL>();
+    }
+
+    inline __aicore__ void DoLocalMatmul() {
+        for (int32_t loop_idx = 0; loop_idx < core_loop; loop_idx++) {
+            if (loop_idx % core_num != core_idx) {
+                continue;
+            }
+            int64_t batch_idx = loop_idx / (m_loop * n_loop);
+
+            int64_t m_idx, n_idx;
+            GetBlockIdx(loop_idx, m_loop, n_loop, swizzl_direct, swizzl_count, m_idx, n_idx);
+
+            int32_t m_actual = (m_idx == (m_loop - 1)) ? (m - m_idx * m0) : m0;
+            int32_t n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+
+            CalLoop(batch_idx, m_idx, n_idx, m_actual, n_actual, gm_a_src);
+            SetFlag<HardEvent::M_FIX>(EVENT_ID0);
+            WaitFlag<HardEvent::M_FIX>(EVENT_ID0);
+
+            int64_t offset_c = batch_idx * m * n * rank_size + (rank * m + m_idx * m0) * n + n_idx * n0;
+            // copy from L0C to gm
+            MoveL0CToGM(gm_c, offset_c, m_actual, n_actual, (m_actual + 15) / 16 * 16, n);
+        }
+    }
+
+    inline __aicore__ void RunAllGatherMatmul() {
+        InitFlags();
+        // rank
+        // m_loop * n_loop
+        DoLocalMatmul();
+
+        int64_t gm_a_pingpong_size = m0 * k_align * p_value * rank_size;
+        int32_t comm_count = DivCeil(batch_size * m_loop, p_value);
+        for (int32_t comm_idx = 0; comm_idx < comm_count; comm_idx++) {
+            uint64_t flag_id = comm_idx % MAX_BLOCK_COUNT;
+            if (is_91093) {
+                flag_id = comm_idx % 3;
+            }
+            int32_t actual_p_value = p_value;
+            if (comm_idx == comm_count - 1) {
+                actual_p_value = m_loop - comm_idx * p_value;
+            }
+            WaitEvent(flag_id);
+
+            // other_rank, p_value * n_loop * (rank_size - 1)
+            int32_t actual_loop_num_in_other_rank = actual_p_value * (rank_size - 1) * n_loop;
+            for (int32_t loop_offset = 0; loop_offset < actual_loop_num_in_other_rank; loop_offset++) {
+                int32_t loop_idx = core_loop + comm_idx * p_value * n_loop * (rank_size - 1) + loop_offset;
+                if (loop_idx % core_num != core_idx) {
+                    continue;
+                }
+                int64_t batch_idx = loop_idx / (m_loop * n_loop * rank_size);
+
+                int64_t m_idx, n_idx;
+                GetBlockIdx(loop_offset, actual_p_value * (rank_size - 1), n_loop, swizzl_direct, swizzl_count, m_idx, n_idx);
+
+                int32_t m_idx_in_rank = m_idx % actual_p_value;
+                int64_t m_idx_in_c = comm_idx * p_value + m_idx_in_rank;
+                int32_t m_actual = (m_idx_in_c == (m_loop - 1)) ? (m - m_idx_in_c * m0) : m0;
+                int32_t n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+                int64_t rank_idx = m_idx / actual_p_value;
+                if (rank_idx >= rank) {
+                    rank_idx += 1;
+                }
+                __gm__ MmadDtype *gm_peer_mem_st = reinterpret_cast<__gm__ MmadDtype *>(gm_peer_mem)
+                        + flag_id * gm_a_pingpong_size
+                        + rank_idx * p_value * m0 * k_align;
+                CalLoop(batch_idx, m_idx_in_rank, n_idx, m_actual, n_actual, gm_peer_mem_st);
+                SetFlag<HardEvent::M_FIX>(EVENT_ID0);
+                WaitFlag<HardEvent::M_FIX>(EVENT_ID0);
+
+                int64_t offset_c = batch_idx * m * n * rank_size + (rank_idx * m + m_idx_in_c * m0) * n + n_idx * n0;
+                // copy from L0C to gm
+                MoveL0CToGM(gm_c, offset_c, m_actual, n_actual, (m_actual + 15) / 16 * 16, n);
+            }
+            FFTSCrossCoreSync<PIPE_FIX>(2, flag_id);
+        }
+        Endflags();
+        PipeBarrier<PIPE_ALL>();
+    }
+
+
+    // p_value的含义在RS和AG不一样：在RS中，每个core计算p_value次后通信一次；在AG中，每从其他rank各gather p_value行后计算一次
+    // 在2DTP中，p_value含义和AG一致。
+    inline __aicore__ void RunAllGatherMatmulReduceScatter() {
+            
+        InitFlags();
+        int32_t twod_big_dim = ag_dim > rs_dim ? ag_dim: rs_dim;
+        int64_t gm_a_pingpong_size = m0 * k_align * p_value * twod_big_dim;
+        int64_t gm_c_pingpong_size = p_value * twod_big_dim * n_loop * m0 * n0;
+        int32_t m_loop_per_bigdim = DivCeil(m_loop * ag_dim, twod_big_dim);
+        int64_t m_per_bigdim = m * ag_dim / twod_big_dim;
+        int32_t comm_count = DivCeil(batch_size * m_loop_per_bigdim, p_value);
+        int32_t loop_num_per_cal = p_value * n_loop * twod_big_dim;
+        int32_t ag_part_dim = twod_big_dim / ag_dim;
+        int32_t rs_part_dim = twod_big_dim / rs_dim;
+        for (int32_t comm_idx = 0; comm_idx < comm_count; comm_idx++){
+            uint64_t flag_id = comm_idx % MAX_BLOCK_COUNT;
+            int32_t actual_p_value = p_value;
+            if (comm_idx == comm_count - 1){
+                actual_p_value = m_loop_per_bigdim - comm_idx * p_value;
+            }
+            WaitEvent(flag_id);
+
+            int32_t actual_loop_num = actual_p_value * twod_big_dim * n_loop;
+            int32_t core_loop_num = DivCeil(actual_p_value * twod_big_dim * n_loop, core_num);
+            for (int32_t core_loop_idx = 0; core_loop_idx < core_loop_num; core_loop_idx++) {
+                int32_t loop_offset = core_loop_idx * core_num + core_idx;
+                if (loop_offset >= actual_loop_num) {
+                    continue;
+                }
+                int32_t loop_idx = comm_idx * loop_num_per_cal + loop_offset;
+                int64_t batch_idx = loop_idx / (m_loop * n_loop * twod_big_dim);
+
+                int64_t m_idx, n_idx;
+                GetBlockIdx(loop_offset, actual_p_value * twod_big_dim, n_loop, swizzl_direct, swizzl_count, m_idx, n_idx);
+
+                int32_t m_idx_in_rank = m_idx % actual_p_value;
+                int64_t m_idx_in_c = comm_idx * p_value + m_idx_in_rank;
+                int32_t m_actual = (m_idx_in_c == (m_loop_per_bigdim - 1)) ? (m_per_bigdim - m_idx_in_c * m0) : m0;
+                int32_t n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+                int64_t bigdim_idx = m_idx / actual_p_value;
+                // if bigdim=rs, ag_src_idx=bigdim_idx / (bigdim/agdim), ag_part_idx=bigdim_idx % (bigdim/agdim)
+                // 当rsdim>agdim时，ag会在每张卡拉ag_part_dim个块(每块是pvalue行)；
+                // 当前core从ag_src_idx卡拉第ag_part_idx个块
+                // 当rsdim<agdim时，RS在每张卡写入rs_part_dim个块，
+                // 当前core写的是rs_dst_idx卡的第rs_part_idx个块
+
+                int32_t ag_src_idx = bigdim_idx / ag_part_dim;
+                int32_t ag_part_idx = bigdim_idx % ag_part_dim;
+                int32_t rs_dst_idx = bigdim_idx / rs_part_dim;
+                int32_t rs_part_idx = bigdim_idx % rs_part_dim;
+
+                __gm__ MmadDtype *gm_mem_st;
+                if (ag_src_idx != ag_rank_idx){   // 从shared memory读取a
+                    gm_mem_st = reinterpret_cast<__gm__ MmadDtype *>(gm_peer_mem)
+                        + (comm_idx % MAX_BLOCK_COUNT) * gm_a_pingpong_size
+                        + bigdim_idx * p_value * m0 * k_align;
+                }else {
+                    gm_mem_st = gm_a_src + (comm_idx * p_value) * m0 * k_align + ag_part_idx * m_per_bigdim * k_align;
+                    // comm_idx * p_value决定每块内部的位置；ag_part_idx * m_per_bigdim决定第几块
+                }
+
+                CalLoop(batch_idx, m_idx_in_rank, n_idx, m_actual, n_actual, gm_mem_st);
+                SetFlag<HardEvent::M_FIX>(EVENT_ID0);
+                WaitFlag<HardEvent::M_FIX>(EVENT_ID0);
+
+                int64_t offset_c;
+                int64_t dst_stride;
+                __gm__ OutDtype *gm_dst = nullptr;
+
+                // 每张卡最终大小为m * ag_dim / rs_dim
+                if (rs_dst_idx != rs_rank_idx){      // 需要RS，写到本卡的shared mem
+                    offset_c = gm_c_pingpong_size * (comm_idx % MAX_BLOCK_COUNT)
+                    + (m_idx * n_loop + n_idx) * m0 * n0
+                    + LCAL_2DTP_C_OFFSET;
+                    gm_dst = gm_peer_mem;
+                    dst_stride = n0;
+                }else {                              // 无需RS，写到本卡的gm_c；此处batch size可能不对；
+                    offset_c = rs_part_idx * m_per_bigdim * n
+                    + m_idx_in_c * m0 * n
+                    + n_idx * n0;
+                    gm_dst = gm_c;
+                    dst_stride = n;
+                }
+                // copy from L0C to gm
+                MoveL0CToGM(gm_dst, offset_c, m_actual, n_actual, (m_actual + 15) / 16 * 16, dst_stride);
+            }
+            FFTSCrossCoreSync<PIPE_FIX>(2, flag_id);
+        }
+
+        Endflags();
+        PipeBarrier<PIPE_ALL>();
+    }
+
+    inline __aicore__ void Run() {
+        if (RUN_TYPE == PPMATMUL_RUN_PURE_MATMUL) {
+            RunPureMatmul();
+        } else if (RUN_TYPE == PPMATMUL_RUN_MATMUL_ALLREDUCE) {
+            if (withSerialMode) {
+                gm_c = gm_peer_mem;
+                RunPureMatmul();
+            } else {
+                RunMatmulAllReduce();
+            }
+        } else if (RUN_TYPE == PPMATMUL_RUN_MATMUL_REDUCE_SCATTER) {
+            RunMatmulReduceScatter();
+        } else if (RUN_TYPE == PPMATMUL_RUN_ALL_GATHER_MATMUL) {
+            RunAllGatherMatmul();
+        } else if (RUN_TYPE == PPMATMUL_RUN_ALL_GATHER_MATMUL_REDUCE_SCATTER){
+            RunAllGatherMatmulReduceScatter();
+        }
+    }
+
+protected:
+    __gm__ MmadDtype *gm_a_src{nullptr};
+    __gm__ MmadDtype *gm_b_src{nullptr};
+
+    __gm__ OutDtype *gm_c{nullptr};
+    __gm__ OutDtype *gm_peer_mem{nullptr};
+    __gm__ int64_t *gm_dequant_scale{nullptr};
+    __gm__ int32_t *gm_format_dequant_offset{nullptr};
+    __gm__ int32_t *gm_accum{nullptr};
+
+    __cbuf__ MmadDtype *l1_base_a = reinterpret_cast<__cbuf__ MmadDtype *>((uintptr_t) SCALE_L1_SIZE);
+    __cbuf__ MmadDtype *l1_base_b = reinterpret_cast<__cbuf__ MmadDtype *>((uintptr_t) (128 * 1024));
+
+    __ca__ MmadDtype *l0a_base = reinterpret_cast<__ca__ MmadDtype *>((uintptr_t) 0);
+    __cb__ MmadDtype *l0b_base = reinterpret_cast<__cb__ MmadDtype *>((uintptr_t) 0);
+
+    __cc__ T_ACCUM *l0c_buf = reinterpret_cast<__cc__ T_ACCUM *>((uintptr_t) 0);
+
+    __cbuf__ int64_t *scale_l1 = reinterpret_cast<__cbuf__ int64_t *>((uintptr_t) 0);
+    __fbuf__ int64_t *scale_FB = (__fbuf__  int64_t *)(0);
+
+    __cbuf__ int32_t *bias_l1  = reinterpret_cast<__cbuf__ int32_t *>((uintptr_t)0);
+    uint16_t bias_bt = 0;
+    bool has_offset{false};
+    LcalWorkspaceInfo workspace_info;
+
+    int32_t core_num;
+
+    int32_t batch_size;
+    int32_t m;
+    int32_t k;
+    int32_t n;
+    int32_t m_align;
+    int64_t k_align;
+    int32_t n_align;
+    int32_t k_align16;
+    int32_t n_align16;
+    int32_t m0;
+    int32_t k0;
+    int32_t n0;
+
+    int32_t m_loop;
+    int32_t n_loop;
+    int32_t k_loop;
+    int32_t core_loop;
+    int32_t core_idx;
+    int32_t ping_flag;
+    int32_t block_size;
+    int32_t cube_matrix_size;
+
+    int32_t aligned_a;
+    int32_t aligned_b;
+
+    int32_t swizzl_count;
+    int32_t swizzl_direct;
+
+    int32_t L1_PINGPONG_BUFFER_LEN;
+    int32_t L0AB_PINGPONG_BUFFER_LEN;
+    int32_t rank;
+    int32_t rank_size;
+    int32_t p_value;
+    int32_t loop_num_per_comm;
+
+    int32_t withSerialMode;
+    int32_t buffer_size;
+
+    // AG+MM+RS
+    int32_t ag_dim;
+    int32_t rs_dim;
+    bool inner_dim_is_Ag{false};
+    int32_t ag_rank_idx;
+    int32_t rs_rank_idx;
+    bool weight_nz{false};
+    // sio
+    bool is_91093{false};
+    QuantGranularity dequant_granularity;
+
+};
+
+#elif __DAV_C220_VEC__
+
+#include "coc_preprocessor.cce"
+#include "coc_add_bias_runner.cce"
+#include "coc_dequant_runner.cce"
+#include "tiling_args.h"
+
+template<typename T>
+inline __aicore__  void CocPureMatmulAiv(COC_ARGS_FUN(T))
+{
+    SetAtomicNone();
+    SetMaskNorm();
+    SetSyncBaseAddr((uint64_t)ffts_addr);
+    SetVectorMask<T>((uint64_t)-1, (uint64_t)-1);
+    // get tiling args
+    auto para = reinterpret_cast<__gm__ Lcal::CoCKernelParam *>(para_gm);
+    auto cocTilingData = &para->cocTilingData;
+    auto quantInfo = &para->quantInfo;
+    auto moeInfo = &para->moeInfo;
+    
+    GlobalTensor<int> commArgsGm;
+    commArgsGm.SetGlobalBuffer(reinterpret_cast<__gm__ int *>(coc_comm_args), 2);
+    uint32_t extraFlag = commArgsGm.GetValue(4);
+    bool is_deterministic = (extraFlag & ExtraFlag::DETERMINISTIC) != 0;
+
+    int32_t batch_size = cocTilingData->batchSize;
+    int32_t m = cocTilingData->m;
+    int32_t k = cocTilingData->k;
+    int32_t n = cocTilingData->n;
+
+    int32_t m0 = cocTilingData->m0;
+    int32_t k0 = cocTilingData->k0;
+    int32_t n0 = cocTilingData->n0;
+
+    int32_t m_loop = cocTilingData->mLoop;
+    int32_t k_loop = cocTilingData->kLoop;
+    int32_t n_loop = cocTilingData->nLoop;
+
+    int32_t core_loop = cocTilingData->coreLoop;
+    int32_t swizzl_count = cocTilingData->swizzlCount;
+    int32_t tiling_key = cocTilingData->tilingKey;
+    int32_t rank = cocTilingData->rank;
+    int32_t rank_size = cocTilingData->rankSize;
+    int32_t p_value = cocTilingData->pValue;
+    QuantGranularity dequant_granularity = static_cast<QuantGranularity>(quantInfo->dequantGranularity);
+    int32_t dequant_group_size = quantInfo->dequantGroupSize;
+    QuantGranularity quant_granularity = static_cast<QuantGranularity>(quantInfo->quantGranularity);
+    int32_t quant_group_size = quantInfo->quantGroupSize;
+    bool weight_nz = para->weightNz;
+    bool swizzl_direct = (tiling_key & SWIZZL_MASK) ? true : false;
+    bool trans_a = (tiling_key & TRANS_A_MASK) ? true : false;
+    bool trans_b = (tiling_key & TRANS_B_MASK) ? true : false;
+    bool have_bias = (tiling_key & BIAS_MASK) ? true : false;
+    bool is_int8 = (tiling_key & INT8_MASK) ? true : false;
+
+    int32_t local_expert_nums = moeInfo->local_expert_nums;
+    int32_t EP = moeInfo->EP;
+    int32_t TP = moeInfo->TP;
+    int32_t is_moe_averaged = 0;
+    int32_t is_alltoallvc = 0;
+    int32_t is_moe = moeInfo->isMoe;
+
+
+    int32_t m_align, k_align, n_align;
+    if (is_int8) {
+        m_align = Block512B<int8_t>::AlignUp(m);
+        k_align = Block512B<int8_t>::AlignUp(k);
+        n_align = Block512B<int8_t>::AlignUp(n);
+    } else {
+        m_align = Block512B<T>::AlignUp(m);
+        k_align = Block512B<T>::AlignUp(k);
+        n_align = Block512B<T>::AlignUp(n);
+    }
+    int32_t aligned_a, aligned_b;
+    AlignJudge(trans_a, trans_b, m, k, n, m_align, k_align, n_align, aligned_a, aligned_b);
+
+    bool has_a_align = IsQuant(quant_granularity) || aligned_a;
+    bool has_b_align = IsQuant(dequant_granularity) && !is_int8 || aligned_b;
+    bool has_accum = IsQuant(dequant_granularity) && is_int8 && std::is_same<T, bfloat16_t>::value;
+    bool has_dequant_param = (dequant_granularity == QuantGranularity::PER_TOKEN || dequant_granularity == QuantGranularity::PER_TENSOR);
+    bool hasFormatDequantScale = (dequant_granularity == QuantGranularity::PER_CHANNEL);
+    if (weight_nz) {
+        aligned_b = 0;
+        has_b_align = false;
+    }
+    auto workspace_info = GetLcalWorkspaceInfo(gm_workspace, batch_size, m, k, n, m_align, k_align, n_align,
+            trans_a, trans_b, is_int8 ? 1 : 2, has_a_align, has_b_align, 0, has_accum, 0, has_dequant_param, 
+            hasFormatDequantScale,is_deterministic, 0, is_alltoallvc, 0, 0, 0);
+
+    Preprocessor<T> preprocessor;
+    PureMatmulBiasAdder<T> add_bias_runner;
+    SerialDequantRunner serial_dequant_runner;
+
+    preprocessor.SetArgs(PP_MATMUL_AIV_PADDING_ARGS_CALL());
+    preprocessor.Run();
+
+    if (has_accum) {
+        serial_dequant_runner.SetArgs(reinterpret_cast<__gm__ bfloat16_t *>(gm_out), workspace_info,
+                reinterpret_cast<__gm__ int64_t *>(gm_dequant_scale),
+                reinterpret_cast<__gm__ int32_t *>(gm_dequant_offset), dequant_granularity, batch_size, m, n);
+        serial_dequant_runner.FormatScale();
+    }
+
+    if (have_bias) {
+        add_bias_runner.SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_CALL());
+    }
+
+    WaitEvent(AIV_WAIT_AIC_FINISH_MATMUL_FLAG_ID);
+
+    if (has_accum) {
+        serial_dequant_runner.Run();
+    }
+
+    if (have_bias) {
+        add_bias_runner.Run();
+    }
+}
+
+#endif
+#endif

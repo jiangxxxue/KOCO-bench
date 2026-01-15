@@ -1,0 +1,81 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include <cstdint>
+#include "collectives.cce"
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void LcalAll2AllTranspose(ALLREDUCE_ARGS_FUN_16P(T))
+{
+    int32_t width = root;
+    int32_t burstLen = width / rankSize;
+    const int64_t dataOffsetNum = GetLcalBlockNum() * 32 * MEM_DMA_UNIT_INT_NUM;
+    const int64_t flagOffset1st = MEM_DMA_UNIT_INT_NUM * GetBlockIdx();
+    int numRows = len / width;
+    __gm__ T* buff[8] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7
+    };
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t*)(0);
+    __ubuf__ T* inputUB[2] = {(__ubuf__ T*)(64), (__ubuf__ T*)(97312)};
+
+    int32_t coreIdx = GetBlockIdx();
+    int32_t coreNum = GetLcalBlockNum();
+    const int64_t corePerRank = coreNum / rankSize;
+    const int64_t coreIdxInRank = GetBlockIdx() % corePerRank;
+    const int64_t coreIdxRankId = GetBlockIdx() / corePerRank;
+    const int64_t rowNumPerCore = CeilDiv(numRows, corePerRank);
+    int64_t rowNumThisCore = rowNumPerCore;
+    if (coreIdxInRank == corePerRank - 1) {
+        rowNumThisCore = numRows - rowNumPerCore * (corePerRank - 1);
+    }
+
+    const int64_t lenPerRank = len / rankSize;
+    AscendC::PipeBarrier<PIPE_ALL>();
+
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+    AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+    for(int32_t loopId = 0; loopId < rowNumPerCore; ++loopId) {
+        event_t eventId = (loopId & 1)? EVENT_ID1 : EVENT_ID0;
+        int32_t rowId = loopId + coreIdxInRank * rowNumPerCore;
+        if (rowId >= numRows) {
+            break;
+        }
+        __gm__ T* srcPtr = (__gm__ T*)input + rowId * width + coreIdxRankId * burstLen;
+        __ubuf__ T* iub = (loopId & 1) ? inputUB[1] : inputUB[0];
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(eventId);
+        CpGM2UB(iub, srcPtr, burstLen * sizeof(T));
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(eventId);
+        __gm__ T* dstPtr = (__gm__ T*)buff[rank] + coreIdxRankId * lenPerRank + rowId * burstLen + dataOffsetNum;
+        if (coreIdxRankId == rank) {
+            dstPtr = (__gm__ T*) output + coreIdxRankId * lenPerRank + rowId * burstLen;
+        }
+        CpUB2GM(dstPtr, iub, burstLen * sizeof(T));
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(eventId);
+    }
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+    AscendC::PipeBarrier<PIPE_ALL>();
+
+    __gm__ int64_t* ctrlFlagsGM = (__gm__ int64_t*) buff[rank] + flagOffset1st;
+    SetFlag(ctrlFlagsUB, ctrlFlagsGM, magic);
+    __gm__ int64_t* ctrlFlagsGMWait = (__gm__ int64_t*)buff[coreIdxRankId] + (rank * corePerRank + coreIdxInRank) * MEM_DMA_UNIT_INT_NUM;
+    CheckFlag((__ubuf__ int64_t*)ctrlFlagsUB, ctrlFlagsGMWait, (int64_t)magic);
+
+    AscendC::SetFlag<AscendC::HardEvent::S_MTE2>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::S_MTE2>(EVENT_ID0);
+    __gm__ T* gm_src = (__gm__ T*)buff[coreIdxRankId] +
+        rank * lenPerRank + coreIdxInRank * rowNumPerCore * burstLen + dataOffsetNum;
+    __gm__ T* gm_dst = (__gm__ T*)output + coreIdxRankId * lenPerRank +
+        coreIdxInRank * rowNumPerCore * burstLen;
+    if (coreIdxRankId != rank) {
+        GM2GM(rowNumThisCore * burstLen * sizeof(T), inputUB[0], gm_dst, 0, gm_src, 0);
+    }
+}

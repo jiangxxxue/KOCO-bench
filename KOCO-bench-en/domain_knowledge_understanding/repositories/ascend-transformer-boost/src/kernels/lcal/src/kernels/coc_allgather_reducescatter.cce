@@ -1,0 +1,501 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#ifdef __DAV_C220_VEC__
+#include "coc_internal.cce"
+#include "coc_comm_base.cce"
+#include "kernel_operator.h"
+using namespace AscendC;
+template<bool WRITE, TEMPLATE_ARGS_FUN()>
+class AllGatherReduceScatter : public CocCommBase<T> {
+public:
+    __aicore__ explicit AllGatherReduceScatter() {};
+    FORCE_INLINE_AICORE void SetArgs(COC_ARGS_FUN(T)) {
+        CocCommBase<T>::SetArgsForReduce(COC_ARGS_CALL());
+        preprocessor.SetArgs(PP_MATMUL_AIV_PADDING_ARGS_CALL());
+        if constexpr (HAVE_BIAS) {
+            add_bias_runner.SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_CALL());
+        }
+
+        m_align = (m + CUBE_MATRIX_SIZE - 1) / CUBE_MATRIX_SIZE * CUBE_MATRIX_SIZE;
+        k_align = (k + CUBE_MATRIX_SIZE - 1) / CUBE_MATRIX_SIZE * CUBE_MATRIX_SIZE;
+        n_align = (n + CUBE_MATRIX_SIZE - 1) / CUBE_MATRIX_SIZE * CUBE_MATRIX_SIZE;
+        AlignJudge(trans_a, trans_b, m, k, n, m_align, k_align, n_align, aligned_a, aligned_b);
+        this->gm_a = aligned_a ? reinterpret_cast<__gm__ T *>(workspace_info.gm_a_align) : gm_a;
+        // 确定本卡的ag和rs分别的idx
+        if (inner_dim_is_Ag) {
+            this->rank_ag_idx = rank % ag_dim;
+            this->rank_rs_idx = rank / ag_dim;
+            this->other_rank_ag_idx = other_rank % ag_dim;
+            this->other_rank_rs_idx = other_rank / ag_dim;
+        }else {
+            this->rank_ag_idx = rank / rs_dim;
+            this->rank_rs_idx = rank % rs_dim;
+            this->other_rank_ag_idx = other_rank / rs_dim;
+            this->other_rank_rs_idx = other_rank % rs_dim;
+        }
+
+        twod_big_dim = ag_dim > rs_dim ? ag_dim: rs_dim;
+        gm_a_pingpong_size = m0 * k_align * p_value * twod_big_dim;
+        gm_c_pingpong_size = p_value * twod_big_dim * n_loop * m0 * n0;
+        m_loop_per_bigdim = DivCeil(m_loop * ag_dim, twod_big_dim);
+        m_per_bigdim = m * ag_dim / twod_big_dim;
+        comm_count = DivCeil(batch_size * m_loop_per_bigdim, p_value);
+        ag_part_dim = twod_big_dim / ag_dim;
+        rs_part_dim = twod_big_dim / rs_dim;
+
+        ag_comm_npu_split = comm_npu_split;
+        ag_comm_data_split = comm_data_split;
+        ag_len_per_loop = len_per_loop;
+        ag_comm_direct = comm_direct;
+
+        rs_comm_npu_split = extra_comm_npu_split;
+        rs_comm_data_split = extra_comm_data_split;
+        rs_len_per_loop = extra_len_per_loop;
+
+        ag_core_count = ag_comm_npu_split * ag_comm_data_split;
+        rs_core_count = rs_comm_npu_split * rs_comm_data_split;
+
+        ag_max_ub_ping_pong_size = (max_ub_single_dma_size / 2) / n0 * n0;
+        rs_max_ub_ping_pong_size = (extra_ub_move_num / 2) / n0 * n0;
+    }
+
+    FORCE_INLINE_AICORE void CopyGMToGM(__gm__ T* gm_src, __gm__ T* gm_dst, int32_t copy_size) {
+        auto ub0 = output_UB_T[0];
+        auto ub1 = output_UB_T[1];
+        int32_t interm_offset = 0;
+        for (int32_t move_idx = 0; interm_offset < copy_size; ++move_idx){
+            uint32_t data_size = interm_offset + ag_max_ub_ping_pong_size < copy_size ? ag_max_ub_ping_pong_size : copy_size - interm_offset;
+            auto event_id = (move_idx & 1) ? EVENT_ID0 : EVENT_ID1;
+            auto ub = (move_idx & 1) ? ub0 : ub1;
+            WaitFlag<HardEvent::MTE3_MTE2>(event_id);
+            CopyGmToUbuf(ub, gm_src + interm_offset, 1, data_size * sizeof(T) / 32, 0, 0);
+            SetFlag<HardEvent::MTE2_MTE3>(event_id);
+            WaitFlag<HardEvent::MTE2_MTE3>(event_id);
+            CopyUbufToGm(gm_dst + interm_offset, ub, 1, data_size * sizeof(T) / 32, 0, 0);
+            SetFlag<HardEvent::MTE3_MTE2>(event_id);
+            interm_offset += data_size;
+        }
+    }
+
+    FORCE_INLINE_AICORE
+    void MoveToOtherRankWithSkip(__gm__ T *gm_src, int32_t rank_offset, int32_t len,
+                                 int32_t rank_st, int32_t skip_num, int32_t group_num)
+    {
+        int32_t ping_pong_move_count = (len + ag_max_ub_ping_pong_size - 1) / ag_max_ub_ping_pong_size;
+        for (int32_t move_idx = 0; move_idx < ping_pong_move_count; ++move_idx) {
+            int32_t actual_move_size = ag_max_ub_ping_pong_size;
+            if (move_idx == ping_pong_move_count - 1) {
+                actual_move_size = len - move_idx * ag_max_ub_ping_pong_size;
+            }
+            int32_t block_len = actual_move_size * sizeof(T) / 32;
+            auto event_id = (move_idx & 1) ? EVENT_ID0 : EVENT_ID1;
+            auto ub_buff_st = (move_idx & 1) ? output_UB_T[0] : output_UB_T[1];
+            WaitFlag<HardEvent::MTE3_MTE2>(event_id);
+            CopyGmToUbuf(ub_buff_st, gm_src, 1, block_len, 0, 0);
+            SetFlag<HardEvent::MTE2_MTE3>(event_id);
+            WaitFlag<HardEvent::MTE2_MTE3>(event_id);
+            int32_t dst_rank = rank_st % ag_dim;
+            for (int32_t cycle_idx = 0; cycle_idx < group_num; ++cycle_idx) {
+                int32_t real_rank;
+                if (inner_dim_is_Ag) {
+                    real_rank = dst_rank + rank / ag_dim * ag_dim;
+                } else {
+                    real_rank = dst_rank * rs_dim + rank % rs_dim;
+                }
+                if (real_rank != rank && dst_rank < ag_dim) {
+                    CopyUbufToGm(buff[real_rank] + rank_offset, ub_buff_st, 1, block_len, 0, 0);
+                }
+                dst_rank = (dst_rank + skip_num) % ag_dim;
+            }
+            gm_src += ag_max_ub_ping_pong_size;
+            rank_offset += ag_max_ub_ping_pong_size;
+            SetFlag<HardEvent::MTE3_MTE2>(event_id);
+        }
+    }
+
+    FORCE_INLINE_AICORE
+    void MoveWithSplit(__gm__ T *gm_src, int32_t rank_offset, int32_t len)
+    {
+        int32_t data_split = DivCeil(len, ag_len_per_loop);
+        int32_t data_block = ag_len_per_loop; // 每份数据量
+        int32_t group_num = ag_dim / ag_comm_npu_split;
+        int32_t data_offset = -data_block; // 当前份数据的起始位置
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);  // MTE2等MTE3
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);  // MTE2等MTE3
+        for (int32_t data_block_idx = 0; data_block_idx < data_split; ++data_block_idx) {
+            data_offset += data_block; // 当前份数据的起始位置
+            data_block = data_block_idx == data_split - 1 ? len - data_offset : data_block; // 当前份数据量
+            int32_t num_per_core = DivCeil(data_block, ag_comm_data_split);
+
+            int32_t data_src = data_offset + (core_idx / ag_comm_npu_split) * num_per_core;
+            int32_t data_len = data_block + data_offset - data_src;
+            data_len = data_len >= num_per_core ? num_per_core : data_len;
+            if (ag_comm_direct) {
+                MoveToOtherRankWithSkip(gm_src + data_src, rank_offset + data_src, data_len,
+                                        core_idx, ag_comm_npu_split, group_num);
+                continue;
+            }
+            // data len 方向：所有的数据先发送到目标卡0，再发送到目标卡1，以此类推
+            int32_t dst_rank = core_idx % ag_dim;
+            for (int32_t rank_group_idx = 0; rank_group_idx < group_num; ++rank_group_idx) {
+                int32_t real_rank;
+                if (inner_dim_is_Ag) {
+                    real_rank = dst_rank + rank / ag_dim * ag_dim;
+                } else {
+                    real_rank = dst_rank * rs_dim + rank % rs_dim;
+                }
+                if (real_rank != rank && dst_rank < ag_dim) {
+                    CopyGMToGM(gm_src + data_src, buff[real_rank] + rank_offset + data_src, data_len);
+                }
+                dst_rank = (dst_rank + ag_comm_npu_split) % ag_dim;
+            }
+        }
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);  // MTE2等MTE3
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);  // MTE2等MTE3
+    }
+
+    FORCE_INLINE_AICORE int32_t GetRealCoreIdx(int32_t index, int32_t rank_per_core)
+    {
+        int32_t core_index = core_idx - ag_core_count;
+        int32_t core_rank_offset = (core_index / rs_comm_data_split) * rank_per_core;
+        int32_t rank_idx_rot = (index + core_index) % rank_per_core;
+        int32_t real_core_idx = core_rank_offset + rank_idx_rot;
+
+        return real_core_idx;
+    }
+
+    FORCE_INLINE_AICORE void GetLenPerCore(int32_t rank_total, int32_t loop_index, int32_t &m_in_core, int32_t &buff_offset)
+    {
+        int32_t core_index = core_idx - ag_core_count;
+        int32_t before_core_offset = rs_len_per_loop * rs_comm_data_split * loop_index;
+        int32_t loop_total = rank_total - before_core_offset;
+        int32_t real_core_offset = core_index % rs_comm_data_split * rs_len_per_loop;
+
+        buff_offset = before_core_offset + real_core_offset;
+
+        m_in_core = (real_core_offset >= loop_total) ? 0 :
+                            ((real_core_offset + rs_len_per_loop) > loop_total ?
+                            loop_total - real_core_offset : rs_len_per_loop);
+    }
+
+    FORCE_INLINE_AICORE void FirstStepInOutWithSplit(int32_t rank_total, int32_t rank_buff_offset, int32_t comm_idx, int32_t flag_idx, int64_t out_part_offset)
+    {
+        SetAtomicAdd<T>();
+        PipeBarrier<PIPE_ALL>();
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID0); // MTE2等MTE3
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID1); // MTE2等MTE3
+
+        int32_t rank_per_core = rs_dim / rs_comm_npu_split;
+        int32_t m_per_core = rank_total / rs_comm_data_split;
+        int32_t data_split_num = DivCeil(m_per_core, rs_len_per_loop);
+        for (int32_t loop_idx = 0; loop_idx < data_split_num; loop_idx++) {
+            int32_t m_in_core;
+            int32_t offset;
+            GetLenPerCore(rank_total, loop_idx, m_in_core, offset);
+
+            for (int32_t rank_idx = 0; rank_idx < rank_per_core; rank_idx++) {
+                int32_t real_rank_idx_tmp = GetRealCoreIdx(rank_idx, rank_per_core);
+                int32_t real_rank_idx;
+                if (inner_dim_is_Ag){
+                    real_rank_idx = real_rank_idx_tmp * ag_dim + rank % ag_dim;
+                } else {
+                    real_rank_idx = real_rank_idx_tmp + rank / rs_dim * rs_dim;
+                }
+
+                if (real_rank_idx == rank)
+                    continue;
+
+                FirstStepInOut(m_in_core, buff[real_rank_idx], rank_buff_offset, offset, comm_idx, flag_idx, out_part_offset);
+            }
+        }
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0); // MTE2等MTE3
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID1); // MTE2等MTE3
+        SetFlag<HardEvent::MTE3_S>(EVENT_ID0); // Scalar等MTE3
+        WaitFlag<HardEvent::MTE3_S>(EVENT_ID0);
+        SetAtomicNone();
+        PipeBarrier<PIPE_ALL>();
+    }
+
+
+    FORCE_INLINE_AICORE void FirstStepInOut(int32_t mat_blocks_size, __gm__ T *input, int32_t gm_offset, int32_t offset, int32_t comm_idx, int32_t flag_idx, int64_t out_part_offset) {
+        int32_t ping_pong_move_count = DivCeil(mat_blocks_size, rs_max_ub_ping_pong_size);      // max_ub_ping_pong_size一定是N0的倍数，但不一定是M0*N0的倍数
+        for (int32_t move_idx = 0; move_idx < ping_pong_move_count; ++move_idx) {
+            int32_t actual_move_size = rs_max_ub_ping_pong_size;
+            if (move_idx == ping_pong_move_count - 1) {
+                actual_move_size = mat_blocks_size  - move_idx * rs_max_ub_ping_pong_size;
+            }
+            auto event_id = (move_idx & 1) ? EVENT_ID0 : EVENT_ID1;
+            auto ub_buff_st = (move_idx & 1) ? output_UB_T[0] : output_UB_T[1];
+            WaitFlag<HardEvent::MTE3_MTE2>(event_id);
+            // 从其他卡读的matrix是多个小的m0*n0块顺序排布，写的时候需要重排
+            CopyGmToUbuf(ub_buff_st, input + gm_offset + offset + move_idx * rs_max_ub_ping_pong_size, 1, actual_move_size * sizeof(T) / 32, 0, 0);
+            SetFlag<HardEvent::MTE2_MTE3>(event_id);
+            WaitFlag<HardEvent::MTE2_MTE3>(event_id);
+            int32_t move_num_offset = offset + move_idx * rs_max_ub_ping_pong_size;
+            auto ub_buff = ub_buff_st;
+            int32_t left_m = actual_move_size / n0;
+            while (left_m > 0) {
+                // 获取写到本卡的m和n的idx
+                int32_t loop_idx = (move_num_offset / (m0 * n0));
+                int32_t n_idx = loop_idx % n_loop;
+                int64_t m_idx = comm_idx * p_value + loop_idx / n_loop;
+                int32_t actual_m = (m_idx == (m_loop_per_bigdim - 1)) ? (m_per_bigdim - m_idx * m0) : m0;
+                int32_t actual_n = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+                int32_t m_offset = (move_num_offset % (m0 * n0)) / n0; // 当前一块起点对应的m，在当前块的位置
+                int32_t actual_move_m;
+                if (m_offset >= actual_m) {   // m0=128，最后一个小块m=120，
+                    actual_move_m = m0 < m_offset + left_m ? m0 - m_offset : left_m;
+                    // m0 - m_offset表示当前块剩下的一小段，跳过；
+                } else {
+                    actual_move_m = actual_m < m_offset + left_m ? actual_m - m_offset : left_m;
+                    // left_m较大，则该块copy完，下次再copy下一块；
+                    // left_m较小，则只copy left_m的部分
+                    int64_t out_buff_offset = (m_idx * m0 + m_offset) * n + n_idx * n0;
+                    CopyUbufToGmUnknown(n % BLOCK_SIZE_16 == 0, gm_out + out_part_offset + out_buff_offset,
+                    ub_buff, actual_move_m, actual_n * sizeof(T), (n0 - actual_n) * sizeof(T) / 32, (n - actual_n) * sizeof(T));
+                }
+                left_m -= actual_move_m;
+                move_num_offset += actual_move_m * n0;
+                ub_buff += actual_move_m * n0;
+            }
+            SetFlag<HardEvent::MTE3_MTE2>(event_id);
+        }
+    }
+
+
+    FORCE_INLINE_AICORE void EndFlagsAndBias()
+    {
+        ResetIpcFlags(2);
+
+        if (aiv_idx == 1 && core_idx < rank_size) {
+            CheckBuffFlag(ctrl_flags_UB, (__gm__ int32_t *)buff[other_rank] + flag_offset + FLAG_ZERO_IDX, 0);
+        }
+        PipeBarrier<PIPE_ALL>();
+
+        if constexpr (HAVE_BIAS) {
+            add_bias_runner.Run();
+        }
+    }
+
+    // p_value的含义在RS和AG不一样：在RS中，每个core计算p_value次后通信一次；在AG中，每从其他rank各gather p_value行后计算一次
+    // 在2DTP中，p_value含义和AG一致。
+    FORCE_INLINE_AICORE void Run() {
+        // Padding
+        preprocessor.Run();
+
+        ResetIpcFlags(2);
+        PipeBarrier<PIPE_ALL>();
+        // twod_big_dim：2D情况下每次总共搬运块数，取AG和RS较大的dim
+        int32_t twod_big_dim = ag_dim > rs_dim ? ag_dim: rs_dim;
+        int64_t gm_a_pingpong_size = m0 * k_align * p_value * twod_big_dim;
+        // 2 * 4 * 8 * 128*256
+        int64_t gm_c_pingpong_size = p_value * twod_big_dim * n_loop * m0 * n0;
+        int32_t m_loop_per_bigdim = DivCeil(m_loop * ag_dim, twod_big_dim);
+        int64_t m_per_bigdim = m * ag_dim / twod_big_dim;
+        int32_t comm_count = DivCeil(m_loop_per_bigdim, p_value);
+        int32_t ag_m = p_value * m0;
+        int32_t rs_p_value = p_value;
+
+        for (int32_t comm_idx = 0; comm_idx < comm_count + MAX_BLOCK_COUNT; ++comm_idx) {
+            uint64_t flag_idx = comm_idx % MAX_BLOCK_COUNT;
+            int32_t commrs_idx = comm_idx - MAX_BLOCK_COUNT;
+            if (comm_idx == comm_count - 1) { // last allgather
+                ag_m = m_per_bigdim - (comm_count - 1) * p_value * m0;
+            }
+            if (commrs_idx == comm_count - 1) {   // last reducescatter
+                rs_p_value = m_loop_per_bigdim - (comm_count - 1) * p_value;
+            }
+            // wait aic
+            if (commrs_idx >= 0) {
+                WaitEvent(flag_idx);
+            }
+
+            // aiv之间同步
+            SetAndWaitAivSync(flag_idx);
+            // AGRS条件下，AG只会与部分core通信
+            // 本卡与other卡的rs的rank相同，表示在一个ag通信域
+            // 前两个循环没有rs，只有ag；最后两个循环没有ag，只有rs
+
+            // 首先写自己rank的flag
+
+            CrossRankSyncV1(FLAG_ZERO_IDX, comm_idx + 1);
+            SetAndWaitAivSync(flag_idx);
+            // AG部分
+            if (comm_idx < comm_count && aiv_idx == 0 && core_idx < ag_comm_npu_split * ag_comm_data_split) {
+                // check目标rank数据是否准备好
+                // AG每张卡 copy ag_part_dim次
+                for (int32_t ag_part_idx = 0; ag_part_idx < ag_part_dim; ag_part_idx++) {
+                    int64_t src_offset = comm_idx * p_value * m0 * k_align + ag_part_idx * m_per_bigdim * k_align;
+                    int32_t bigdim_idx = rank_ag_idx * ag_part_dim + ag_part_idx;
+                    int32_t rank_offset = flag_idx * gm_a_pingpong_size + bigdim_idx * p_value * m0 * k_align;
+                    MoveWithSplit(gm_a + src_offset, rank_offset, ag_m * k_align);
+                }
+            }
+            // RS部分
+            if (comm_idx >= MAX_BLOCK_COUNT && aiv_idx == 0 && core_idx >= ag_core_count && core_idx < ag_core_count + rs_core_count) {
+                for (int32_t rs_part_idx = 0; rs_part_idx < rs_part_dim; rs_part_idx++) {
+                    int32_t bigdim_idx = rank_rs_idx * rs_part_dim + rs_part_idx;
+                    int32_t rank_buff_offset = flag_idx * gm_c_pingpong_size + bigdim_idx * rs_p_value * m0 * n_loop * n0;
+                    FirstStepInOutWithSplit(rs_p_value * m0 * n_loop * n0, LCAL_2DTP_C_OFFSET + rank_buff_offset, commrs_idx, flag_idx, m_per_bigdim * rs_part_idx * n);
+                }
+            }
+
+            SetAndWaitAivSync(flag_idx);
+            CrossRankSyncV2(FLAG_ONE_IDX, comm_idx + 1);
+
+            // aiv之间同步
+            SetAndWaitAivSync(flag_idx);
+
+            // 发送aic同步
+            SetAicSync(flag_idx);
+        }
+
+        EndFlagsAndBias();
+    }
+public:
+    using CocCommBase<T>::SetAicSync;
+    using CocCommBase<T>::SetAndWaitAivSync;
+    using CocCommBase<T>::SetBuffFlag;
+    using CocCommBase<T>::SetBuffFlagByAdd;
+    using CocCommBase<T>::CheckBuffFlag;
+    using CocCommBase<T>::CrossRankSyncV1;
+    using CocCommBase<T>::CrossRankSyncV2;
+    using CocCommBase<T>::ResetIpcFlags;
+    using CocCommBase<T>::buff;
+    using CocCommBase<T>::gm_out;
+    using CocCommBase<T>::ctrl_flags_UB;
+    using CocCommBase<T>::output_UB_T;
+    using CocCommBase<T>::batch_size;
+    using CocCommBase<T>::m;
+    using CocCommBase<T>::k;
+    using CocCommBase<T>::n;
+    using CocCommBase<T>::m0;
+    using CocCommBase<T>::k0;
+    using CocCommBase<T>::n0;
+    using CocCommBase<T>::m_loop;
+    using CocCommBase<T>::n_loop;
+    using CocCommBase<T>::k_loop;
+    using CocCommBase<T>::core_loop;
+    using CocCommBase<T>::core_idx;
+    using CocCommBase<T>::rank;
+    using CocCommBase<T>::rank_size;
+    using CocCommBase<T>::tiling_key;
+    using CocCommBase<T>::swizzl_direct;
+    using CocCommBase<T>::swizzl_count;
+    using CocCommBase<T>::trans_a;
+    using CocCommBase<T>::trans_b;
+    using CocCommBase<T>::is_int8;
+    using CocCommBase<T>::p_value;
+    using CocCommBase<T>::aiv_idx;
+    using CocCommBase<T>::other_rank;
+    using CocCommBase<T>::max_ub_single_dma_size;
+    using CocCommBase<T>::dequant_granularity;
+    using CocCommBase<T>::dequant_group_size;
+    using CocCommBase<T>::quant_granularity;
+    using CocCommBase<T>::quant_group_size;
+    using CocCommBase<T>::workspace_info;
+    using CocCommBase<T>::ag_dim;
+    using CocCommBase<T>::rs_dim;
+    using CocCommBase<T>::inner_dim_is_Ag;
+    using CocCommBase<T>::comm_npu_split;
+    using CocCommBase<T>::comm_data_split;
+    using CocCommBase<T>::comm_direct;
+    using CocCommBase<T>::len_per_loop;
+    using CocCommBase<T>::extra_comm_npu_split;
+    using CocCommBase<T>::extra_comm_data_split;
+    using CocCommBase<T>::extra_comm_direct;
+    using CocCommBase<T>::extra_len_per_loop;
+    using CocCommBase<T>::extra_ub_move_num;
+    using CocCommBase<T>::weight_nz;
+    using CocCommBase<T>::local_expert_nums;
+    using CocCommBase<T>::is_moe;
+    using CocCommBase<T>::is_moe_averaged;
+    using CocCommBase<T>::is_alltoallvc;
+    using CocCommBase<T>::is_deterministic;
+    using CocCommBase<T>::EP;
+    using CocCommBase<T>::TP;
+    using CocCommBase<T>::flag_offset;
+    int32_t m_align;
+    int64_t k_align;
+    int32_t n_align;
+    int32_t aligned_a;
+    int32_t aligned_b;
+    int32_t comm_count;
+
+    int32_t ag_comm_npu_split;
+    int32_t ag_comm_data_split;
+    int32_t ag_len_per_loop;
+    int32_t ag_comm_direct;
+
+    int32_t rs_comm_npu_split;
+    int32_t rs_comm_data_split;
+    int32_t rs_len_per_loop;
+    int32_t rs_comm_direct;
+
+    int32_t ag_core_count;
+    int32_t rs_core_count;
+
+    int32_t ag_max_ub_ping_pong_size;
+    int32_t rs_max_ub_ping_pong_size;
+    __gm__ T *gm_a;
+
+    // 本卡的ag、rs分别的rank idx
+    // 前8个core，每个core负责一张卡的通信
+    int32_t rank_ag_idx;
+    int32_t rank_rs_idx;
+    // 本core负责的其他卡通信，对应的ag和rs的rank idx
+    int32_t other_rank_ag_idx;
+    int32_t other_rank_rs_idx;
+    Preprocessor<T> preprocessor;
+    AllGatherMatmulBiasAdder<T> add_bias_runner;
+
+    int32_t twod_big_dim;
+    int64_t gm_a_pingpong_size;
+    int64_t gm_c_pingpong_size;
+    int32_t m_loop_per_bigdim;
+    int32_t m_per_bigdim;
+    int32_t ag_part_dim;
+    int32_t rs_part_dim;
+
+};
+
+template<typename T>
+inline __aicore__ void CocAllGatherMatmulReduceScatterAiv(COC_ARGS_FUN(T)) {
+    // write
+    AllGatherReduceScatter<true, true, false, false, T> allgatherreducescatter_write_without_bias;
+    AllGatherReduceScatter<true, true, false, true, T> allgatherreducescatter_write_with_bias;
+
+    SetAtomicNone();
+    SetMaskNormImpl();
+    SetSyncBaseAddr((uint64_t)ffts_addr);
+    SetVectorMask<int32_t>((uint64_t)-1, (uint64_t)-1);
+    auto para = reinterpret_cast<__gm__ Lcal::CoCKernelParam *>(para_gm);
+    auto cocTilingData = &para->cocTilingData;
+    int32_t tiling_key = cocTilingData->tilingKey;
+    // swizzl = 0 transa = 0 transb = 0 splitk = 0 bias = 0 int8 = 0
+    switch (tiling_key) {
+        case 0b000000 : case 0b100000 : case 0b010000 : case 0b110000 :
+        case 0b001000 : case 0b101000 : case 0b011000 : case 0b111000 :
+            allgatherreducescatter_write_without_bias.SetArgs(COC_ARGS_CALL());
+            allgatherreducescatter_write_without_bias.Run();
+            break;
+        case 0b000010 : case 0b100010 : case 0b010010 : case 0b110010 :
+        case 0b001010 : case 0b101010 : case 0b011010 : case 0b111010 :
+            allgatherreducescatter_write_with_bias.SetArgs(COC_ARGS_CALL());
+            allgatherreducescatter_write_with_bias.Run();
+            break;
+        default :
+            break;
+    }
+    
+    PipeBarrier<PIPE_ALL>();
+}
+
+#endif

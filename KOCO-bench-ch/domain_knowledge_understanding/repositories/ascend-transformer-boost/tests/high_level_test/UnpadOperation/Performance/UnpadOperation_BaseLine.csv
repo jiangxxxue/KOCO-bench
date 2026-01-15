@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|UnpadOperation1|171.21|171.21
+2|UnpadOperation2|170.805|170.805
+3|UnpadOperation3|223.79|223.79
+4|UnpadOperation4|197.765|197.765

@@ -1,0 +1,211 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#ifndef __COC_POSTPROCESSOR__
+#define __COC_POSTPROCESSOR__
+
+#ifdef __DAV_C220_VEC__
+
+#include <type_traits>
+#include "coc_internal.cce"
+#include "kernel_operator.h"
+#include "tiling_args.h"
+using namespace AscendC;
+
+constexpr int32_t BUFFER_NUM = 1;         // tensor num for each queue
+constexpr int32_t NUM_PER_REP_FP32 = 64;  // ONE_REPEAT_BYTE_SIZE / sizeof(float);
+constexpr int32_t NUM_PER_BLK_FP32 = 8;
+constexpr float MINUS_HALF = -0.5;
+constexpr float ZERO = 0;
+constexpr float ONE = 1;
+
+template <typename T_in, typename T_out>
+class RMSNormprocessor {
+public:
+    __aicore__ explicit RMSNormprocessor() = default;
+    FORCE_INLINE_AICORE void SetArgs(__gm__ uint8_t *gm_in, __gm__ uint8_t *gm_out, __gm__ uint8_t *gm_gamma,
+                                     uint32_t m, uint32_t n)
+    {
+        this->rmsnorm_in = reinterpret_cast<__gm__ T_in *>(gm_out);
+        this->rmsnorm_gamma = reinterpret_cast<__gm__ T_out *>(gm_gamma);
+        this->rmsnorm_out = reinterpret_cast<__gm__ T_out *>(gm_out);
+        this->m = m;
+        this->n = n;
+        this->core_used = core_used;
+    }
+
+    // 暂时只支持float16
+    struct UBufConfig {
+        int64_t global_subblock_idx;
+        int64_t total_subblock;
+        __ubuf__ half *gamma;
+        __ubuf__ half *fp16_0;
+        __ubuf__ float *fp32_0;
+        __ubuf__ float *sqx0;
+        __ubuf__ float *sum_tmp0;
+        __ubuf__ float *sum0;
+        __ubuf__ half *fp16_1;
+        __ubuf__ float *fp32_1;
+        __ubuf__ float *sqx1;
+        __ubuf__ float *sum_tmp1;
+        __ubuf__ float *sum1;
+        float epsilon;
+        bool ping;
+    };
+
+    FORCE_INLINE_AICORE UBufConfig InitializeUBufConfig()
+    {
+        UBufConfig config;
+        config.global_subblock_idx = AscendC::GetBlockIdx();
+        config.total_subblock = AscendC::GetBlockNum() * AscendC::GetTaskRation();
+
+        config.gamma = (__ubuf__ half *)get_imm(0);
+        config.fp16_0 = (__ubuf__ half *)get_imm(1 * 16 * 1024);
+        config.fp32_0 = (__ubuf__ float *)get_imm(2 * 16 * 1024);
+        config.sqx0 = (__ubuf__ float *)get_imm(4 * 16 * 1024);
+        config.sum_tmp0 = (__ubuf__ float *)config.fp16_0;
+        config.sum0 = (__ubuf__ float *)config.fp16_0 + 64;
+
+        config.fp16_1 = (__ubuf__ half *)get_imm(1 * 16 * 1024 + 96 * 1024);
+        config.fp32_1 = (__ubuf__ float *)get_imm(2 * 16 * 1024 + 96 * 1024);
+        config.sqx1 = (__ubuf__ float *)get_imm(4 * 16 * 1024 + 96 * 1024);
+        config.sum_tmp1 = (__ubuf__ float *)config.fp16_1;
+        config.sum1 = (__ubuf__ float *)config.fp16_1 + 64;
+        config.epsilon = 1e-6;
+        config.ping = true;
+        return config;
+    }
+
+    FORCE_INLINE_AICORE void RMSNormRun()
+    {
+        SetMaskCount();
+        SetAtomicNone();
+
+        UBufConfig ubufConfig = InitializeUBufConfig();
+
+        CopyGmToUbufAlign(ubufConfig.gamma, (__gm__ half *)rmsnorm_gamma, 1, n, 0, 0);
+        PipeBarrier<PIPE_ALL>();
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);
+
+        for (int64_t global_row_id = ubufConfig.global_subblock_idx % ubufConfig.total_subblock; global_row_id < m;
+             global_row_id += ubufConfig.total_subblock) {
+            auto &fp16 = ubufConfig.ping ? ubufConfig.fp16_0 : ubufConfig.fp16_1;
+            auto &fp32 = ubufConfig.ping ? ubufConfig.fp32_0 : ubufConfig.fp32_1;
+            auto &sqx = ubufConfig.ping ? ubufConfig.sqx0 : ubufConfig.sqx1;
+            auto &sum_tmp = ubufConfig.ping ? ubufConfig.sum_tmp0 : ubufConfig.sum_tmp1;
+            auto &sum = ubufConfig.ping ? ubufConfig.sum0 : ubufConfig.sum1;
+            auto event_id = ubufConfig.ping ? EVENT_ID0 : EVENT_ID1;
+
+            WaitFlag<HardEvent::MTE3_MTE2>(event_id);
+            CopyGmToUbufAlign(fp16, (__gm__ half *)rmsnorm_in + global_row_id * n, 1, n, 0, 0);
+            SetFlag<HardEvent::MTE2_V>(event_id);
+            WaitFlag<HardEvent::MTE2_V>(event_id);
+
+            // fp16 -> fp32
+            SetVectorMask<T_in, MaskMode::COUNTER>(0x0, n);
+            Vconv(((__ubuf__ float *)fp32), ((__ubuf__ half *)fp16), 1, 1, 1, 8, 4);
+            PipeBarrier<PIPE_V>();
+
+            // x^2
+            Vmul(((__ubuf__ float *)sqx), ((__ubuf__ float *)fp32), ((__ubuf__ float *)fp32), 1, 1, 1, 1, 8, 8, 8);
+            PipeBarrier<PIPE_V>();
+
+            // x^2 / n
+            float average_val = 1.f / n;
+            Vmuls(((__ubuf__ float *)sqx), ((__ubuf__ float *)sqx), average_val, 1, 1, 1, 8, 8);
+            PipeBarrier<PIPE_V>();
+
+            // sum(x^2 / n)
+            SetVectorMask<T_in, MaskMode::COUNTER>(0x0, 64);
+            VectorDup(((__ubuf__ float *)sum_tmp), 0.f, 1, 1, 8);
+            PipeBarrier<PIPE_V>();
+
+            SetVectorMask<T_in, MaskMode::COUNTER>(0x0, n);
+            Vadd(((__ubuf__ float *)sum_tmp), ((__ubuf__ float *)sqx), ((__ubuf__ float *)sum_tmp), 1, 1, 1, 1, 0, 8,
+                 0);
+            PipeBarrier<PIPE_V>();
+
+            SetVectorMask<T_in, MaskMode::COUNTER>(0x0, 64);
+            vcadd(((__ubuf__ float *)sum), ((__ubuf__ float *)sum_tmp), 1, 0, 1, 0, 0);
+            PipeBarrier<PIPE_V>();
+
+            // x * 1 / sqrt(sum(x^2 / n) + eps)
+            SetVectorMask<T_in, MaskMode::COUNTER>(0x0, n);
+            SetFlag<HardEvent::V_S>(event_id);
+            WaitFlag<HardEvent::V_S>(event_id);
+            float mul_val = 1.f / sqrt(sum[0] + ubufConfig.epsilon);
+            PipeBarrier<PIPE_V>();
+            SetFlag<HardEvent::S_V>(event_id);
+            WaitFlag<HardEvent::S_V>(event_id);
+            Vmuls(((__ubuf__ float *)fp32), ((__ubuf__ float *)fp32), mul_val, 1, 1, 1, 8, 8);
+            PipeBarrier<PIPE_V>();
+
+            // fp32 -> fp16
+            Vconv(((__ubuf__ half *)fp16), ((__ubuf__ float *)fp32), 1, 1, 1, 4, 8);
+            PipeBarrier<PIPE_V>();
+
+            // x * 1 / sqrt(sum(x^2 / n) + eps) * g
+            Vmul(((__ubuf__ half *)fp16), ((__ubuf__ half *)fp16), ((__ubuf__ half *)ubufConfig.gamma), 1, 1, 1, 1, 8,
+                 8, 8);
+            PipeBarrier<PIPE_V>();
+            SetFlag<HardEvent::V_MTE3>(event_id);
+            WaitFlag<HardEvent::V_MTE3>(event_id);
+
+            CopyUbufToGmAlign((__gm__ half *)rmsnorm_out + global_row_id * n, fp16, 1, n, 0, 0);
+            SetFlag<HardEvent::MTE3_MTE2>(event_id);
+            ubufConfig.ping = !ubufConfig.ping;
+        }
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);
+    }
+
+private:
+    __gm__ T_out *rmsnorm_gamma;
+    __gm__ T_in *rmsnorm_in;
+    __gm__ T_out *rmsnorm_out;
+    int32_t m;
+    int32_t n;
+    int32_t core_used;
+};
+
+template <typename T_in, typename T_out>
+class Postprocessor {
+public:
+    __aicore__ explicit Postprocessor() = default;
+
+    FORCE_INLINE_AICORE void SetArgs(PP_MATMUL_AIV_POST_ARGS_FUN())
+    {
+        auto para = reinterpret_cast<__gm__ Lcal::CoCKernelParam *>(para_gm);
+        auto cocTilingData = &para->cocTilingData;
+        this->with_rms_norm = para->postInfo.withRmsNorm;
+        if (this->with_rms_norm) {
+            uint32_t m = cocTilingData->m;
+            uint32_t n = cocTilingData->n;
+            rmsnormprocessor.SetArgs(gm_out, gm_out, gm_gamma, m, n);
+        }
+    }
+
+    FORCE_INLINE_AICORE void Run()
+    {
+        //                         mode, flag_id
+        FFTSCrossCoreSync<PIPE_MTE3>(0, 0);
+        WaitEvent(0);
+        if (this->with_rms_norm) {
+            rmsnormprocessor.RMSNormRun();
+        }
+    }
+
+private:
+    int32_t with_rms_norm;
+    RMSNormprocessor<T_in, T_out> rmsnormprocessor;
+};
+
+#endif
+#endif

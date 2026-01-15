@@ -1,0 +1,24 @@
+# python
+__pycache__/
+
+# cann
+fusion_result.json
+kernel_meta/
+
+# compilation
+/triton/
+build/
+compile_commands.json
+
+# artifact
+dist/
+*.egg-info/
+.eggs/
+
+# docs
+docs/_build
+docs/sources/python-api/generated/
+
+# others
+.vscode/
+.cache/

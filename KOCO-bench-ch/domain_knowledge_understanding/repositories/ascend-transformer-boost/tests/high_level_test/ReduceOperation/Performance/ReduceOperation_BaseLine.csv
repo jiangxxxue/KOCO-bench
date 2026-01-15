@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|ReduceOperation1|166.44|166.44
+2|ReduceOperation2|166.6|166.6
+3|ReduceOperation3|159.565|159.565
+4|ReduceOperation4|160.525|160.525

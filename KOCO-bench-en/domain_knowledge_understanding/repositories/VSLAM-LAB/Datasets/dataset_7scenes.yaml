@@ -1,0 +1,52 @@
+dataset_name: 7scenes
+
+rgb_hz: 30.0
+url_download_root: "https://download.microsoft.com/download/2/8/5/28564B23-0828-408F-8631-23B1EFF1DAC8"
+
+sequence_names:
+  - chess_seq-01
+  - chess_seq-02
+  - chess_seq-03
+  - chess_seq-04
+  - chess_seq-05
+  - chess_seq-06
+  - fire_seq-01
+  - fire_seq-02
+  - fire_seq-03
+  - fire_seq-04
+  - heads_seq-01
+  - heads_seq-02
+  - office_seq-01 
+  - office_seq-02
+  - office_seq-03
+  - office_seq-04
+  - office_seq-05
+  - office_seq-06
+  - office_seq-07 
+  - office_seq-08
+  - office_seq-09
+  - office_seq-10  
+  - pumpkin_seq-01
+  - pumpkin_seq-02
+  - pumpkin_seq-03
+  - pumpkin_seq-06
+  - pumpkin_seq-07
+  - pumpkin_seq-08
+  - redkitchen_seq-01
+  - redkitchen_seq-02
+  - redkitchen_seq-03
+  - redkitchen_seq-04
+  - redkitchen_seq-05
+  - redkitchen_seq-06
+  - redkitchen_seq-07
+  - redkitchen_seq-08
+  - redkitchen_seq-11
+  - redkitchen_seq-12
+  - redkitchen_seq-13
+  - redkitchen_seq-14
+  - stairs_seq-01
+  - stairs_seq-02
+  - stairs_seq-03
+  - stairs_seq-04
+  - stairs_seq-05
+  - stairs_seq-06

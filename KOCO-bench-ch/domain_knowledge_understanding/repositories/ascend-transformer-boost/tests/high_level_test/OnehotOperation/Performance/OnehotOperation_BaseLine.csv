@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|OnehotOperation1|147.515|147.515
+2|OnehotOperation2|146.935|146.935
+3|OnehotOperation3|146.37|146.37
+4|OnehotOperation4|146.215|146.215

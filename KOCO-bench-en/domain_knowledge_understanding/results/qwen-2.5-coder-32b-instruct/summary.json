@@ -1,0 +1,7 @@
+{
+  "model": "qwen/qwen-2.5-coder-32b-instruct",
+  "total": 107,
+  "correct": 39,
+  "incorrect": 68,
+  "accuracy_percent": 36.45
+}

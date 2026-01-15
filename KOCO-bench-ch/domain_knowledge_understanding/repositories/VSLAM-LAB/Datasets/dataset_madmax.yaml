@@ -1,0 +1,7 @@
+dataset_name: madmax
+
+rgb_hz: 30.0
+url_download_root: ""
+
+sequence_names:
+  - A-0

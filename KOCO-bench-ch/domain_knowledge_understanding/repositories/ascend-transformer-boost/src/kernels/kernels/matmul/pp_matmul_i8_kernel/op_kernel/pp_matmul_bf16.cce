@@ -1,0 +1,1329 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+
+#ifdef __CCE_KT_TEST__
+#include "stub_def.h"
+#include "stub_fun.h"
+#else
+#define __aicore__ [aicore]
+#endif
+#include "kernel_operator.h"
+#include "kernels/matmul/tiling/tiling_data.h"
+#include "kernels/utils/kernel/common.h"
+#include "kernels/utils/kernel/layout.h" 
+#include "kernels/utils/kernel/mem.h"
+#include "kernels/utils/kernel/iterator.h"
+#include "kernels/utils/kernel/mma.h"
+#include "kernels/utils/kernel/utils.h"
+#include "kernels/utils/kernel/simd.h"
+#define __force_inline__ inline __attribute__((always_inline))
+
+constexpr uint32_t L0AB_PINGPONG_BUFFER_LEN_INT8 = 32768; // 32 KB
+constexpr uint32_t BLOCK_SIZE_16 = 16;
+constexpr uint32_t BLOCK_SIZE_32 = 32;
+constexpr uint32_t CUBE_MATRIX_SIZE_512 = 16 * 32;       // 16 * 23
+constexpr uint64_t L1_PINGPONG_BUFFER_LEN_FP16 = 131072; // 256 KB
+constexpr uint64_t L1_PINGPONG_BUFFER_LEN_INT8 = 262144; // 256 KB
+constexpr uint64_t SCALE_L1_LEN = 4096;
+constexpr uint64_t BIAS_L1_LEN = 2048;
+constexpr uint64_t CONST_4 = 4;
+constexpr uint64_t CONST_8 = 8;
+constexpr uint64_t CONST_32 = 32;
+constexpr uint64_t CONST_64 = 64;
+constexpr uint64_t CONST_128 = 128;
+constexpr uint64_t ND2NZ_STRIDE_LIMIT = 65536;
+
+constexpr uint32_t AIC_WRITE_FINISH_FLAG_ID = 1;
+constexpr uint32_t AIV_READ_FINISH_FLAG_ID = 2;
+constexpr uint32_t MAX_HW_SYNC_COUNTER = 15;
+constexpr uint32_t SYNC_MODE = 2;
+constexpr uint8_t UNIT_FLAG_MODE_2 = 2;
+constexpr uint8_t UNIT_FLAG_MODE_3 = 3;
+
+enum class QuantMode : uint32_t {
+    PER_CHANNEL_SYMM = 0,
+    PER_CHANNEL_ASYMM,
+    PER_TOKEN_SYMM
+};
+
+__aicore__ __force_inline__ uint32_t CeilDiv64(const uint32_t val) { return (val + CONST_64 - 1) / CONST_64; }
+
+__aicore__ __force_inline__ uint32_t CeilDiv8(const uint32_t val) { return (val + CONST_8 - 1) / CONST_8; }
+
+__aicore__ __force_inline__ uint32_t RoundUp512(const uint32_t val)
+{
+    return (val + CUBE_MATRIX_SIZE_512 - 1) / CUBE_MATRIX_SIZE_512 * CUBE_MATRIX_SIZE_512;
+}
+
+__aicore__ __force_inline__ uint32_t RoundUp32(const uint32_t val)
+{
+    return (val + BLOCK_SIZE_32 - 1) / BLOCK_SIZE_32 * BLOCK_SIZE_32;
+}
+
+__aicore__ __force_inline__ uint32_t RoundUp16(const uint32_t val)
+{
+    return (val + BLOCK_SIZE_16 - 1) / BLOCK_SIZE_16 * BLOCK_SIZE_16;
+}
+
+__aicore__ __force_inline__ uint32_t RoundUp8(const uint32_t val) { return (val + CONST_8 - 1) / CONST_8 * CONST_8; }
+
+#if defined(__DAV_C220_CUBE__)
+template <bool transA, bool transB, bool withBias = false, typename InDtype = half,
+          typename OutDtype = half, typename BiasDtype = float, typename ScaleDtype = float,
+          DataFormat FormatA = DataFormat::ND, DataFormat FormatB = DataFormat::ND>
+class PpMatmulInt {
+public:
+    __aicore__ PpMatmulInt() {};
+
+    __aicore__ __force_inline__ void SetArgs(__gm__ uint8_t *__restrict__ a, __gm__ uint8_t *__restrict__ b,
+                                             __gm__ uint8_t *__restrict__ c, __gm__ uint8_t *__restrict__ bias,
+                                             __gm__ uint8_t *__restrict__ descale, __gm__ uint8_t *__restrict__ pertoken_descale,
+                                             __gm__ uint8_t *__restrict__ tiling_data)
+    {
+        gm_a.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(a));
+        gm_b.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(b));
+        gm_c.SetGlobalBuffer(reinterpret_cast<__gm__ OutDtype *>(c));
+        gm_bias.SetGlobalBuffer(reinterpret_cast<__gm__ BiasDtype *>(bias));
+        gm_descale.SetGlobalBuffer(reinterpret_cast<__gm__ ScaleDtype *>(descale));
+        auto gm_tiling_data = reinterpret_cast<__gm__ AsdOps::PpMatmulTilingData *>(tiling_data);
+        batch_size = gm_tiling_data->batch;
+        m = gm_tiling_data->m;
+        k = gm_tiling_data->k;
+        n = gm_tiling_data->n;
+        m0 = gm_tiling_data->m0;
+        k0 = gm_tiling_data->k0;
+        n0 = gm_tiling_data->n0;
+        m_loop = gm_tiling_data->mLoop;
+        k_loop = gm_tiling_data->kLoop;
+        n_loop = gm_tiling_data->nLoop;
+        core_loop = gm_tiling_data->coreLoop;
+        swizzle_cnt = gm_tiling_data->swizzlCount;
+        swizzlDirect = gm_tiling_data->swizzlDirect;
+        en_shuffle_k = gm_tiling_data->enShuffleK;
+
+        block_size = BLOCK_SIZE_32;
+        cube_matrix_size = CUBE_MATRIX_SIZE_512;
+        uint32_t a_l1_size = RoundUp512(m0 * k0);
+        if constexpr (transA || !transB) {
+            a_l1_size = RoundUp512(RoundUp32(m0) * k0);
+        }
+        L1_PINGPONG_BUFFER_LEN = L1_PINGPONG_BUFFER_LEN_INT8;
+        L0AB_PINGPONG_BUFFER_LEN = L0AB_PINGPONG_BUFFER_LEN_INT8;
+        l1_base_b = l1_base_a[a_l1_size];
+        core_num = AscendC::GetBlockNum();
+        core_idx = AscendC::GetBlockIdx();
+        ping_flag = 1;
+    }
+
+    __aicore__ __force_inline__ void GetBlockIdx(uint32_t index, uint32_t &m_idx, uint32_t &n_idx)
+    {
+        uint32_t in_batch_idx = index % (m_loop * n_loop);
+        if (swizzlDirect == 0) { // Zn
+            uint32_t tile_block_loop = (m_loop + swizzle_cnt - 1) / swizzle_cnt;
+            uint32_t tile_block_idx = in_batch_idx / (swizzle_cnt * n_loop);
+            uint32_t in_tile_block_idx = in_batch_idx % (swizzle_cnt * n_loop);
+
+            uint32_t n_row = swizzle_cnt;
+            if (tile_block_idx == tile_block_loop - 1) {
+                n_row = m_loop - swizzle_cnt * tile_block_idx;
+            }
+            m_idx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_row;
+            n_idx = in_tile_block_idx / n_row;
+            if (tile_block_idx % 2 != 0) {
+                n_idx = n_loop - n_idx - 1;
+            }
+        } else { // Nz
+            uint32_t tile_block_loop = (n_loop + swizzle_cnt - 1) / swizzle_cnt;
+            uint32_t tile_block_idx = in_batch_idx / (swizzle_cnt * m_loop);
+            uint32_t in_tile_block_idx = in_batch_idx % (swizzle_cnt * m_loop);
+
+            uint32_t n_col = swizzle_cnt;
+            if (tile_block_idx == tile_block_loop - 1) {
+                n_col = n_loop - swizzle_cnt * tile_block_idx;
+            }
+            m_idx = in_tile_block_idx / n_col;
+            n_idx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_col;
+            if (tile_block_idx % 2 != 0) {
+                m_idx = m_loop - m_idx - 1;
+            }
+        }
+    }
+
+    __aicore__ __force_inline__ void run()
+    {
+        SET_FLAG(MTE1, MTE2, EVENT_ID0);
+        SET_FLAG(MTE1, MTE2, EVENT_ID1);
+        SET_FLAG(MTE1, MTE2, EVENT_ID2);
+        SET_FLAG(MTE1, MTE2, EVENT_ID3);
+        SET_FLAG(M, MTE1, EVENT_ID0);
+        SET_FLAG(M, MTE1, EVENT_ID1);
+        SET_FLAG(MTE1, MTE2, EVENT_ID7);
+        uint32_t m_idx = 0;
+        uint32_t n_idx = 0;
+        uint64_t workspace_offset = core_idx * RoundUp32(m0) * RoundUp32(n0);
+        for (uint32_t loop_idx = core_idx; loop_idx < core_loop; loop_idx += core_num) {
+            GetBlockIdx(loop_idx, m_idx, n_idx);
+            uint64_t batch_idx = loop_idx / n_loop / m_loop;
+            uint64_t offset_a;
+            uint64_t offset_b;
+            uint64_t offset_bias;
+            uint64_t offset_scalar;
+            uint64_t offset_a_next;
+            uint64_t offset_b_next;
+            uint64_t offset_c = batch_idx * m * n + m_idx * m0 * n + n_idx * n0;
+            uint32_t m_actual = (m_idx == (m_loop - 1)) ? (m - m_idx * m0) : m0;
+            uint32_t n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+            uint32_t bias_n_round = RoundUp8(n_actual);
+            uint32_t m_round = 0;
+            uint32_t n_round = 0;
+            uint64_t shuffle_k = en_shuffle_k ? core_idx % k_loop : 0;
+            uint32_t m_round_16 = RoundUp16(m_actual);
+            uint32_t m_round_32 = RoundUp32(m_actual);
+            if constexpr (transA) {
+                m_round = m_round_32;
+            } else {
+                m_round = m_round_16;
+            }
+            if constexpr (transB) {
+                n_round = RoundUp16(n_actual);
+            } else {
+                n_round = RoundUp32(n_actual);
+            }
+
+            uint32_t mn_max = m_round > n_round ? m_round : n_round;
+            uint32_t k_part_len = 0;
+            k_part_len = L0AB_PINGPONG_BUFFER_LEN_INT8 / mn_max / BLOCK_SIZE_32 * BLOCK_SIZE_32;
+
+            if constexpr (transA) {
+                offset_a = batch_idx * m * k + m_idx * m0 + shuffle_k * k0 * m;
+            } else {
+                offset_a = batch_idx * m * k + m_idx * m0 * k + shuffle_k * k0;
+            }
+            if constexpr (transB) {
+                if constexpr (FormatB != DataFormat::NZ) {
+                    offset_b = batch_idx * k * n + n_idx * n0 * k + shuffle_k * k0;
+                } else {
+                    offset_b =
+                        batch_idx * RoundUp16(n) * RoundUp32(k) + shuffle_k * k0 * RoundUp16(n) + n_idx * n0 * CONST_32;
+                }
+            } else {
+                if constexpr (FormatB != DataFormat::NZ) {
+                    offset_b = batch_idx * k * n + n_idx * n0 + shuffle_k * k0 * n;
+                } else {
+                    offset_b =
+                        batch_idx * RoundUp16(k) * RoundUp32(n) + n_idx * n0 * RoundUp16(k) + shuffle_k * k0 * CONST_32;
+                }
+            }
+            offset_bias = batch_idx * n + n_idx * n0;
+            offset_scalar = batch_idx * n + n_idx * n0;
+
+            uint32_t k_actual = (shuffle_k == k_loop - 1) ? k - shuffle_k * k0 : k0;
+            uint32_t k_round = (k_actual + block_size - 1) / block_size * block_size; // int8 ：32 fp16 ：16
+
+            AscendC::LocalTensor<InDtype> l1_buf_a =
+                ping_flag ? l1_base_a : l1_base_a[L1_PINGPONG_BUFFER_LEN];
+            AscendC::LocalTensor<InDtype> l1_buf_b =
+                ping_flag ? l1_base_b : l1_base_b[L1_PINGPONG_BUFFER_LEN];
+            AscendC::LocalTensor<InDtype> l0a_buf =
+                ping_flag ? l0a_base : l0a_base[L0AB_PINGPONG_BUFFER_LEN];
+            AscendC::LocalTensor<InDtype> l0b_buf =
+                ping_flag ? l0b_base : l0b_base[L0AB_PINGPONG_BUFFER_LEN];
+
+            auto event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+            if (withBias) {
+                WAIT_FLAG(MTE1, MTE2, EVENT_ID7);
+                gm_to_l1<ArchType::ASCEND_V220, BiasDtype, DataFormat::ND, DataFormat::ND>(bias_l1,              // dst
+                                                                                           gm_bias[offset_bias], // src
+                                                                                           1, RoundUp16(1), 1, bias_n_round,
+                                                                                           RoundUp16(n_round), n_round);
+                SET_FLAG(MTE2, MTE1, EVENT_ID6);
+            }
+
+            WAIT_FLAG(MTE1, MTE2, event_id);
+            // *** load matrix A to L1
+            if ((m == 1) || (m_actual == 1 && !transA)) {
+                gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::ND>(l1_buf_a,       // dst
+                                                                                         gm_a[offset_a], // src
+                                                                                         1, RoundUp16(1), 1, k_round,
+                                                                                         RoundUp16(k_round), k_round);
+            } else {
+                if constexpr (transA) {
+                    gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::NZ>(
+                        l1_buf_a, gm_a[offset_a], k_actual, k_round, k, m_actual, m_round, m);
+                } else {
+                    gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::NZ>(
+                        l1_buf_a, gm_a[offset_a], m_actual, m_round, m, k_actual, k_round, k);
+                }
+            }
+            SET_FLAG(MTE2, MTE1, event_id);
+
+            // *** load matrix B to L1
+            WAIT_FLAG(MTE1, MTE2, event_id + CONST_2);
+            if constexpr (transB) {
+                if constexpr (FormatB != DataFormat::NZ) {
+                    gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::NZ>(
+                        l1_buf_b, gm_b[offset_b], n_actual, n_round, n, k_actual, k_round, k);
+                } else {
+                    gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::NZ, DataFormat::NZ>(
+                        l1_buf_b, gm_b[offset_b], n_actual, n_round, RoundUp16(n), k_actual, k_round, RoundUp32(k));
+                }
+            } else {
+                if constexpr (FormatB != DataFormat::NZ) {
+                    gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::NZ>(
+                        l1_buf_b, gm_b[offset_b], k_actual, k_round, k, n_actual, n_round, n);
+                } else {
+                    gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::NZ, DataFormat::NZ>(
+                        l1_buf_b, gm_b[offset_b], k_actual, RoundUp16(k_actual), RoundUp16(k), n_actual, n_round, RoundUp32(n));
+                }
+            }
+            SET_FLAG(MTE2, MTE1, event_id + CONST_2);
+
+            for (uint64_t k_idx = 0; k_idx < k_loop; k_idx++) {
+                shuffle_k = en_shuffle_k ? (k_idx + core_idx) % k_loop : k_idx;
+                uint32_t k_actual = (shuffle_k == (k_loop - 1)) ? (k - shuffle_k * k0) : k0;
+                uint32_t k_round = (k_actual + block_size - 1) / block_size * block_size;
+                uint32_t k_part_loop = (k_actual + k_part_len - 1) / k_part_len;
+
+                AscendC::LocalTensor<InDtype> l1_buf_a =
+                    ping_flag ? l1_base_a : l1_base_a[L1_PINGPONG_BUFFER_LEN];
+                AscendC::LocalTensor<InDtype> l1_buf_b =
+                    ping_flag ? l1_base_b : l1_base_b[L1_PINGPONG_BUFFER_LEN];
+                auto event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+                if (k_idx < k_loop - 1) {
+                    uint64_t shuffle_k_next = en_shuffle_k ? (core_idx + k_idx + 1) % k_loop : k_idx + 1;
+                    if constexpr (transA) {
+                        offset_a_next = batch_idx * m * k + m_idx * m0 + shuffle_k_next * k0 * m;
+                    } else {
+                        offset_a_next = batch_idx * m * k + m_idx * m0 * k + shuffle_k_next * k0;
+                    }
+
+                    if constexpr (transB) {
+                        if constexpr (FormatB != DataFormat::NZ) {
+                            offset_b_next = batch_idx * k * n + n_idx * n0 * k + shuffle_k_next * k0;
+                        } else {
+                            offset_b_next = batch_idx * RoundUp16(n) * RoundUp32(k) + shuffle_k_next * k0 * RoundUp16(n)+
+                                            n_idx * n0 * CONST_32;
+                        }
+                    } else {
+                        if constexpr (FormatB != DataFormat::NZ) {
+                            offset_b_next = batch_idx * k * n + n_idx * n0 + shuffle_k_next * k0 * n;
+                        } else {
+                            offset_b_next = batch_idx * RoundUp16(k) * RoundUp32(n) + n_idx * n0 * RoundUp16(k) +
+                                        shuffle_k_next * k0 * CONST_32;
+                        }
+                    }
+
+                    uint32_t k_actual_next = (shuffle_k_next == (k_loop - 1)) ? (k - shuffle_k_next * k0) : k0;
+                    uint32_t k_round_next = (k_actual_next + block_size - 1) / block_size * block_size;
+
+                    AscendC::LocalTensor<InDtype> l1_buf_a_next =
+                        (1 - ping_flag) ? l1_base_a : l1_base_a[L1_PINGPONG_BUFFER_LEN];
+                    AscendC::LocalTensor<InDtype> l1_buf_b_next =
+                        (1 - ping_flag) ? l1_base_b : l1_base_b[L1_PINGPONG_BUFFER_LEN];
+                    auto event_id_next = (1 - ping_flag) ? EVENT_ID0 : EVENT_ID1;
+
+                    WAIT_FLAG(MTE1, MTE2, event_id_next);
+                    // *** load matrix A to L1
+                    if ((m == 1) || (m_actual == 1 && !transA)) {
+                        gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::ND>(
+                            l1_buf_a_next, gm_a[offset_a_next], 1, RoundUp16(1), 1, k_round_next,
+                            RoundUp16(k_round_next), k_round_next);
+                    } else {
+                        if constexpr (transA) {
+                            gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::NZ>(
+                                l1_buf_a_next, gm_a[offset_a_next], k_actual_next, k_round_next, k, m_actual, m_round,
+                                m);
+                        } else {
+                            gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::NZ>(
+                                l1_buf_a_next, gm_a[offset_a_next], m_actual, m_round, m, k_actual_next, k_round_next,
+                                k);
+                        }
+                    }
+                    SET_FLAG(MTE2, MTE1, event_id_next);
+
+                    // *** load matrix B to L1
+                    WAIT_FLAG(MTE1, MTE2, event_id_next + CONST_2);
+                    if constexpr (transB) {
+                        if constexpr (FormatB != DataFormat::NZ) {
+                            gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::NZ>(
+                                l1_buf_b_next, gm_b[offset_b_next], n_actual, n_round, n, k_actual_next, k_round_next, k);
+                        } else {
+                            gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::NZ, DataFormat::NZ>(l1_buf_b_next,
+                                                                                                     gm_b[offset_b_next],
+                                                                                                     n_actual,
+                                                                                                     n_round,
+                                                                                                     RoundUp16(n),
+                                                                                                     k_actual_next,
+                                                                                                     k_round_next,
+                                                                                                     RoundUp32(k));
+                        }
+                    } else {
+                        if constexpr (FormatB != DataFormat::NZ) {
+                            gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::NZ>(
+                                l1_buf_b_next, gm_b[offset_b_next], k_actual_next, k_round_next, k, n_actual, n_round, n);
+                        } else {
+                            gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::NZ, DataFormat::NZ>(l1_buf_b_next,
+                                                                                                     gm_b[offset_b_next],
+                                                                                                     k_actual_next,
+                                                                                                     RoundUp16(k_actual_next),
+                                                                                                     RoundUp16(k),
+                                                                                                     n_actual,
+                                                                                                     n_round,
+                                                                                                     RoundUp32(n));
+                        }
+                    }
+                    SET_FLAG(MTE2, MTE1, event_id_next + CONST_2);
+                }
+
+                for (int k_part_idx = 0; k_part_idx < k_part_loop; k_part_idx++) {
+                    uint32_t k0_round = (k_part_idx < k_part_loop - 1) ? k_part_len : k_round - k_part_idx * k_part_len;
+                    uint32_t k0_actual =
+                        (k_part_idx < k_part_loop - 1) ? k_part_len : k_actual - k_part_idx * k_part_len;
+
+                    auto mte1_mad_ping_flag = 1 - k_part_idx % 2;
+                    auto mte1_mad_event_id = mte1_mad_ping_flag ? EVENT_ID0 : EVENT_ID1;
+                    AscendC::LocalTensor<InDtype> l0a_buf =
+                        l0a_base[(k_part_idx % 2) * L0AB_PINGPONG_BUFFER_LEN];
+                    AscendC::LocalTensor<InDtype> l0b_buf =
+                        l0b_base[(k_part_idx % 2) * L0AB_PINGPONG_BUFFER_LEN];
+
+                    // *** load matrix A from L1 to L0A
+                    if (k_part_idx == 0) {
+                        WAIT_FLAG(MTE2, MTE1, event_id);
+                    }
+                    WAIT_FLAG(M, MTE1, mte1_mad_event_id);
+                    if ((m == 1) || (m_actual == 1 && !transA)) {
+                        l1_to_l0_a<ArchType::ASCEND_V220, InDtype, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                            l0a_buf, l1_buf_a[k_part_idx * k_part_len], 0,
+                            (k0_round + cube_matrix_size - 1) / cube_matrix_size, // repeat
+                            0,
+                            1, // srcStride
+                            0,
+                            0 // dstStride
+                        );    // addr_cal_mode_t
+                    } else {
+                        if constexpr (transA) {
+                            for (uint64_t i = 0; i < m_round / BLOCK_SIZE_32; i++) {
+                                AscendC::LoadDataWithTranspose(
+                                    l0a_buf[i * k0_round * BLOCK_SIZE_32],
+                                    l1_buf_a[k_part_idx * k_part_len * BLOCK_SIZE_32 +
+                                                    i * k_round * BLOCK_SIZE_32],
+                                    AscendC::LoadData2dTransposeParams(0,                            // startIndexIn
+                                                                       k0_round / BLOCK_SIZE_32,     // repeatTimesIn
+                                                                       1,                            // srcStrideIn
+                                                                       0,                            // dstGapIn
+                                                                       k0_round / BLOCK_SIZE_32 - 1, // dstfracGapIn
+                                                                       0)                            // addrModeIn
+                                );
+                            }
+                        } else {
+                            for (uint64_t i = 0; i < m_round / BLOCK_SIZE_16; i++) {
+                                l1_to_l0_a<ArchType::ASCEND_V220, InDtype, false, DataFormat::VECTOR,
+                                           DataFormat::VECTOR>(
+                                    l0a_buf[i * k0_round * BLOCK_SIZE_16],
+                                    l1_buf_a[k_part_idx * k_part_len * m_round + i * cube_matrix_size], 0,
+                                    k0_round / block_size, // repeat
+                                    0,
+                                    m_round / BLOCK_SIZE_16, // srcStride
+                                    0,
+                                    0 // dstStride
+                                );    // addr_cal_mode_t
+                            }
+                        }
+                    }
+                    if (k_part_idx == k_part_loop - 1) {
+                        SET_FLAG(MTE1, MTE2, event_id);
+                    }
+
+                    // *** load matrix B from L1 to L0B
+                    if (k_part_idx == 0) {
+                        WAIT_FLAG(MTE2, MTE1, event_id + CONST_2);
+                    }
+                    if constexpr (transB) {
+                        l1_to_l0_b<ArchType::ASCEND_V220, InDtype, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                            l0b_buf, l1_buf_b[k_part_idx * k_part_len * n_round], 0,
+                            k0_round * n_round / cube_matrix_size, // repeat
+                            0,
+                            1, // srcStride
+                            0,
+                            0 // dstStride
+                        );    // addr_cal_mode_t
+                    } else {
+                        for (uint64_t i = 0; i < k0_round / BLOCK_SIZE_32; i++) {
+                            AscendC::LoadDataWithTranspose(
+                                l0b_buf[i * RoundUp16(n_actual) * BLOCK_SIZE_32],
+                                l1_buf_b[(k_part_idx * k_part_len + i * BLOCK_SIZE_32) * BLOCK_SIZE_32],
+                                AscendC::LoadData2dTransposeParams(0,                       // startIndexIn
+                                                                   n_round / BLOCK_SIZE_32, // repeatTimesIn
+                                                                   k_round / BLOCK_SIZE_32, // srcStrideIn
+                                                                   1,                       // dstGapIn
+                                                                   0,                       // dstfracGapIn
+                                                                   0)                       // addrModeIn
+                            );
+                        }
+                    }
+                    if (k_part_idx == k_part_loop - 1) {
+                        SET_FLAG(MTE1, MTE2, event_id + CONST_2);
+                    }
+
+                    SET_FLAG(MTE1, M, mte1_mad_event_id);
+                    WAIT_FLAG(MTE1, M, mte1_mad_event_id);
+
+                    bool init_c = (k_idx == 0 && k_part_idx == 0);
+                    bool sp_flag = (m != 1 && m_actual == 1 && transA);
+                    uint8_t unitFlag = (k_part_idx == (k_part_loop - 1) && k_idx == (k_loop - 1)) ? UNIT_FLAG_MODE_3
+                                                                                                  : UNIT_FLAG_MODE_2;
+                    if (init_c) {
+                        if (withBias) {
+                            WAIT_FLAG(MTE2, MTE1, EVENT_ID6);
+                            l1_to_bt<ArchType::ASCEND_V220, BiasDtype>(
+                                bias_bt,                                         // dst
+                                bias_l1,                                         // src
+                                0,                                               // convControl
+                                1,                                               // nBurst
+                                CeilDiv<CONST_64>(n_actual * sizeof(BiasDtype)), // lenBurst
+                                0,                                               // srcGap
+                                0);                                              // dstGap
+                            SET_FLAG(MTE1, MTE2, EVENT_ID7); // bias ready, mte2 can begin move A/B or scale
+                            SET_FLAG(MTE1, M, EVENT_ID7);    // bias ready, mmad can begin
+                            WAIT_FLAG(MTE1, M, EVENT_ID7);   // wait move bias fron L1 to BT
+                            mmad<ArchType::ASCEND_V220, InDtype, InDtype, BiasDtype, false>(l0c_buf,             // c
+                                                                                            l0a_buf,             // a
+                                                                                            l0b_buf,             // b
+                                                                                            ((uint64_t)bias_bt), // bias
+                                                                                            sp_flag ? m_round_16
+                                                                                                    : m_actual, // m
+                                                                                            n_actual,           // n
+                                                                                            k0_actual,          // k
+                                                                                            0,         // cmatrixInitVal
+                                                                                            unitFlag); // unitFlag
+                        } else {
+                            mmad<ArchType::ASCEND_V220, InDtype, InDtype, BiasDtype, false>(l0c_buf, // c
+                                                                                            l0a_buf, // a
+                                                                                            l0b_buf, // b
+                                                                                            sp_flag ? m_round_16
+                                                                                                    : m_actual, // m
+                                                                                            n_actual,           // n
+                                                                                            k0_actual,          // k
+                                                                                            1,         // cmatrixInitVal
+                                                                                            unitFlag); // unitFlag
+                        }
+                    } else {
+                        mmad<ArchType::ASCEND_V220, InDtype, InDtype, BiasDtype, false>(l0c_buf, // c
+                                                                                        l0a_buf, // a
+                                                                                        l0b_buf, // b
+                                                                                        sp_flag ? m_round_16
+                                                                                                : m_actual, // m
+                                                                                        n_actual,           // n
+                                                                                        k0_actual,          // k
+                                                                                        0,         // cmatrixInitVal
+                                                                                        unitFlag); // unitFlag
+                    }
+                    AscendC::PipeBarrier<PIPE_M>();
+                    SET_FLAG(M, MTE1, mte1_mad_event_id);
+                }
+
+                ping_flag = 1 - ping_flag;
+            }
+            AscendC::PipeBarrier<PIPE_FIX>();
+            if(loop_idx != core_idx) {
+                WaitFlagDev(AIV_READ_FINISH_FLAG_ID);
+            }
+            // copy from L0C to gm
+            l0c_to_gm<ArchType::ASCEND_V220, DataFormat::ND, int32_t, int32_t>(gm_c[workspace_offset], // dst
+                                                                               l0c_buf,                // src
+                                                                               m_actual,               // MSize
+                                                                               n_actual,               // NSize
+                                                                               m_round_16,             // srcStride
+                                                                               RoundUp32(n0),     // dstStride_dst_D
+                                                                               UNIT_FLAG_MODE_3); // unitFlag
+            FftsCrossCoreSync<PIPE_FIX, SYNC_MODE>(AIC_WRITE_FINISH_FLAG_ID);
+        }
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID0);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID1);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID2);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID3);
+        WAIT_FLAG(M, MTE1, EVENT_ID0);
+        WAIT_FLAG(M, MTE1, EVENT_ID1);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID7);
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
+
+private:
+    AsdopsBuffer<ArchType::ASCEND_V220> buf;
+
+    AscendC::GlobalTensor<InDtype> gm_a;
+    AscendC::GlobalTensor<InDtype> gm_b;
+    AscendC::GlobalTensor<BiasDtype> gm_bias;
+    AscendC::GlobalTensor<ScaleDtype> gm_descale;
+    AscendC::GlobalTensor<OutDtype> gm_c;
+
+    AscendC::LocalTensor<InDtype> l1_base_a =
+        buf.GetBuffer<BufferType::ASCEND_CB, InDtype>(SCALE_L1_LEN + BIAS_L1_LEN);
+    AscendC::LocalTensor<InDtype> l1_base_b =
+        buf.GetBuffer<BufferType::ASCEND_CB, InDtype>(L1_PINGPONG_BUFFER_LEN_FP16);
+    AscendC::LocalTensor<InDtype> l0a_base = buf.GetBuffer<BufferType::ASCEND_L0A, InDtype>(0);
+    AscendC::LocalTensor<InDtype> l0b_base = buf.GetBuffer<BufferType::ASCEND_L0B, InDtype>(0);
+    AscendC::LocalTensor<BiasDtype> l0c_buf = buf.GetBuffer<BufferType::ASCEND_L0C, BiasDtype>(0);
+    AscendC::LocalTensor<ScaleDtype> scale_l1 = buf.GetBuffer<BufferType::ASCEND_CB, ScaleDtype>(BIAS_L1_LEN);
+    AscendC::LocalTensor<BiasDtype> bias_l1 = buf.GetBuffer<BufferType::ASCEND_CB, BiasDtype>(0);
+
+    uint64_t bias_bt{0};
+
+    uint32_t core_num{0};
+
+    uint32_t batch_size{0};
+    uint32_t m{0};
+    uint32_t k{0};
+    uint32_t n{0};
+
+    uint32_t m0{0};
+    uint32_t k0{0};
+    uint32_t n0{0};
+
+    uint32_t m_loop{0};
+    uint32_t n_loop{0};
+    uint32_t k_loop{0};
+    uint32_t core_loop{0};
+    uint32_t core_idx{0};
+    uint32_t ping_flag{0};
+    uint32_t block_size{0};
+    uint32_t cube_matrix_size{0};
+    uint32_t swizzle_cnt{1};
+    uint32_t en_shuffle_k{0};
+    uint32_t swizzlDirect{0};
+
+    uint64_t L1_PINGPONG_BUFFER_LEN{0};
+    uint32_t L0AB_PINGPONG_BUFFER_LEN{0};
+};
+
+extern "C" __global__ __aicore__ void
+pp_matmul_int8_bf16(__gm__ uint8_t *__restrict__ ffts_addr, __gm__ uint8_t *__restrict__ gm_a,
+                    __gm__ uint8_t *__restrict__ gm_b, __gm__ uint8_t *__restrict__ gm_bias,
+                    __gm__ uint8_t *__restrict__ gm_descale, __gm__ uint8_t *__restrict__ gm_pertoken_descale, __gm__ uint8_t *__restrict__ gm_c_out,
+                    __gm__ uint8_t *__restrict__ workspace, __gm__ uint8_t *__restrict__ tiling_data)
+{
+    // int8 + int32_bias + u64_descale
+    PpMatmulInt<false, false, true, int8_t, int32_t, int32_t, uint64_t> matmul_int8;
+    PpMatmulInt<true, false, true, int8_t, int32_t, int32_t, uint64_t> matmul_int8_ta;
+    PpMatmulInt<false, true, true, int8_t, int32_t, int32_t, uint64_t> matmul_int8_tb;
+    PpMatmulInt<true, true, true, int8_t, int32_t, int32_t, uint64_t> matmul_int8_tatb;
+
+    // int8  + u64_descale
+    PpMatmulInt<false, false, false, int8_t, int32_t, int32_t, uint64_t> matmul_int8_nobias;
+    PpMatmulInt<true, false, false, int8_t, int32_t, int32_t, uint64_t> matmul_int8_ta_nobias;
+    PpMatmulInt<false, true, false, int8_t, int32_t, int32_t, uint64_t> matmul_int8_tb_nobias;
+    PpMatmulInt<true, true, false, int8_t, int32_t, int32_t, uint64_t> matmul_int8_tatb_nobias;
+
+    // int8 + int32_bias + u64_descale
+    PpMatmulInt<false, false, true, int8_t, int32_t, int32_t, uint64_t, DataFormat::ND, DataFormat::NZ> matmul_int8_b_nz;
+    PpMatmulInt<true, false, true, int8_t, int32_t, int32_t, uint64_t, DataFormat::ND, DataFormat::NZ> matmul_int8_ta_b_nz;
+    PpMatmulInt<false, true, true, int8_t, int32_t, int32_t, uint64_t, DataFormat::ND, DataFormat::NZ> matmul_int8_tb_b_nz;
+    PpMatmulInt<true, true, true, int8_t, int32_t, int32_t, uint64_t, DataFormat::ND, DataFormat::NZ> matmul_int8_tatb_b_nz;
+
+    // int8  + u64_descale
+    PpMatmulInt<false, false, false, int8_t, int32_t, int32_t, uint64_t, DataFormat::ND, DataFormat::NZ> matmul_int8_nobias_b_nz;
+    PpMatmulInt<true, false, false, int8_t, int32_t, int32_t, uint64_t, DataFormat::ND, DataFormat::NZ> matmul_int8_ta_nobias_b_nz;
+    PpMatmulInt<false, true, false, int8_t, int32_t, int32_t, uint64_t, DataFormat::ND, DataFormat::NZ> matmul_int8_tb_nobias_b_nz;
+    PpMatmulInt<true, true, false, int8_t, int32_t, int32_t, uint64_t, DataFormat::ND, DataFormat::NZ> matmul_int8_tatb_nobias_b_nz;
+
+    SetPadding<uint64_t>((uint64_t)0);
+    SetAtomicnone();
+    SetNdpara(1, 0, 0);
+    SetFftsBaseAddr((uint64_t)ffts_addr);
+    auto gm_tiling_data = reinterpret_cast<__gm__ AsdOps::PpMatmulTilingData *>(tiling_data);
+
+    // {TENSOR_DTYPE_INT8, 0u}, {TENSOR_DTYPE_FLOAT16, 1u}, {TENSOR_DTYPE_BF16, 2u}, {TENSOR_DTYPE_FLOAT, 3u}};
+    // {{TENSOR_FORMAT_ND, 0u}, {TENSOR_FORMAT_FRACTAL_NZ, 1u}};
+    // SwizzleDir[1] TransA[1] TransB[1] DtypeA[3] DtypeB[3] DtypeC[3] FormatA[1] FormatB[1] FormatC[1] WithBias[1]
+    if (gm_tiling_data->quantMode == static_cast<uint32_t>(QuantMode::PER_TOKEN_SYMM)) {
+        // 优先处理pertoken场景
+        switch (gm_tiling_data->tilingKey) {
+            case 0b0'0'0'000'000'010'0'0'0'0:
+            case 0b1'0'0'000'000'010'0'0'0'0:
+                matmul_int8_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+                matmul_int8_nobias.run();
+                break;
+            case 0b0'1'0'000'000'010'0'0'0'0:
+            case 0b1'1'0'000'000'010'0'0'0'0:
+                matmul_int8_ta_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+                matmul_int8_ta_nobias.run();
+                break;
+            case 0b0'0'1'000'000'010'0'0'0'0:
+            case 0b1'0'1'000'000'010'0'0'0'0:
+                matmul_int8_tb_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+                matmul_int8_tb_nobias.run();
+                break;
+            case 0b0'1'1'000'000'010'0'0'0'0:
+            case 0b1'1'1'000'000'010'0'0'0'0:
+                matmul_int8_tatb_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+                matmul_int8_tatb_nobias.run();
+                break;
+            case 0b0'0'0'000'000'001'0'0'0'0:
+            case 0b1'0'0'000'000'001'0'0'0'0:
+                matmul_int8_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+                matmul_int8_nobias.run();
+                break;
+            case 0b0'1'0'000'000'001'0'0'0'0:
+            case 0b1'1'0'000'000'001'0'0'0'0:
+                matmul_int8_ta_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+                matmul_int8_ta_nobias.run();
+                break;
+            case 0b0'0'1'000'000'001'0'0'0'0:
+            case 0b1'0'1'000'000'001'0'0'0'0:
+                matmul_int8_tb_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+                matmul_int8_tb_nobias.run();
+                break;
+            case 0b0'1'1'000'000'001'0'0'0'0:
+            case 0b1'1'1'000'000'001'0'0'0'0:
+                matmul_int8_tatb_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+                matmul_int8_tatb_nobias.run();
+                break;
+            default: break;
+        }
+        return;
+    }
+    switch (gm_tiling_data->tilingKey) {
+        case 0b0'0'0'000'000'010'0'0'0'1:
+        case 0b1'0'0'000'000'010'0'0'0'1:
+            matmul_int8.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8.run();
+            break;
+        case 0b0'1'0'000'000'010'0'0'0'1:
+        case 0b1'1'0'000'000'010'0'0'0'1:
+            matmul_int8_ta.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_ta.run();
+            break;
+        case 0b0'0'1'000'000'010'0'0'0'1:
+        case 0b1'0'1'000'000'010'0'0'0'1:
+            matmul_int8_tb.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_tb.run();
+            break;
+        case 0b0'1'1'000'000'010'0'0'0'1:
+        case 0b1'1'1'000'000'010'0'0'0'1:
+            matmul_int8_tatb.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_tatb.run();
+            break;
+        case 0b0'0'0'000'000'010'0'0'0'0:
+        case 0b1'0'0'000'000'010'0'0'0'0:
+            matmul_int8_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_nobias.run();
+            break;
+        case 0b0'1'0'000'000'010'0'0'0'0:
+        case 0b1'1'0'000'000'010'0'0'0'0:
+            matmul_int8_ta_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_ta_nobias.run();
+            break;
+        case 0b0'0'1'000'000'010'0'0'0'0:
+        case 0b1'0'1'000'000'010'0'0'0'0:
+            matmul_int8_tb_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_tb_nobias.run();
+            break;
+        case 0b0'1'1'000'000'010'0'0'0'0:
+        case 0b1'1'1'000'000'010'0'0'0'0:
+            matmul_int8_tatb_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_tatb_nobias.run();
+            break;
+        case 0b0'0'0'000'000'010'0'1'0'1:
+        case 0b1'0'0'000'000'010'0'1'0'1:
+            matmul_int8_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_b_nz.run();
+            break;
+        case 0b0'1'0'000'000'010'0'1'0'1:
+        case 0b1'1'0'000'000'010'0'1'0'1:
+            matmul_int8_ta_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_ta_b_nz.run();
+            break;
+        case 0b0'0'1'000'000'010'0'1'0'1:
+        case 0b1'0'1'000'000'010'0'1'0'1:
+            matmul_int8_tb_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_tb_b_nz.run();
+            break;
+        case 0b0'1'1'000'000'010'0'1'0'1:
+        case 0b1'1'1'000'000'010'0'1'0'1:
+            matmul_int8_tatb_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_tatb_b_nz.run();
+            break;
+        case 0b0'0'0'000'000'010'0'1'0'0:
+        case 0b1'0'0'000'000'010'0'1'0'0:
+            matmul_int8_nobias_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_nobias_b_nz.run();
+            break;
+        case 0b0'1'0'000'000'010'0'1'0'0:
+        case 0b1'1'0'000'000'010'0'1'0'0:
+            matmul_int8_ta_nobias_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_ta_nobias_b_nz.run();
+            break;
+        case 0b0'0'1'000'000'010'0'1'0'0:
+        case 0b1'0'1'000'000'010'0'1'0'0:
+            matmul_int8_tb_nobias_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_tb_nobias_b_nz.run();
+            break;
+        case 0b0'1'1'000'000'010'0'1'0'0:
+        case 0b1'1'1'000'000'010'0'1'0'0:
+            matmul_int8_tatb_nobias_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data);
+            matmul_int8_tatb_nobias_b_nz.run();
+            break;
+        default: break;
+    }
+}
+
+#elif defined(__DAV_C220_VEC__)
+
+template <bool transA, bool transB, bool withBias = false, typename InDtype = half,
+          typename OutDtype = half, QuantMode quantMode = QuantMode::PER_CHANNEL_SYMM,
+          typename BiasDtype = float, typename ScaleDtype = float,
+          DataFormat FormatA = DataFormat::ND, DataFormat FormatB = DataFormat::ND>
+class PpMatmulIntVec {
+public:
+    __aicore__ PpMatmulIntVec() {};
+
+    __aicore__ __force_inline__ void SetArgs(__gm__ uint8_t *__restrict__ a, __gm__ uint8_t *__restrict__ b,
+                                             __gm__ uint8_t *__restrict__ c, __gm__ uint8_t *__restrict__ bias,
+                                             __gm__ uint8_t *__restrict__ descale, __gm__ uint8_t *__restrict__ pertoken_descale,
+                                             __gm__ uint8_t *__restrict__ tiling_data,
+                                             __gm__ uint8_t *__restrict__ c_out)
+    {
+        gm_a.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(a));
+        gm_b.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(b));
+        gm_c.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(c));
+        gm_c_out.SetGlobalBuffer(reinterpret_cast<__gm__ OutDtype *>(c_out));
+        gm_bias.SetGlobalBuffer(reinterpret_cast<__gm__ BiasDtype *>(bias));
+        gm_descale.SetGlobalBuffer(reinterpret_cast<__gm__ ScaleDtype *>(descale));
+        gm_pretoken_scale.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(pertoken_descale));
+        auto gm_tiling_data = reinterpret_cast<__gm__ AsdOps::PpMatmulTilingData *>(tiling_data);
+        batch_size = gm_tiling_data->batch;
+        m = gm_tiling_data->m;
+        k = gm_tiling_data->k;
+        n = gm_tiling_data->n;
+        m0 = gm_tiling_data->m0;
+        k0 = gm_tiling_data->k0;
+        n0 = gm_tiling_data->n0;
+        m_loop = gm_tiling_data->mLoop;
+        k_loop = gm_tiling_data->kLoop;
+        n_loop = gm_tiling_data->nLoop;
+        core_loop = gm_tiling_data->coreLoop;
+        swizzle_cnt = gm_tiling_data->swizzlCount;
+        swizzlDirect = gm_tiling_data->swizzlDirect;
+        en_shuffle_k = gm_tiling_data->enShuffleK;
+        ub_c = buf.GetBuffer<BufferType::ASCEND_UB, int32_t>(0);
+        ub_c_tmp = buf.GetBuffer<BufferType::ASCEND_UB, float>(64 * 1024);
+        ub_c_out = buf.GetBuffer<BufferType::ASCEND_UB, OutDtype>(0);
+        ub_scale = buf.GetBuffer<BufferType::ASCEND_UB, float>(128 * 1024);
+        ub_pertoken_scale = buf.GetBuffer<BufferType::ASCEND_UB, float>(129 * 1024);
+        ub_pertoken_scale_calc = buf.GetBuffer<BufferType::ASCEND_UB, float>(130 * 1024); // 4k
+        block_size = BLOCK_SIZE_32;
+        core_num = AscendC::GetBlockNum();
+        core_idx = AscendC::GetBlockIdx() / 2;
+        ping_flag = 1;
+    }
+
+    __aicore__ __force_inline__ void GetBlockIdx(uint32_t index, uint32_t &m_idx, uint32_t &n_idx)
+    {
+        uint32_t in_batch_idx = index % (m_loop * n_loop);
+        if (swizzlDirect == 0) { // Zn
+            uint32_t tile_block_loop = (m_loop + swizzle_cnt - 1) / swizzle_cnt;
+            uint32_t tile_block_idx = in_batch_idx / (swizzle_cnt * n_loop);
+            uint32_t in_tile_block_idx = in_batch_idx % (swizzle_cnt * n_loop);
+
+            uint32_t n_row = swizzle_cnt;
+            if (tile_block_idx == tile_block_loop - 1) {
+                n_row = m_loop - swizzle_cnt * tile_block_idx;
+            }
+            m_idx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_row;
+            n_idx = in_tile_block_idx / n_row;
+            if (tile_block_idx % 2 != 0) {
+                n_idx = n_loop - n_idx - 1;
+            }
+        } else { // Nz
+            uint32_t tile_block_loop = (n_loop + swizzle_cnt - 1) / swizzle_cnt;
+            uint32_t tile_block_idx = in_batch_idx / (swizzle_cnt * m_loop);
+            uint32_t in_tile_block_idx = in_batch_idx % (swizzle_cnt * m_loop);
+
+            uint32_t n_col = swizzle_cnt;
+            if (tile_block_idx == tile_block_loop - 1) {
+                n_col = n_loop - swizzle_cnt * tile_block_idx;
+            }
+            m_idx = in_tile_block_idx / n_col;
+            n_idx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_col;
+            if (tile_block_idx % 2 != 0) {
+                m_idx = m_loop - m_idx - 1;
+            }
+        }
+    }
+
+    __aicore__ __force_inline__ void run()
+    {
+        uint32_t m_idx = 0;
+        uint32_t n_idx = 0;
+        SET_FLAG(V, MTE2, EVENT_ID0);
+        SET_FLAG(MTE3, V, EVENT_ID0);
+        SET_FLAG(MTE3, MTE2, EVENT_ID0);
+        uint64_t workspace_offset = core_idx * RoundUp32(m0) * RoundUp32(n0);
+        for (uint32_t loop_idx = core_idx; loop_idx < core_loop; loop_idx += core_num) {
+            GetBlockIdx(loop_idx, m_idx, n_idx);
+            uint64_t batch_idx = loop_idx / n_loop / m_loop;
+            uint64_t offset_a;
+
+            uint64_t offset_b;
+            uint64_t offset_bias;
+            uint64_t offset_scalar;
+            uint64_t offset_pertoken_scalar;
+            uint64_t offset_a_next;
+            uint64_t offset_b_next;
+            uint64_t offset_c = batch_idx * m * n + m_idx * m0 * n + n_idx * n0;
+            uint32_t m_actual = (m_idx == (m_loop - 1)) ? (m - m_idx * m0) : m0;
+            uint32_t n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+            uint32_t m_round = 0;
+            uint32_t n_round = 0;
+            n_round = RoundUp8(n_actual);
+            uint32_t n_round16 = RoundUp16(n_actual);
+            uint32_t m_actual_per_vec = m_actual / 2;
+            uint32_t workspace_offset_ = workspace_offset;
+            if (GetSubBlockidx() != 0) {
+                offset_c += m_actual_per_vec * n;
+                workspace_offset_ += m_actual_per_vec * RoundUp32(n0);
+                m_actual_per_vec = m_actual - m_actual_per_vec;
+            }
+            m_round = RoundUp8(m_actual_per_vec);
+
+            if (m_actual_per_vec == 0) {
+                WaitFlagDev(AIC_WRITE_FINISH_FLAG_ID);
+                if(loop_idx + core_num < core_loop) { 
+                    FftsCrossCoreSync<PIPE_MTE2, SYNC_MODE>(AIV_READ_FINISH_FLAG_ID);
+                }
+                continue;
+            }
+            if constexpr (quantMode == QuantMode::PER_TOKEN_SYMM) {
+                offset_scalar = n_idx * n0;
+                offset_pertoken_scalar = m_idx * m0;
+                if (GetSubBlockidx() != 0) {
+                    offset_pertoken_scalar += m_actual / 2;
+                }
+            } else {
+                offset_scalar = batch_idx * n + n_idx * n0;
+            }
+            uint32_t ub_buf_len = RoundUp32(m0 * n0); // <= 64KB
+            bool aligned_s32 = (n % 8 == 0);          // 32B aligned
+            bool aligned_f16 = (n % 16 == 0);         // 32B aligned
+            WAIT_FLAG(V, MTE2, EVENT_ID0);
+            if (aligned_s32) {
+                gm_to_ub<ArchType::ASCEND_V220, float>(ub_scale, gm_descale[offset_scalar],
+                                                       0,                           // sid
+                                                       1,                           // nBurst
+                                                       n_round * 4 / BLOCK_SIZE_32, // lenBurst
+                                                       0,                           // srcStride
+                                                       0                            // dstStride
+                );
+            } else {
+                gm_to_ub_align<ArchType::ASCEND_V220, float>(ub_scale, gm_descale[offset_scalar],
+                                                             0,                        // sid
+                                                             1,                        // nBurst
+                                                             n_actual * sizeof(float), // lenBurst
+                                                             0,                        // leftPaddingNum
+                                                             0,                        // rightPaddingNum
+                                                             0,                        // srcGap
+                                                             0                         // dstGap
+                );
+            }
+            if constexpr (quantMode == QuantMode::PER_TOKEN_SYMM) {
+                if (m_actual_per_vec % 8 == 0) {
+                    gm_to_ub<ArchType::ASCEND_V220, float>(ub_pertoken_scale, gm_pretoken_scale[offset_pertoken_scalar],
+                                                        0,                           // sid
+                                                        1,                           // nBurst
+                                                        m_round * 4 / BLOCK_SIZE_32, // lenBurst
+                                                        0,                           // srcStride
+                                                        0                            // dstStride
+                    );
+                } else {
+                    gm_to_ub_align<ArchType::ASCEND_V220, float>(ub_pertoken_scale, gm_pretoken_scale[offset_pertoken_scalar],
+                                                        0,                           // sid
+                                                        1,                           // nBurst
+                                                        m_actual_per_vec * sizeof(float), // lenBurst
+                                                        0,                        // leftPaddingNum
+                                                        0,                        // rightPaddingNum
+                                                        0,                        // srcGap
+                                                        0                         // dstGap
+                    );
+                }
+                SET_FLAG(MTE2, V, EVENT_ID0);
+                WAIT_FLAG(MTE2, V, EVENT_ID0);
+
+                Brcb(ub_pertoken_scale_calc,ub_pertoken_scale, CeilDiv8(m_actual_per_vec),{1,8});
+            }
+
+            WaitFlagDev(AIC_WRITE_FINISH_FLAG_ID);
+            WAIT_FLAG(MTE3, MTE2, EVENT_ID0);
+            if (aligned_s32) {
+                gm_to_ub<ArchType::ASCEND_V220, int32_t>(ub_c, gm_c[workspace_offset_],
+                                                         0,                 // sid
+                                                         m_actual_per_vec,  // nBurst
+                                                         n_round / 8,       // lenBurst
+                                                         (RoundUp32(n0) - n_round) / 8, // srcStride
+                                                         0                  // dstStride
+                );
+            } else {
+                gm_to_ub_align<ArchType::ASCEND_V220, int32_t>(ub_c, gm_c[workspace_offset_],
+                                                               0,                                // sid
+                                                               m_actual_per_vec,                 // nBurst
+                                                               n_actual * sizeof(int32_t),       // lenBurst
+                                                               0,                                // leftPaddingNum
+                                                               0,                                // rightPaddingNum
+                                                               (RoundUp32(n0) - n_actual) * sizeof(int32_t), // srcGap
+                                                               0                                 // dstGap
+                );
+            }
+            if(loop_idx + core_num < core_loop) {
+                FftsCrossCoreSync<PIPE_MTE2, SYNC_MODE>(AIV_READ_FINISH_FLAG_ID);
+            }
+            SET_FLAG(MTE2, V, EVENT_ID0);
+            WAIT_FLAG(MTE2, V, EVENT_ID0);
+
+            WAIT_FLAG(MTE3, V, EVENT_ID0);
+            // //  CASTF32 * f32 tf16
+            constexpr uint32_t maxRepeat = 255;
+            constexpr uint32_t perRepeatNum = maxRepeat * 64;
+            uint32_t loopCnt = m_actual_per_vec * n_round / perRepeatNum;
+            uint32_t repeatTail = (m_actual_per_vec * n_round + 64 - 1) / 64 % maxRepeat;
+            for (uint32_t i = 0; i < loopCnt; i++) {
+                conv_v<ArchType::ASCEND_V220, int32_t, float>(ub_c.ReinterpretCast<float>()[perRepeatNum * i],
+                                                              ub_c[perRepeatNum * i],
+                                                              (uint8_t)maxRepeat, // repeat
+                                                              (uint16_t)1,        // dstBlockStride
+                                                              (uint16_t)1,        // srcBlockStride
+                                                              (uint16_t)8,        // dstRepeatStride
+                                                              (uint16_t)8         // srcRepeatStride
+                );
+            }
+            if(repeatTail != 0) {
+                conv_v<ArchType::ASCEND_V220, int32_t, float>(ub_c.ReinterpretCast<float>()[perRepeatNum * loopCnt],
+                                                              ub_c[perRepeatNum * loopCnt],
+                                                              (uint8_t)repeatTail, // repeat
+                                                              (uint16_t)1,        // dstBlockStride
+                                                              (uint16_t)1,        // srcBlockStride
+                                                              (uint16_t)8,        // dstRepeatStride
+                                                              (uint16_t)8         // srcRepeatStride
+                );
+            }
+            AscendC::PipeBarrier<PIPE_V>();
+
+            uint32_t nRepeatCnt = (n_actual + 64 - 1) / 64;
+            for (uint32_t i = 0; i < m_actual_per_vec; ++i) {
+                mul_v<ArchType::ASCEND_V220, float>(ub_c_tmp[i * n_round],
+                                                    ub_c.ReinterpretCast<float>()[i * n_round],
+                                                    ub_scale.ReinterpretCast<float>(),
+                                                    (uint8_t)(nRepeatCnt), // repeat
+                                                    (uint8_t)1,            // dstBlockStride
+                                                    (uint8_t)1,            // src0BlockStride
+                                                    (uint8_t)1,            // src1BlockStride
+                                                    (uint8_t)8,            // dstRepeatStride
+                                                    (uint8_t)8,            // src0RepeatStride
+                                                    (uint8_t)8             // src1RepeatStride
+                );
+                if constexpr (quantMode == QuantMode::PER_TOKEN_SYMM) {
+                    AscendC::PipeBarrier<PIPE_V>();
+                    AscendC::Mul(ub_c_tmp[i * n_round],ub_c_tmp[i * n_round],
+                                 ub_pertoken_scale_calc[i*8],
+                                 64,
+                                 nRepeatCnt,
+                                 {1,1,0,8,8,0});
+                }
+            }
+            SET_FLAG(V, MTE2, EVENT_ID0);
+            AscendC::PipeBarrier<PIPE_V>();
+            if (n_actual % 16 > 8) {
+                for (uint32_t i = 0; i < loopCnt; i++) {
+                    convr_v<ArchType::ASCEND_V220, float, OutDtype>(ub_c_out[perRepeatNum * i],
+                                                                  ub_c_tmp[perRepeatNum * i],
+                                                                  (uint8_t)maxRepeat, // repeat
+                                                                  (uint16_t)1,        // dstBlockStride
+                                                                  (uint16_t)1,        // srcBlockStride
+                                                                  (uint16_t)4,        // dstRepeatStride
+                                                                  (uint16_t)8         // srcRepeatStride
+                    );
+                }
+                if(repeatTail != 0) {
+                    convr_v<ArchType::ASCEND_V220, float, OutDtype>(ub_c_out[perRepeatNum * loopCnt],
+                                                                  ub_c_tmp[perRepeatNum * loopCnt],
+                                                                  (uint8_t)repeatTail, // repeat
+                                                                  (uint16_t)1,        // dstBlockStride
+                                                                  (uint16_t)1,        // srcBlockStride
+                                                                  (uint16_t)4,        // dstRepeatStride
+                                                                  (uint16_t)8         // srcRepeatStride
+                    );
+                }
+            } else {
+                for (uint32_t i = 0; i < m_actual_per_vec; i++) {
+                    convr_v<ArchType::ASCEND_V220, float, OutDtype>(ub_c_out[n_round16 * i],
+                                                                  ub_c_tmp[n_round * i],
+                                                                  (uint8_t)nRepeatCnt, // repeat
+                                                                  (uint16_t)1,         // dstBlockStride
+                                                                  (uint16_t)1,         // srcBlockStride
+                                                                  (uint16_t)4,         // dstRepeatStride
+                                                                  (uint16_t)8          // srcRepeatStride
+                    );
+                }
+            }
+            SET_FLAG(V, MTE3, EVENT_ID0);
+            WAIT_FLAG(V, MTE3, EVENT_ID0);
+            if (aligned_f16) {
+                ub_to_gm<ArchType::ASCEND_V220, OutDtype>(gm_c_out[offset_c], ub_c_out, 0,
+                                                        m_actual_per_vec,  // nBurst
+                                                        n_round / 16,      // lenBurst
+                                                        0,                 // srcStride
+                                                        (n - n_round) / 16 // dstStride
+                );
+            } else {
+                ub_to_gm_align<ArchType::ASCEND_V220, OutDtype>(gm_c_out[offset_c], ub_c_out, 0,
+                                                              m_actual_per_vec,             // nBurst
+                                                              n_actual * sizeof(half),      // lenBurst
+                                                              0,                            // leftPaddingNum
+                                                              0,                            // rightPaddingNum
+                                                              0,                            // srcGap
+                                                              (n - n_actual) * sizeof(half) // dstGap
+                );
+            }
+            SET_FLAG(MTE3, V, EVENT_ID0);
+            SET_FLAG(MTE3, MTE2, EVENT_ID0);
+        }
+        WAIT_FLAG(V, MTE2, EVENT_ID0);
+        WAIT_FLAG(MTE3, V, EVENT_ID0);
+        WAIT_FLAG(MTE3, MTE2, EVENT_ID0);
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
+
+private:
+    AsdopsBuffer<ArchType::ASCEND_V220> buf;
+
+    AscendC::GlobalTensor<InDtype> gm_a;
+    AscendC::GlobalTensor<InDtype> gm_b;
+    AscendC::GlobalTensor<BiasDtype> gm_bias;
+    AscendC::GlobalTensor<ScaleDtype> gm_descale;
+    AscendC::GlobalTensor<float> gm_pretoken_scale;
+    AscendC::GlobalTensor<int32_t> gm_c;
+    AscendC::GlobalTensor<OutDtype> gm_c_out;
+
+    AscendC::LocalTensor<int32_t> ub_c = buf.GetBuffer<BufferType::ASCEND_UB, int32_t>(0);
+    AscendC::LocalTensor<float> ub_c_tmp = buf.GetBuffer<BufferType::ASCEND_UB, float>(0);
+    AscendC::LocalTensor<OutDtype> ub_c_out = buf.GetBuffer<BufferType::ASCEND_UB, OutDtype>(0);
+    AscendC::LocalTensor<float> ub_scale = buf.GetBuffer<BufferType::ASCEND_UB, float>(0);
+    AscendC::LocalTensor<float> ub_pertoken_scale = buf.GetBuffer<BufferType::ASCEND_UB, float>(0);
+    AscendC::LocalTensor<float> ub_pertoken_scale_calc = buf.GetBuffer<BufferType::ASCEND_UB, float>(0);
+
+    uint32_t core_num{0};
+
+    uint32_t batch_size{0};
+    uint32_t m{0};
+    uint32_t k{0};
+    uint32_t n{0};
+
+    uint32_t m0{0};
+    uint32_t k0{0};
+    uint32_t n0{0};
+
+    uint32_t m_loop{0};
+    uint32_t n_loop{0};
+    uint32_t k_loop{0};
+    uint32_t core_loop{0};
+    uint32_t core_idx{0};
+    uint32_t ping_flag{0};
+    uint32_t block_size{0};
+    uint32_t cube_matrix_size{0};
+    uint32_t swizzle_cnt{1};
+    uint32_t en_shuffle_k{0};
+    uint32_t swizzlDirect{0};
+
+    uint64_t L1_PINGPONG_BUFFER_LEN{0};
+    uint32_t L0AB_PINGPONG_BUFFER_LEN{0};
+};
+extern "C" __global__ __aicore__ void
+pp_matmul_int8_bf16(__gm__ uint8_t *__restrict__ ffts_addr, __gm__ uint8_t *__restrict__ gm_a,
+                    __gm__ uint8_t *__restrict__ gm_b, __gm__ uint8_t *__restrict__ gm_bias,
+                    __gm__ uint8_t *__restrict__ gm_descale, __gm__ uint8_t *__restrict__ gm_pertoken_descale, __gm__ uint8_t *__restrict__ gm_c_out,
+                    __gm__ uint8_t *__restrict__ workspace, __gm__ uint8_t *__restrict__ tiling_data)
+{
+    // int8 + int32_bias + u64_descale
+    PpMatmulIntVec<false, false, true, int8_t, __bf16, QuantMode::PER_CHANNEL_ASYMM, int32_t> matmul_int8;
+    PpMatmulIntVec<true, false, true, int8_t, __bf16, QuantMode::PER_CHANNEL_ASYMM, int32_t> matmul_int8_ta;
+    PpMatmulIntVec<false, true, true, int8_t, __bf16, QuantMode::PER_CHANNEL_ASYMM, int32_t> matmul_int8_tb;
+    PpMatmulIntVec<true, true, true, int8_t, __bf16, QuantMode::PER_CHANNEL_ASYMM, int32_t> matmul_int8_tatb;
+
+    // int8  + u64_descale
+    PpMatmulIntVec<false, false, false, int8_t, __bf16, QuantMode::PER_CHANNEL_SYMM, int32_t> matmul_int8_nobias;
+    PpMatmulIntVec<true, false, false, int8_t, __bf16, QuantMode::PER_CHANNEL_SYMM, int32_t> matmul_int8_ta_nobias;
+    PpMatmulIntVec<false, true, false, int8_t, __bf16, QuantMode::PER_CHANNEL_SYMM, int32_t> matmul_int8_tb_nobias;
+    PpMatmulIntVec<true, true, false, int8_t, __bf16, QuantMode::PER_CHANNEL_SYMM, int32_t> matmul_int8_tatb_nobias;
+
+    // int8 + int32_bias + u64_descale
+    PpMatmulIntVec<false, false, true, int8_t, __bf16, QuantMode::PER_CHANNEL_ASYMM, int32_t, float, DataFormat::ND, DataFormat::NZ> matmul_int8_b_nz;
+    PpMatmulIntVec<true, false, true, int8_t, __bf16, QuantMode::PER_CHANNEL_ASYMM, int32_t, float, DataFormat::ND, DataFormat::NZ> matmul_int8_ta_b_nz;
+    PpMatmulIntVec<false, true, true, int8_t, __bf16, QuantMode::PER_CHANNEL_ASYMM, int32_t, float, DataFormat::ND, DataFormat::NZ> matmul_int8_tb_b_nz;
+    PpMatmulIntVec<true, true, true, int8_t, __bf16, QuantMode::PER_CHANNEL_ASYMM, int32_t, float, DataFormat::ND, DataFormat::NZ> matmul_int8_tatb_b_nz;
+
+    // int8  + u64_descale
+    PpMatmulIntVec<false, false, false, int8_t, __bf16, QuantMode::PER_CHANNEL_SYMM, int32_t, float, DataFormat::ND, DataFormat::NZ> matmul_int8_nobias_b_nz;
+    PpMatmulIntVec<true, false, false, int8_t, __bf16, QuantMode::PER_CHANNEL_SYMM, int32_t, float, DataFormat::ND, DataFormat::NZ> matmul_int8_ta_nobias_b_nz;
+    PpMatmulIntVec<false, true, false, int8_t, __bf16, QuantMode::PER_CHANNEL_SYMM, int32_t, float, DataFormat::ND, DataFormat::NZ> matmul_int8_tb_nobias_b_nz;
+    PpMatmulIntVec<true, true, false, int8_t, __bf16, QuantMode::PER_CHANNEL_SYMM, int32_t, float, DataFormat::ND, DataFormat::NZ> matmul_int8_tatb_nobias_b_nz;
+
+    // 增加pertoken量化场景实现 out为bf16和fp16
+    PpMatmulIntVec<false, false, false, int8_t, __bf16, QuantMode::PER_TOKEN_SYMM, int32_t> matmul_int8_bf16_pertoken;
+    PpMatmulIntVec<true, false, false, int8_t, __bf16, QuantMode::PER_TOKEN_SYMM, int32_t> matmul_int8_bf16_ta_pertoken;
+    PpMatmulIntVec<false, true, false, int8_t, __bf16, QuantMode::PER_TOKEN_SYMM, int32_t> matmul_int8_bf16_tb_pertoken;
+    PpMatmulIntVec<true, true, false, int8_t, __bf16, QuantMode::PER_TOKEN_SYMM, int32_t> matmul_int8_bf16_tatb_pertoken;
+
+    PpMatmulIntVec<false, false, false, int8_t, half, QuantMode::PER_TOKEN_SYMM, int32_t> matmul_int8_fp16_pertoken;
+    PpMatmulIntVec<true, false, false, int8_t, half, QuantMode::PER_TOKEN_SYMM, int32_t> matmul_int8_fp16_ta_pertoken;
+    PpMatmulIntVec<false, true, false, int8_t, half, QuantMode::PER_TOKEN_SYMM, int32_t> matmul_int8_fp16_tb_pertoken;
+    PpMatmulIntVec<true, true, false, int8_t, half, QuantMode::PER_TOKEN_SYMM, int32_t> matmul_int8_fp16_tatb_pertoken;
+
+    SetAtomicnone();
+    SetMasknorm();
+    SetFftsBaseAddr((uint64_t)ffts_addr);
+    auto gm_tiling_data = reinterpret_cast<__gm__ AsdOps::PpMatmulTilingData *>(tiling_data);
+    uint32_t masked_key = gm_tiling_data->tilingKey & 0b1'1'1'1'111'111'111'1'1'1'1;
+
+    if (gm_tiling_data->quantMode == static_cast<uint32_t>(QuantMode::PER_TOKEN_SYMM)) {
+        // 优先处理pertoken场景
+        // printf_kernel("pertoken stage\n");
+
+        switch (masked_key) {
+            case 0b0'0'0'000'000'010'0'0'0'0:
+            case 0b1'0'0'000'000'010'0'0'0'0:
+                matmul_int8_bf16_pertoken.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+                matmul_int8_bf16_pertoken.run();
+                break;
+            case 0b0'1'0'000'000'010'0'0'0'0:
+            case 0b1'1'0'000'000'010'0'0'0'0:
+                matmul_int8_bf16_ta_pertoken.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+                matmul_int8_bf16_ta_pertoken.run();
+                break;
+            case 0b0'0'1'000'000'010'0'0'0'0:
+            case 0b1'0'1'000'000'010'0'0'0'0:
+                matmul_int8_bf16_tb_pertoken.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+                matmul_int8_bf16_tb_pertoken.run();
+                break;
+            case 0b0'1'1'000'000'010'0'0'0'0:
+            case 0b1'1'1'000'000'010'0'0'0'0:
+                matmul_int8_bf16_tatb_pertoken.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+                matmul_int8_bf16_tatb_pertoken.run();
+                break;
+            case 0b0'0'0'000'000'001'0'0'0'0:
+            case 0b1'0'0'000'000'001'0'0'0'0:
+                matmul_int8_fp16_pertoken.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+                matmul_int8_fp16_pertoken.run();
+                break;
+            case 0b0'1'0'000'000'001'0'0'0'0:
+            case 0b1'1'0'000'000'001'0'0'0'0:
+                matmul_int8_fp16_ta_pertoken.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+                matmul_int8_fp16_ta_pertoken.run();
+                break;
+            case 0b0'0'1'000'000'001'0'0'0'0:
+            case 0b1'0'1'000'000'001'0'0'0'0:
+                matmul_int8_fp16_tb_pertoken.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+                matmul_int8_fp16_tb_pertoken.run();
+                break;
+            case 0b0'1'1'000'000'001'0'0'0'0:
+            case 0b1'1'1'000'000'001'0'0'0'0:
+                matmul_int8_fp16_tatb_pertoken.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+                matmul_int8_fp16_tatb_pertoken.run();
+                break;
+            default: break;
+        }
+        return;
+    }
+    switch (masked_key) {
+        // b_nd
+        case 0b0'0'0'000'000'010'0'0'0'1:
+        case 0b1'0'0'000'000'010'0'0'0'1:
+            matmul_int8.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8.run();
+            break;
+        case 0b0'1'0'000'000'010'0'0'0'1:
+        case 0b1'1'0'000'000'010'0'0'0'1:
+            matmul_int8_ta.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_ta.run();
+            break;
+        case 0b0'0'1'000'000'010'0'0'0'1:
+        case 0b1'0'1'000'000'010'0'0'0'1:
+            matmul_int8_tb.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_tb.run();
+            break;
+        case 0b0'1'1'000'000'010'0'0'0'1:
+        case 0b1'1'1'000'000'010'0'0'0'1:
+            matmul_int8_tatb.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_tatb.run();
+            break;
+        case 0b0'0'0'000'000'010'0'0'0'0:
+        case 0b1'0'0'000'000'010'0'0'0'0:
+            matmul_int8_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_nobias.run();
+            break;
+        case 0b0'1'0'000'000'010'0'0'0'0:
+        case 0b1'1'0'000'000'010'0'0'0'0:
+            matmul_int8_ta_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_ta_nobias.run();
+            break;
+        case 0b0'0'1'000'000'010'0'0'0'0:
+        case 0b1'0'1'000'000'010'0'0'0'0:
+            matmul_int8_tb_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_tb_nobias.run();
+            break;
+        case 0b0'1'1'000'000'010'0'0'0'0:
+        case 0b1'1'1'000'000'010'0'0'0'0:
+            matmul_int8_tatb_nobias.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_tatb_nobias.run();
+            break;
+        case 0b0'0'0'000'000'010'0'1'0'1:
+        case 0b1'0'0'000'000'010'0'1'0'1:
+            matmul_int8_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_b_nz.run();
+            break;
+        case 0b0'1'0'000'000'010'0'1'0'1:
+        case 0b1'1'0'000'000'010'0'1'0'1:
+            matmul_int8_ta_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_ta_b_nz.run();
+            break;
+        case 0b0'0'1'000'000'010'0'1'0'1:
+        case 0b1'0'1'000'000'010'0'1'0'1:
+            matmul_int8_tb_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_tb_b_nz.run();
+            break;
+        case 0b0'1'1'000'000'010'0'1'0'1:
+        case 0b1'1'1'000'000'010'0'1'0'1:
+            matmul_int8_tatb_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_tatb_b_nz.run();
+            break;
+        case 0b0'0'0'000'000'010'0'1'0'0:
+        case 0b1'0'0'000'000'010'0'1'0'0:
+            matmul_int8_nobias_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_nobias_b_nz.run();
+            break;
+        case 0b0'1'0'000'000'010'0'1'0'0:
+        case 0b1'1'0'000'000'010'0'1'0'0:
+            matmul_int8_ta_nobias_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_ta_nobias_b_nz.run();
+            break;
+        case 0b0'0'1'000'000'010'0'1'0'0:
+        case 0b1'0'1'000'000'010'0'1'0'0:
+            matmul_int8_tb_nobias_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_tb_nobias_b_nz.run();
+            break;
+        case 0b0'1'1'000'000'010'0'1'0'0:
+        case 0b1'1'1'000'000'010'0'1'0'0:
+            matmul_int8_tatb_nobias_b_nz.SetArgs(gm_a, gm_b, workspace, gm_bias, gm_descale, gm_pertoken_descale, tiling_data, gm_c_out);
+            matmul_int8_tatb_nobias_b_nz.run();
+            break;
+        default: break;
+    }
+}
+
+#endif

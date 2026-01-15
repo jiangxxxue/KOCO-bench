@@ -1,0 +1,2 @@
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/CsvOpsTestTool DESTINATION ./tests)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/GeneralizationTestTool DESTINATION ./tests)

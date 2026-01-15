@@ -1,0 +1,27 @@
+# Set default behavior to automatically normalize line endings
+* text=auto
+
+# Unix/Linux/macOS style files (using LF)
+*.sh text eol=lf
+*.bash text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+docker-compose*.yml text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+
+# Windows style files (using CRLF)
+*.{cmd,[cC][mM][dD]} text eol=crlf
+*.{bat,[bB][aA][tT]} text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files (no conversion)
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.pdf binary

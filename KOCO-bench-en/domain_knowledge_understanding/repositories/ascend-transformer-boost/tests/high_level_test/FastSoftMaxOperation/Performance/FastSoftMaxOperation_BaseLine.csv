@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|FastSoftMaxOperation1|267.25|267.25
+2|FastSoftMaxOperation2|310.29|310.29
+3|FastSoftMaxOperation3|448.205|448.205
+4|FastSoftMaxOperation4|754.88|754.88

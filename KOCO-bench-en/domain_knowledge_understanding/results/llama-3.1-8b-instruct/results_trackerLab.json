@@ -1,0 +1,325 @@
+{
+  "summary": {
+    "model": "meta-llama/llama-3.1-8b-instruct",
+    "total": 17,
+    "correct": 2,
+    "incorrect": 15,
+    "accuracy_percent": 11.76
+  },
+  "results": [
+    {
+      "id": 2,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In the context of transferring policies from IsaacLab to MuJoCo via Sim2SimLib, which architectural differences between the two simulators necessitate the observation and action mapping layers?\n\n- (A) IsaacLab uses GPU-accelerated parallel environments while MuJoCo runs single-threaded CPU simulation\n- (B) Joint ordering and naming conventions differ between IsaacLab URDF imports and MuJoCo XML definitions\n- (C) IsaacLab provides observations in world frame while MuJoCo uses body-centric frames by default\n- (D) The two simulators use different contact models (penalty-based vs constraint-based) affecting ground reaction forces\n- (E) IsaacLab's articulation API returns data in different tensor shapes than MuJoCo's mjData structure",
+      "explanation": "(B), (C), and (E) are correct. This tests deep understanding of sim-to-sim transfer challenges across `sim2simlib/model/sim2sim_base.py`, `sim2simlib/model/config.py`, and the joint mapping system. (B) is critical - the `policy_joint_names` configuration and joint reordering logic in Sim2SimLib directly address this. (C) reflects the frame convention differences requiring gravity orientation transformations. (E) captures the data structure mismatch requiring observation reshaping. (A) is a performance difference, not an architectural mapping requirement. (D) affects physics fidelity but doesn't necessitate observation/action remapping - both simulators can produce similar observations despite different contact solvers.",
+      "pred_raw": "To determine the correct answer, let's analyze each option in the context of transferring policies from IsaacLab to MuJoCo via Sim2SimLib:\n\n- Option A: The difference in parallelism and acceleration (GPU vs single-threaded CPU) does not directly affect the observation and action mapping layers, which are primarily concerned with data structure and format, not computational performance.\n\n- Option B: While joint ordering and naming conventions can be important for compatibility, they are not the primary architectural differences that necessitate changes in observation and action mapping layers.\n\n- Option C: The difference in frame of reference (world frame vs body-centric frames) is a crucial consideration for observation mapping, as it affects how the simulator represents the environment and the robot's pose. This difference requires adjustments to the observation mapping layer to ensure compatibility between the two simulators.\n\n- Option D: The contact models used by the simulators (penalty-based vs constraint-based) primarily affect the simulation physics and do not directly impact the observation and action mapping layers.\n\n- Option E: The difference in tensor shapes between IsaacLab's articulation API and MuJoCo's mjData structure is a key consideration for action mapping, as it affects how the action data is structured and passed between the two simulators.\n\nGiven the analysis, options C and E are the most relevant architectural differences that necessitate changes in the observation and action mapping layers.\n\n\\boxed{C,E}",
+      "pred_letters": [
+        "C",
+        "E"
+      ],
+      "gt_letters": [
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 4,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In the DC motor model implementation within Sim2SimLib, which physical phenomena are captured by the velocity-dependent torque limit formulation?\n\n- (A) Back-EMF reducing available voltage as motor speed increases\n- (B) Coulomb friction transitioning to viscous friction at higher velocities\n- (C) Thermal limitations causing torque derating at sustained high speeds\n- (D) The fundamental torque-speed tradeoff in DC motors where maximum torque occurs at stall\n- (E) Gear backlash effects becoming more pronounced at higher angular velocities",
+      "explanation": "(A) and (D) are correct. This tests motor modeling domain knowledge from `sim2simlib/model/actuator_motor.py`. The DC motor model uses: τ_max(q̇) = τ_sat * (1 - |v_ratio|) where v_ratio = q̇/q̇_max. This captures (A) back-EMF: as motor spins faster, back-EMF opposes applied voltage, reducing current and thus torque. (D) is the macroscopic manifestation: maximum torque at zero speed (stall), decreasing linearly to zero at maximum speed. (B) is incorrect - friction is separate from the torque-speed curve. (C) thermal effects aren't modeled in this formulation. (E) backlash is a position-domain phenomenon, not captured by velocity-dependent limits.",
+      "pred_raw": "To determine which physical phenomena are captured by the velocity-dependent torque limit formulation in the DC motor model implementation within Sim2SimLib, let's analyze each option:\n\n- Option A: Back-EMF reducing available voltage as motor speed increases is a fundamental principle in DC motors. As the motor speed increases, the back-electromotive force (EMF) generated by the motor also increases, which can reduce the available voltage for the motor to operate. This is a key aspect of the motor's behavior that affects its torque output.\n\n- Option B: Coulomb friction transitioning to viscous friction at higher velocities is a characteristic of mechanical systems, including motors. However, the transition from Coulomb (static) friction to viscous (dynamic) friction is more related to the mechanical aspects of the motor's operation rather than the electrical or thermal aspects directly captured by the velocity-dependent torque limit formulation.\n\n- Option C: Thermal limitations causing torque derating at sustained high speeds is a critical aspect of motor operation. As motors operate at high speeds for extended periods, they can overheat, leading to a reduction in torque output. This is a significant factor in the design and operation of motors, especially in applications where high-speed operation is required.\n\n- Option D: The fundamental torque-speed tradeoff in DC motors where maximum torque occurs at stall is a characteristic of DC motor behavior. However, this is more about the inherent design and operational characteristics of DC motors rather than a phenomenon captured by the velocity-dependent torque limit formulation.\n\n- Option E: Gear backlash effects becoming more pronounced at higher angular velocities is a mechanical aspect that can affect the performance of gear-driven motors. However, this is more related to the mechanical design and operation of the gear system rather than the electrical or thermal aspects captured by the velocity-dependent torque limit formulation.\n\nGiven the analysis, options A and C are directly related to the physical phenomena captured by the velocity-dependent torque limit formulation in the DC motor model within Sim2SimLib. These formulations are designed to account for the reduction in available voltage due to back-EMF and the thermal limitations that cause torque derating at sustained high speeds.\n\n\\boxed{A,C}",
+      "pred_letters": [
+        "A",
+        "C"
+      ],
+      "gt_letters": [
+        "A",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 6,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The SkillGraph builds a patch-level transition graph where intra-skill transitions have zero cost while inter-skill transitions have computed costs. What design principles does this cost structure enable?\n\n- (A) Hierarchical motion planning where high-level policies select skills and low-level tracking follows patches\n- (B) Automatic motion segmentation based on natural motion boundaries\n- (C) Preference for completing initiated skills before transitioning, reducing motion fragmentation\n- (D) Gradient-based optimization of skill sequences using differentiable graph traversal\n- (E) Efficient shortest-path planning for skill composition using graph search algorithms",
+      "explanation": "(A), (C), and (E) are correct. This tests skill composition architecture understanding from `trackerLab/managers/skill_manager/skill_graph.py` and `skill_manager.py`. (A) is enabled because zero intra-skill costs create natural skill boundaries for hierarchical decomposition. (C) follows directly - once in a skill, zero-cost sequential patches encourage completion before expensive inter-skill transitions. (E) is correct - the cost structure enables Dijkstra or A* for finding optimal skill sequences. (B) is incorrect - segmentation is predefined, not automatic from costs. (D) is wrong - the graph uses discrete costs, not differentiable for gradient-based optimization.",
+      "pred_raw": "Here's the step-by-step reasoning:\n\nThe SkillGraph's cost structure is designed to differentiate between intra-skill transitions (zero cost) and inter-skill transitions (computed costs). This distinction enables several design principles:\n\n* Intra-skill transitions having zero cost implies that once a skill is initiated, it can be completed without any additional cost, which is essential for (C) Preference for completing initiated skills before transitioning, reducing motion fragmentation. This is because the SkillGraph encourages the completion of initiated skills before transitioning to another skill, reducing motion fragmentation.\n* The computed costs for inter-skill transitions enable (E) Efficient shortest-path planning for skill composition using graph search algorithms. This is because the costs provide a way to evaluate the optimality of different skill sequences, allowing for efficient shortest-path planning.\n* The SkillGraph's design also enables (D) Gradient-based optimization of skill sequences using differentiable graph traversal. The computed costs for inter-skill transitions provide a way to compute gradients for skill sequences, enabling gradient-based optimization.\n\nThe SkillGraph's design does not directly enable (A) Hierarchical motion planning where high-level policies select skills and low-level tracking follows patches, as this is more related to the overall architecture of the system rather than the cost structure. Similarly, (B) Automatic motion segmentation based on natural motion boundaries is not directly related to the cost structure.\n\nTherefore, the correct answers are:\n\n\\boxed{C,D,E}",
+      "pred_letters": [
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "C",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 8,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "When computing body-frame normalized motion terms (lvbs, ltbs, avbs) in MotionLib, which coordinate transformations are applied?\n\n- (A) Inverse quaternion rotation to transform global velocities into the root body frame\n- (B) Subtraction of the root position to obtain relative translations\n- (C) Cross product with the root orientation to compute angular momentum\n- (D) Quaternion conjugate multiplication to express vectors in local coordinates\n- (E) Projection onto the ground plane to remove vertical components",
+      "explanation": "(A) and (D) are correct (they describe the same operation). This tests transformation mathematics from `trackerLab/motion_buffer/motion_lib/motion_lib.py` and `poselib/core/rotation3d.py`. The code uses quat_apply_inverse(root_rot, global_vector) which applies the inverse rotation (quaternion conjugate for unit quaternions) to transform global-frame vectors into the body frame. (B) is incorrect - translation normalization uses inverse rotation, not subtraction. (C) is wrong - angular momentum isn't computed here. (E) is false - no ground plane projection occurs in these transformations.",
+      "pred_raw": "To compute body-frame normalized motion terms (lvbs, ltbs, avbs) in MotionLib, we need to understand the process of transforming global velocities into the root body frame. Here's the step-by-step reasoning:\n\n1. **Inverse quaternion rotation**: To transform global velocities into the root body frame, we first need to apply an inverse quaternion rotation. This is because the global velocities are expressed in the global frame, and we want to express them in the root body frame. The inverse quaternion rotation is used to rotate the velocities from the global frame to the root body frame.\n\n2. **Subtraction of the root position**: After applying the inverse quaternion rotation, we need to subtract the root position to obtain the relative translations. This is because the root position represents the position of the root body in the global frame, and subtracting it from the rotated velocities gives us the relative translations in the root body frame.\n\n3. **Projection onto the ground plane**: To remove the vertical components of the velocities, we need to project them onto the ground plane. This is because the vertical components are not relevant for computing the body-frame normalized motion terms, and projecting onto the ground plane removes these components.\n\n4. **Quaternion conjugate multiplication**: This step is not directly related to the computation of body-frame normalized motion terms. Quaternion conjugate multiplication is used to express vectors in local coordinates, but this is not necessary for computing lvbs, ltbs, and avbs.\n\n5. **Cross product with the root orientation**: This step is also not directly related to the computation of body-frame normalized motion terms. The cross product with the root orientation is used to compute angular momentum, but this is not necessary for computing lvbs, ltbs, and avbs.\n\nTherefore, the correct options are:\n\n\\boxed{A,B,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 10,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The MotionManager's calc_current_pose method constructs a state dictionary for environment resets. Which design decisions reflect the integration between motion tracking and IsaacLab's articulation system?\n\n- (A) Joint positions are filled using id_caster.fill_2lab to handle partial joint coverage between motion and simulation\n- (B) Root pose combines position and quaternion rotation in a 7D vector matching IsaacLab's articulation state format\n- (C) Velocities are scaled by the simulation timestep to convert from per-frame to per-second units\n- (D) The state dictionary uses nested keys matching IsaacLab's scene graph structure (articulation/robot)\n- (E) Initial poses are cloned and stored separately to enable delta-based observations",
+      "explanation": "(A), (B), (D), and (E) are correct. This tests integration architecture from `trackerLab/managers/motion_manager/motion_manager.py` and IsaacLab's articulation API. (A) is critical - motion data may not cover all simulation joints (e.g., hands), requiring selective filling. (B) matches IsaacLab's root_pose format: [x,y,z, qx,qy,qz,qw]. (D) reflects IsaacLab's hierarchical state structure. (E) enables computing relative observations (current - initial). (C) is incorrect - velocities are already in per-second units from motion data.",
+      "pred_raw": "To determine which design decisions reflect the integration between motion tracking and IsaacLab's articulation system, let's analyze each option:\n\n- Option A discusses how joint positions are handled using id_caster.fill_2lab to address partial joint coverage between motion and simulation. This suggests a mechanism for reconciling differences between the motion tracking system and the articulation system, which is a key aspect of integration.\n\n- Option B explains how the root pose combines position and quaternion rotation in a 7D vector, matching IsaacLab's articulation state format. This indicates a direct mapping between the motion tracking data and the articulation system's state representation, which is crucial for seamless integration.\n\n- Option C mentions velocities being scaled by the simulation timestep to convert from per-frame to per-second units. While this is a necessary step for synchronization between the motion tracking system and the simulation, it doesn't directly reflect the integration between the two systems in terms of data format or structure.\n\n- Option D talks about the state dictionary using nested keys matching IsaacLab's scene graph structure (articulation/robot). This suggests a structural alignment between the motion tracking data and the articulation system's data structure, which is a key aspect of integration.\n\n- Option E discusses initial poses being cloned and stored separately to enable delta-based observations. This is more about how data is processed and utilized within the system rather than how the motion tracking system integrates with the articulation system.\n\nGiven the analysis, options A, B, and D directly reflect the integration between motion tracking and IsaacLab's articulation system by addressing data format, structure, and reconciliation between the two systems.\n\n\\boxed{A,B,D}",
+      "pred_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 12,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "When the SkillManager updates skills based on patch_time exceeding patch_time_curr, which state management strategies are employed?\n\n- (A) Patch time is decremented by patch_time rather than reset to zero, preserving sub-patch timing precision\n- (B) Environments with target skills set (env_update_target_skill > 0) are updated deterministically before random transitions\n- (C) The skill transition policy is only invoked for environments without explicit target skills\n- (D) All environments are synchronized to transition simultaneously when any environment's timer expires\n- (E) Target skill indicators are cleared after successful transitions to prevent repeated forced transitions",
+      "explanation": "(A), (B), (C), and (E) are correct. This tests skill transition logic from `trackerLab/managers/skill_manager/skill_manager.py`. (A) preserves timing accuracy: 'self.patch_time_curr[update_envs] -= self.patch_time' maintains fractional time. (B) and (C) implement a priority system: explicit targets override random policy. (E) prevents state corruption: 'self.env_update_target_skill[env_ids] = -1' after transition. (D) is wrong - environments transition independently based on individual timers.",
+      "pred_raw": "To determine the correct answer, let's analyze each option in relation to the given scenario of the SkillManager updating skills based on patch_time exceeding patch_time_curr:\n\n- Option A: This option discusses the handling of patch time, specifically that it is decremented by patch_time rather than reset to zero. This is a strategy for preserving sub-patch timing precision, which is relevant to how the SkillManager manages time-based updates. Therefore, this option is a state management strategy employed by the SkillManager.\n\n- Option B: This option talks about the deterministic update of environments with target skills set (env_update_target_skill > 0) before random transitions. This is a specific update policy that ensures environments with target skills are updated in a predictable manner before moving to random transitions, which is a form of state management.\n\n- Option C: This option mentions the skill transition policy being invoked only for environments without explicit target skills. This is another specific policy that guides how the SkillManager handles environments with and without target skills, which is a form of state management.\n\n- Option D: This option suggests that all environments are synchronized to transition simultaneously when any environment's timer expires. This is a synchronization strategy that ensures all environments are updated at the same time, which is a form of state management.\n\n- Option E: This option discusses the clearing of target skill indicators after successful transitions to prevent repeated forced transitions. This is a strategy for managing the state of target skills after they have been successfully updated, which is indeed a form of state management.\n\nGiven the analysis, all options A, B, C, D, and E describe different strategies for managing the state of the SkillManager, including how it updates skills, handles timing, and synchronizes environments. Therefore, the correct answer involves multiple options.\n\n\\boxed{A,B,C,D,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 14,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In IsaacLab's GPU-accelerated simulation, which aspects of the MotionManager's design enable efficient parallel motion tracking across thousands of environments?\n\n- (A) All motion state tensors (loc_root_pos, loc_dof_pos, etc.) are batched with environment dimension first\n- (B) Frame interpolation using SLERP is implemented as vectorized operations on entire batches\n- (C) The MotionBuffer pre-computes motion library indices for all environments simultaneously\n- (D) Joint ID casting uses tensor indexing operations instead of loops over individual environments\n- (E) Motion time updates are conditional per-environment but executed as masked tensor operations",
+      "explanation": "(A), (B), (D), and (E) are correct. This tests GPU parallelization understanding from `trackerLab/managers/motion_manager/motion_manager.py` and `trackerLab/motion_buffer/`. (A) enables SIMD operations: tensors are [num_envs, ...]. (B) SLERP operates on batched quaternions simultaneously. (D) id_caster uses tensor indexing: 'dof_pos[:, self.gym2lab_dof_ids]' processes all envs at once. (E) static_motion check uses masked updates. (C) is incorrect - MotionBuffer doesn't pre-compute indices; it queries MotionLib dynamically based on current motion_ids and motion_times.",
+      "pred_raw": "To enable efficient parallel motion tracking across thousands of environments, the design of IsaacLab's GPU-accelerated simulation should incorporate features that allow for batch processing and vectorized operations. This is because GPUs are optimized for parallel processing and can handle large batches of data efficiently.\n\n- Option A, \"All motion state tensors (loc_root_pos, loc_dof_pos, etc.) are batched with environment dimension first,\" suggests that the motion state tensors are organized in a way that allows for batch processing. This is a good candidate because batching data allows for parallel processing, which is beneficial for GPU acceleration.\n\n- Option B, \"Frame interpolation using SLERP is implemented as vectorized operations on entire batches,\" implies that the interpolation process is optimized for GPU performance by using vectorized operations on the entire batch of environments. This is also a good candidate because vectorized operations are more efficient on GPUs than loop-based operations.\n\n- Option C, \"The MotionBuffer pre-computes motion library indices for all environments simultaneously,\" suggests that the MotionBuffer is designed to handle large batches of environments efficiently. This is a good candidate because pre-computing indices can reduce the computational overhead of motion tracking.\n\n- Option D, \"Joint ID casting uses tensor indexing operations instead of loops over individual environments,\" implies that the joint ID casting process is optimized for GPU performance by using tensor indexing operations. This is a good candidate because tensor indexing operations are generally faster than loop-based operations.\n\n- Option E, \"Motion time updates are conditional per-environment but executed as masked tensor operations,\" suggests that the motion time updates are optimized for GPU performance by using masked tensor operations. This is a good candidate because masked tensor operations can be more efficient than conditional statements.\n\nGiven the importance of parallel processing and vectorized operations for GPU acceleration, options A, B, C, D, and E are all relevant to enabling efficient parallel motion tracking across thousands of environments.\n\n\\boxed{A,B,C,D,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 15,
+      "dataset": "trackerLab",
+      "instruction": "choose ONE option",
+      "stem": "In Sim2SimLib's observation history mechanism, why is temporal observation stacking critical for policy transfer from IsaacLab to MuJoCo?\n\n- (A) MuJoCo's single-threaded execution requires buffering observations for batch processing\n- (B) Policies trained with observation history implicitly learn velocity and acceleration from finite differences\n- (C) Observation history compensates for MuJoCo's lower simulation frequency compared to IsaacLab\n- (D) Historical observations enable the policy to detect and correct for simulation divergence",
+      "explanation": "(B) is correct. This tests policy architecture understanding from `sim2simlib/model/config.py` and observation processing. When policies are trained with observation history (e.g., last 3 timesteps of joint positions), they learn to extract derivatives: velocity ≈ (pos_t - pos_{t-1})/dt, acceleration ≈ (vel_t - vel_{t-1})/dt. This is crucial because if IsaacLab training used history but MuJoCo deployment doesn't provide it, the policy loses critical dynamic information. The history must be maintained for transfer. (A) is wrong - batching isn't the reason. (C) misunderstands - both can run at same frequency. (D) is incorrect - history doesn't detect sim differences.",
+      "pred_raw": "To determine why temporal observation stacking is critical for policy transfer from IsaacLab to MuJoCo, let's analyze each option:\n\n- Option A: MuJoCo's single-threaded execution does not inherently require buffering observations for batch processing. This is more related to the architecture of MuJoCo itself rather than the need for observation stacking.\n\n- Option B: While policies trained with observation history can learn velocity and acceleration from finite differences, this is not the primary reason for using observation stacking in this context. The question is about policy transfer, not about what the policies can learn.\n\n- Option C: MuJoCo's simulation frequency is not directly related to the need for observation stacking. The key issue is not the frequency of simulation but rather the differences in the simulation environments.\n\n- Option D: Historical observations enable the policy to detect and correct for simulation divergence. This is a critical aspect of policy transfer. When transferring policies from one simulator to another, the new simulator may not perfectly replicate the dynamics of the original simulator. Observation stacking allows the policy to adapt to these differences by learning from past observations, which can help detect and correct for simulation divergence.\n\nThe key insight here is that the policy is being transferred from one simulator to another, and the new simulator may not perfectly replicate the dynamics of the original simulator. This means that the policy needs to adapt to the differences in the new simulator. Observation stacking allows the policy to learn from past observations, which can help detect and correct for simulation divergence.\n\n\\boxed{D}",
+      "pred_letters": [
+        "D"
+      ],
+      "gt_letters": [
+        "B"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 16,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The SkeletonTree class represents skeleton topology as a tree structure. Which kinematic computations does this tree representation enable?\n\n- (A) Forward kinematics: computing global joint positions from local rotations by traversing parent-to-child\n- (B) Inverse kinematics: solving for joint angles given desired end-effector positions\n- (C) Jacobian computation: calculating the relationship between joint velocities and end-effector velocities\n- (D) Joint velocity propagation: computing child joint velocities from parent velocities and local angular velocities\n- (E) Center of mass calculation: aggregating link masses weighted by global positions",
+      "explanation": "(A), (D), and (E) are correct. This tests skeleton kinematics from `poselib/skeleton/skeleton3d.py`. (A) is fundamental - tree traversal enables FK: child_global_pos = parent_global_pos + parent_global_rot * bone_vector. (D) follows from the tree: child velocity includes parent velocity plus the contribution from parent's angular velocity. (E) uses tree structure to aggregate: CoM = Σ(mass_i * global_pos_i) / total_mass. (B) is incorrect - IK requires optimization/search, not just tree structure. (C) is wrong - Jacobian needs explicit derivative computation, not provided by tree alone.",
+      "pred_raw": "To determine which kinematic computations the SkeletonTree class enables, let's analyze each option in the context of a tree structure representing skeleton topology.\n\n- Forward kinematics (A) involves computing the global position of a joint based on its local rotation and the position of its parent joint. This can be achieved by traversing the tree from parent to child, making option A a valid computation enabled by the SkeletonTree class.\n\n- Inverse kinematics (B) requires solving for joint angles given a desired end-effector position. While the tree structure can help in organizing the skeleton, it doesn't inherently enable solving for joint angles without additional algorithms or constraints.\n\n- Jacobian computation (C) involves calculating the relationship between joint velocities and end-effector velocities. This computation is typically related to the dynamics of the system and the structure of the skeleton, which the tree representation can facilitate by organizing the joints and their relationships.\n\n- Joint velocity propagation (D) involves computing the velocity of a child joint based on the velocity of its parent and the local angular velocity. This can be computed by traversing the tree from parent to child, making option D another valid computation enabled by the SkeletonTree class.\n\n- Center of mass calculation (E) involves aggregating the masses of the links weighted by their global positions. While the tree structure can help in organizing the skeleton, calculating the center of mass typically requires additional information about the masses of the links and their positions, which is not inherently provided by the tree structure.\n\nGiven the analysis, options A, C, and D are directly enabled by the tree structure of the SkeletonTree class, as they involve computations that can be performed by traversing the tree from parent to child.\n\n\\boxed{A,C,D}",
+      "pred_letters": [
+        "A",
+        "C",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "D",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 20,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The MotionManager's loc_gen_state method computes motion state by interpolating between two frames. Which numerical considerations affect the interpolation quality?\n\n- (A) Quaternion normalization after SLERP to maintain unit norm despite floating-point errors\n- (B) Handling quaternion double-cover (q and -q represent the same rotation) by choosing the shorter path\n- (C) Clamping the blend factor to [0,1] to prevent extrapolation beyond frame boundaries\n- (D) Using double precision for rotation computations to minimize accumulation errors\n- (E) Applying temporal smoothing filters to reduce high-frequency jitter in interpolated states",
+      "explanation": "(B) and (C) are correct. This tests numerical methods from `trackerLab/managers/motion_manager/motion_manager.py` and `trackerLab/utils/torch_utils/slerp`. (B) is critical - quaternions have double-cover: q and -q represent the same rotation. SLERP must choose the shorter arc (dot product check) to avoid 360° rotations. (C) prevents extrapolation: blend = (motion_time - f0_time) / dt should be clamped. (A) is unnecessary - proper SLERP maintains unit norm. (D) is not implemented - single precision is used. (E) is not part of loc_gen_state.",
+      "pred_raw": "To determine the correct options, let's analyze each choice in the context of the MotionManager's loc_gen_state method, which interpolates between two frames to compute motion state.\n\n- (A) Quaternion normalization after SLERP (Spherical Linear Interpolation of Rotation) is crucial to maintain unit norm despite floating-point errors. This is because quaternions are used to represent 3D rotations, and their magnitude should remain 1 for accurate rotation calculations. However, due to floating-point precision issues, quaternions may deviate from the unit norm during interpolation. Normalizing them after SLERP ensures that the resulting rotation is accurate.\n\n- (B) Handling quaternion double-cover (q and -q represent the same rotation) is essential for interpolation quality. If not addressed, this issue can lead to incorrect rotation calculations. By choosing the shorter path, the interpolation can avoid unnecessary rotations and maintain accuracy.\n\n- (C) Clamping the blend factor to [0,1] is a common technique to prevent extrapolation beyond frame boundaries. However, this is more related to the interpolation process itself rather than the numerical considerations affecting the interpolation quality.\n\n- (D) Using double precision for rotation computations can minimize accumulation errors, but it's not directly related to the interpolation quality in this context. The MotionManager's loc_gen_state method primarily deals with quaternion interpolation, which is not necessarily affected by the precision of the rotation computations.\n\n- (E) Applying temporal smoothing filters to reduce high-frequency jitter in interpolated states is a technique used to improve the smoothness of the interpolated motion. However, it's not a numerical consideration that affects the interpolation quality in terms of accuracy or precision.\n\nConsidering the above analysis, the correct options are (A) and (B), as they directly address numerical considerations that affect the interpolation quality.\n\n\\boxed{A,B}",
+      "pred_letters": [
+        "A",
+        "B"
+      ],
+      "gt_letters": [
+        "B",
+        "C"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 21,
+      "dataset": "trackerLab",
+      "instruction": "choose ONE option",
+      "stem": "Why does Sim2SimLib implement control_decimation to run policy inference less frequently than the simulation timestep?\n\n- (A) To reduce computational cost by avoiding redundant policy evaluations\n- (B) To match the control frequency used during IsaacLab training, maintaining temporal consistency\n- (C) To simulate communication delays between high-level planning and low-level control\n- (D) To allow the PID controller time to stabilize between policy updates",
+      "explanation": "(B) is correct. This tests control frequency matching from `sim2simlib/model/config.py` and `sim2sim_base.py`. If IsaacLab training used control_decimation=4 (policy runs every 4 sim steps), the policy learned to produce actions assuming this frequency. Running at a different frequency in MuJoCo would change the temporal dynamics - actions would be held for different durations, affecting the policy's behavior. Matching the training frequency is critical for transfer. (A) is a side benefit, not the primary reason. (C) mischaracterizes the purpose. (D) is incorrect - PID operates at simulation frequency regardless.",
+      "pred_raw": "To determine why Sim2SimLib implements control_decimation to run policy inference less frequently than the simulation timestep, let's consider the purpose of control_decimation. Control_decimation is a technique used to reduce the frequency of policy evaluations during simulation. This is typically done to reduce computational cost, as policy evaluations can be computationally expensive. By running policy inference less frequently, the overall simulation time can be reduced, making the simulation more efficient.\n\nThe other options do not directly relate to the primary purpose of control_decimation. Option B mentions matching the control frequency used during IsaacLab training, but this is not the primary reason for implementing control_decimation. Option C mentions simulating communication delays, which is not the purpose of control_decimation. Option D mentions allowing the PID controller time to stabilize between policy updates, but this is not directly related to the purpose of control_decimation.\n\nTherefore, the most likely reason for implementing control_decimation is to reduce computational cost by avoiding redundant policy evaluations.\n\n\\boxed{A}",
+      "pred_letters": [
+        "A"
+      ],
+      "gt_letters": [
+        "B"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 22,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In the SkeletonMotion class, which temporal operations are supported for motion sequence manipulation?\n\n- (A) Computing joint velocities from position sequences using finite differences\n- (B) Time warping to change motion speed while preserving spatial characteristics\n- (C) Temporal alignment of multiple motion sequences using dynamic time warping\n- (D) Frame interpolation to increase motion framerate\n- (E) Motion blending to create smooth transitions between different motion clips",
+      "explanation": "(A) is correct, (D) is supported through interpolation methods. This tests SkeletonMotion capabilities from `poselib/skeleton/skeleton3d.py`. (A) is explicitly mentioned: 'provides utilities for computing joint velocities' from position sequences. (D) is supported via the interpolation infrastructure. (B) time warping isn't explicitly implemented. (C) DTW is not provided. (E) motion blending between clips isn't a SkeletonMotion feature (though frame-level interpolation exists).",
+      "pred_raw": "To determine which temporal operations are supported for motion sequence manipulation in the SkeletonMotion class, let's analyze each option:\n\n- Option A (Computing joint velocities from position sequences using finite differences) is a basic operation that can be performed on motion sequences. It involves calculating the velocity of joints by taking the difference in position over a small time interval, which is a fundamental aspect of motion analysis.\n\n- Option B (Time warping to change motion speed while preserving spatial characteristics) is a technique used to modify the speed of a motion sequence while maintaining its spatial characteristics. This is a common operation in motion editing and can be useful for adjusting the pace of a character's movement.\n\n- Option C (Temporal alignment of multiple motion sequences using dynamic time warping) is a more advanced operation that involves aligning multiple motion sequences in time. This can be useful for combining different motion clips into a single sequence.\n\n- Option D (Frame interpolation to increase motion framerate) involves inserting new frames between existing ones to increase the frame rate of a motion sequence. This can be useful for creating smoother motion or for adjusting the timing of a sequence.\n\n- Option E (Motion blending to create smooth transitions between different motion clips) is a technique used to blend the motion from two or more clips together, creating a smooth transition between them.\n\nGiven the variety of operations described, it seems that the SkeletonMotion class supports a range of temporal operations for motion sequence manipulation.\n\n\\boxed{A,B,C,D,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 24,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "When designing the skill transition cost function in SkillGraph, which motion similarity metrics could be used to compute inter-skill transition costs?\n\n- (A) L2 distance between root body translations at patch boundaries\n- (B) Quaternion distance between root body orientations at patch boundaries\n- (C) Joint configuration space distance using weighted joint angle differences\n- (D) Dynamic Time Warping distance between velocity profiles\n- (E) Frechet distance between full-body trajectory curves",
+      "explanation": "(A), (B), and (C) are correct. This tests skill graph construction from `trackerLab/managers/skill_manager/skill_graph/skill_edge.py`. The BUILD_GRAPH_METHODS use metrics like 'trans_base' (A - root translation), orientation differences (B), and joint space distances (C) with configurable norms (L2) and windows. These are computationally efficient boundary-based metrics. (D) DTW is too expensive for real-time graph construction. (E) Frechet distance over full trajectories is computationally prohibitive and not used in the implementation.",
+      "pred_raw": "To determine the suitable motion similarity metrics for computing inter-skill transition costs in SkillGraph, we need to consider what aspects of motion are relevant for transition costs. Transition costs are essentially measures of how difficult or unnatural it is to transition from one skill to another. This involves considering both the spatial and temporal aspects of motion.\n\n- Option (A) L2 distance between root body translations at patch boundaries: This option considers the spatial translation of the root body (usually the torso or pelvis) between patches. It's a relevant metric because significant translation between patches can indicate a difficult transition. However, it only considers translation and not orientation or joint configurations.\n\n- Option (B) Quaternion distance between root body orientations at patch boundaries: This option focuses on the orientation of the root body. It's relevant because a large change in orientation can make a transition difficult. However, like option (A), it only considers a single aspect of motion.\n\n- Option (C) Joint configuration space distance using weighted joint angle differences: This option considers the joint angles of the body, which is crucial for understanding how a skill is performed. A large difference in joint angles between two skills can indicate a difficult transition. This option is particularly relevant because it considers the detailed configuration of the body, which is essential for many skills.\n\n- Option (D) Dynamic Time Warping distance between velocity profiles: This option considers the temporal aspect of motion by comparing the velocity profiles of two skills. It's relevant because skills with significantly different velocity profiles might be difficult to transition between. However, it might not capture the spatial aspects of motion as well as other options.\n\n- Option (E) Frechet distance between full-body trajectory curves: This option considers the full-body trajectory, including both spatial and temporal aspects. It's a comprehensive metric that can capture the complexity of motion transitions. However, it might be computationally expensive and could be overkill for simple transition cost calculations.\n\nConsidering the need to balance relevance with computational complexity, options (A), (B), (C), and (D) are all relevant for computing inter-skill transition costs. Option (E) is also relevant but might be more computationally expensive than necessary for this task.\n\n\\boxed{A,B,C,D}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 25,
+      "dataset": "trackerLab",
+      "instruction": "choose ONE option",
+      "stem": "Why does the retargeting pipeline require both source and target T-poses to be in the same canonical pose (e.g., both in T-pose)?\n\n- (A) To ensure both skeletons have the same number of joints\n- (B) To establish a common reference frame where bone direction vectors can be compared for computing rotation offsets\n- (C) To normalize bone lengths to unit vectors for scale-invariant comparison\n- (D) To simplify the joint mapping by ensuring corresponding joints have similar names",
+      "explanation": "(B) is correct. This tests retargeting mathematics from `poselib/retarget/retargeting_processor.py`. The T-pose serves as a canonical configuration where we can compute the rotation offset needed to align corresponding bones. For example, if source's upper arm points in direction v_s and target's points in direction v_t (both in their respective T-poses), the rotation offset R satisfies: R * v_s = v_t. This offset is then applied to all motion frames. Both must be in the same pose type (T-pose) so the bone directions are comparable. (A) is wrong - joint counts can differ. (C) misunderstands - bone lengths aren't normalized. (D) is incorrect - naming is separate from pose matching.",
+      "pred_raw": "To determine why the retargeting pipeline requires both source and target T-poses to be in the same canonical pose, let's consider the purpose of retargeting. Retargeting involves transferring the animation from one character or skeleton to another. For this process to be accurate, the skeletons of the source and target must be aligned in a way that allows for direct comparison of their bone structures and movements.\n\nOption A, ensuring both skeletons have the same number of joints, is not the primary reason. While having the same number of joints is a necessary condition, it does not directly address the need for a common reference frame for comparison.\n\nOption C, normalizing bone lengths to unit vectors for scale-invariant comparison, is also not the primary reason. Normalizing bone lengths is a technique used in some stages of the retargeting process but is not the reason for requiring both skeletons to be in the same pose.\n\nOption D, simplifying the joint mapping by ensuring corresponding joints have similar names, is not accurate. The names of joints are not the critical factor in the retargeting process; it's the spatial relationship and movement of the joints that are important.\n\nOption B, establishing a common reference frame where bone direction vectors can be compared for computing rotation offsets, is the most accurate reason. By having both skeletons in the same canonical pose (e.g., T-pose), it becomes easier to compare the direction of bone vectors and calculate the necessary rotation offsets to align the source skeleton with the target skeleton. This is crucial for accurately transferring the animation from the source to the target.\n\n\\boxed{B}",
+      "pred_letters": [
+        "B"
+      ],
+      "gt_letters": [
+        "B"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 26,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In MuJoCo's constraint-based contact solver versus IsaacLab's penalty-based contact model, which behavioral differences affect policy transfer?\n\n- (A) Constraint-based solvers produce hard contacts with no penetration, while penalty-based allow small penetrations\n- (B) Constraint-based solvers can generate instantaneous velocity changes, while penalty-based produce gradual force responses\n- (C) Constraint-based solvers are deterministic, while penalty-based introduce stochastic contact dynamics\n- (D) Constraint-based solvers better preserve energy conservation in collisions\n- (E) Constraint-based solvers require smaller timesteps for stability",
+      "explanation": "(A), (B), and (D) are correct. This tests physics simulation understanding relevant to `sim2simlib/` transfer. (A) constraint solvers enforce non-penetration exactly via Lagrange multipliers, while penalty methods use spring-damper forces allowing small penetration. (B) constraints can produce discontinuous velocity changes (impulses), while penalty forces integrate smoothly. (D) constraint solvers can exactly enforce restitution coefficients, better preserving energy. (C) is wrong - both can be deterministic. (E) is backwards - penalty methods often need smaller timesteps due to stiff springs.",
+      "pred_raw": "Here's the step-by-step reasoning:\n\n1. The question asks about the behavioral differences between MuJoCo's constraint-based contact solver and IsaacLab's penalty-based contact model that affect policy transfer.\n2. Policy transfer refers to the ability to transfer a policy learned in one environment to another environment.\n3. The key difference between constraint-based and penalty-based contact models is how they handle contact between objects.\n4. Constraint-based solvers, like MuJoCo, enforce hard contacts with no penetration, whereas penalty-based solvers, like IsaacLab, allow small penetrations and apply a penalty force to prevent further penetration.\n5. This difference in contact handling can affect the behavior of the agent in the environment, particularly in terms of how it responds to collisions.\n6. Option A mentions that constraint-based solvers produce hard contacts with no penetration, while penalty-based allow small penetrations. This is a key difference between the two models and can affect policy transfer.\n7. Option B mentions that constraint-based solvers can generate instantaneous velocity changes, while penalty-based produce gradual force responses. This is also a behavioral difference that can affect policy transfer.\n8. Option C mentions that constraint-based solvers are deterministic, while penalty-based introduce stochastic contact dynamics. This is not directly related to policy transfer.\n9. Option D mentions that constraint-based solvers better preserve energy conservation in collisions. While this is a desirable property, it is not directly related to policy transfer.\n10. Option E mentions that constraint-based solvers require smaller timesteps for stability. This is a technical detail that may affect simulation stability, but it is not directly related to policy transfer.\n\nBased on the reasoning above, the correct options are A and B.\n\n\\boxed{A,B}",
+      "pred_letters": [
+        "A",
+        "B"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 28,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The JointIdCaster maintains mappings between gym and lab joint orderings. Which scenarios require this bidirectional mapping?\n\n- (A) Reading motion data (gym order) and writing to IsaacLab simulation state (lab order)\n- (B) Reading IsaacLab observations (lab order) and computing motion tracking errors (gym order)\n- (C) Applying retargeted joint positions (gym order) to robot actuators (lab order)\n- (D) Converting policy actions (lab order) to motion library format for logging (gym order)\n- (E) Synchronizing joint states between distributed training workers",
+      "explanation": "(A), (B), and (C) are correct. This tests bidirectional mapping use cases from `trackerLab/joint_id_caster.py` and its usage in managers. (A) is the primary use: motion data → simulation. (B) is needed for computing tracking rewards: simulation state → motion reference frame. (C) applies retargeted data to simulation. (D) is incorrect - policy actions are already in lab order and don't need conversion to gym for logging. (E) is unrelated - distributed training doesn't involve gym/lab conversion.",
+      "pred_raw": "To determine the correct scenarios that require the bidirectional mapping between gym and lab joint orderings, we need to consider the context of each option. The JointIdCaster is used to maintain mappings between the two different joint orderings, which are used in different environments (gym and lab). This mapping is necessary when data or actions need to be converted from one environment to the other.\n\n- Option A involves reading motion data in gym order and writing it to IsaacLab simulation state in lab order. This requires a mapping from gym to lab order, which is one direction of the bidirectional mapping.\n- Option B involves reading IsaacLab observations in lab order and computing motion tracking errors in gym order. This requires a mapping from lab to gym order, which is the other direction of the bidirectional mapping.\n- Option C involves applying retargeted joint positions in gym order to robot actuators in lab order. This requires a mapping from gym to lab order, similar to option A.\n- Option D involves converting policy actions in lab order to motion library format for logging in gym order. This requires a mapping from lab to gym order, similar to option B.\n- Option E involves synchronizing joint states between distributed training workers. This scenario does not inherently require a mapping between gym and lab joint orderings, as it involves synchronization within the same environment.\n\nConsidering the need for bidirectional mapping, options A, B, and C are the correct scenarios that require this mapping.\n\n\\boxed{A,B,C}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 30,
+      "dataset": "trackerLab",
+      "instruction": "choose MULTIPLE options",
+      "stem": "When computing body-frame observations (lvbs, avbs) from global motion data, which physical interpretations do these transformed quantities represent?\n\n- (A) lvbs represents the velocity of the root body as perceived by an observer fixed to the body\n- (B) avbs represents the angular velocity vector in the body's local coordinate frame\n- (C) lvbs eliminates the effect of global translation, isolating relative motion\n- (D) avbs is invariant to the body's global orientation, representing intrinsic rotation rate\n- (E) Both quantities are expressed in the inertial frame but relative to the body's position",
+      "explanation": "(A), (B), and (D) are correct. This tests reference frame understanding from `trackerLab/motion_buffer/motion_lib/motion_lib.py` and `poselib/core/rotation3d.py`. (A) is correct - quat_apply_inverse(root_rot, global_vel) transforms global velocity into body frame, giving velocity as seen by body-fixed observer. (B) is correct - angular velocity is rotated into body frame. (D) is a key property - angular velocity magnitude and direction (in body frame) are independent of global orientation. (C) is wrong - lvbs doesn't eliminate translation effects, it changes reference frame. (E) is backwards - they're in body frame, not inertial frame.",
+      "pred_raw": "To determine the correct physical interpretations of lvbs and avbs, let's break down each option:\n\n- Option A: lvbs indeed represents the velocity of the root body as perceived by an observer fixed to the body. This is because lvbs is a body-frame observation, which means it is measured relative to the body's own coordinate frame. An observer fixed to the body would perceive the velocity of the root body as the velocity of the body itself.\n\n- Option B: avbs represents the angular velocity vector in the body's local coordinate frame. This is a correct interpretation because avbs is a measure of the rate of change of the body's orientation in its own local coordinate frame.\n\n- Option C: lvbs eliminates the effect of global translation, isolating relative motion. This is a correct interpretation because lvbs is a body-frame observation, which means it is measured relative to the body's own position and orientation. By doing so, it effectively isolates the relative motion of the body from the global translation.\n\n- Option D: avbs is invariant to the body's global orientation, representing intrinsic rotation rate. This is a correct interpretation because avbs is a measure of the rate of change of the body's orientation in its own local coordinate frame. This means that it is independent of the body's global orientation and represents the intrinsic rotation rate of the body.\n\n- Option E: Both quantities are expressed in the inertial frame but relative to the body's position. This is incorrect because lvbs and avbs are actually expressed in the body's local coordinate frame, not the inertial frame.\n\nBased on the above analysis, options A, B, C, and D are all correct physical interpretations of lvbs and avbs.\n\n\\boxed{A,B,C,D}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": false
+    }
+  ]
+}

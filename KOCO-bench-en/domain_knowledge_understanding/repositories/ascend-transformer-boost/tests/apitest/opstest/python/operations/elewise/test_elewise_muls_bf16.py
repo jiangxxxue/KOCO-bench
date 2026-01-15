@@ -1,0 +1,38 @@
+#
+# Copyright (c) 2024 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+#
+import sys
+import os
+import unittest
+import torch
+import torch_npu
+
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "../"))
+import operation_test  # NOQA: E402
+
+OP_NAME = "ElewiseOperation"
+
+
+class TestElewiseMulsOperation(operation_test.OperationTest):
+    def golden_calc(self, in_tensors):
+        return [in_tensors[0] * 1.0]
+
+    def golden_compare(self, out_tensor, golden_out_tensor):
+        return torch.allclose(out_tensor.cpu(), golden_out_tensor.cpu(), rtol=0.001, atol=0.001)
+        
+    def test_4d_half(self):
+        if not operation_test.get_soc_version() == 'Ascend910B':
+            print("this testcase only supports Ascend910B")
+            return
+        self.execute(OP_NAME, {"elewiseType": 2, "mulsParam": {"varAttr": 1.0}}, [torch.randn(
+            1, 4, 256, 128).npu().bfloat16()])
+
+if __name__ == '__main__':
+    unittest.main()

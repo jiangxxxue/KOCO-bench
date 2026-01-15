@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torch_atb"
+version = "0.0.1"
+description = "Python API for AscendTransformerBoost(ATB)"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.8"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+]
+
+[tool.setuptools]
+packages = ["torch_atb"]
+
+[tool.setuptools.package-data]
+torch_atb = ["*.so", "configs/*/*.ini", "device/*/*/*.bin", "host/*.so", "include/*/*.h", "lib/*.so"]

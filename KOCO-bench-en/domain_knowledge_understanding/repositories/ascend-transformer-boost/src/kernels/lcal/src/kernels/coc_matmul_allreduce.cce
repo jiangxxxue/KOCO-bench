@@ -1,0 +1,39 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#ifdef __CCE_KT_TEST__
+#define __aicore__
+#else
+#define __aicore__ [aicore]
+#endif
+
+#include "coc_ppmatmul_switch.cce"
+#include "coc_allreduce.cce"
+#include "coc_internal.cce"
+
+#ifdef __DAV_C220_CUBE__
+// Matmul in LcalMatmulAllReduce
+#define COC_MATMUL_ALLREDUCE_FUNC_AUTO_DEF(type) \
+extern "C" __global__ __aicore__ void LcalMatmulAllReduce_##type##_mix_aic(COC_ARGS_FUN(type)) { \
+    CocPpmatmulSwitchAic<type, PPMATMUL_RUN_MATMUL_ALLREDUCE>(COC_ARGS_CALL()); \
+}
+
+#elif __DAV_C220_VEC__
+// AllReduce in LcalMatmulAllReduce
+#define COC_MATMUL_ALLREDUCE_FUNC_AUTO_DEF(type) \
+extern "C" __global__ __aicore__ void LcalMatmulAllReduce_##type##_mix_aiv(COC_ARGS_FUN(type)) { \
+    CocMatmulAllReduceAiv<type>(COC_ARGS_CALL()); \
+}
+#endif
+
+#if defined(__DAV_C220_CUBE__) || defined(__DAV_C220_VEC__) // 910B support bf16
+#define COC_TYPE_FUNC(fun) fun(float16_t);fun(bfloat16_t)
+
+COC_TYPE_FUNC(COC_MATMUL_ALLREDUCE_FUNC_AUTO_DEF);
+#endif

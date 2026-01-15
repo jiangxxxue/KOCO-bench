@@ -1,0 +1,350 @@
+#ifdef __DAV_C220_VEC__
+#include "coc_internal.cce"
+#include "coc_comm_base.cce"
+#include "kernel_operator.h"
+using namespace AscendC;
+
+template <TEMPLATE_ARGS_FUN()>
+class AllToAllVReduceScatterHiddenSplit : public CocCommBase<T> {
+public:
+    __aicore__ explicit AllToAllVReduceScatterHiddenSplit(){};
+
+    inline __attribute__((always_inline)) __aicore__ void SetArgs(COC_ARGS_FUN(T))
+    {
+        CocCommBase<T>::SetArgs(COC_ARGS_CALL());
+        preprocessor.SetArgs(PP_MATMUL_AIV_PADDING_ARGS_CALL());
+        this->gm_out = gm_out;
+        expert_nums = local_expert_nums * EP;
+        if (!is_moe_averaged) {
+            this->global_tokens_per_expert_matrix = global_tokens_per_expert_matrix;
+        }
+        m_align = Block512B<T>::AlignUp(m);
+        k_align = Block512B<T>::AlignUp(k);
+        n_align = Block512B<T>::AlignUp(n);
+        if(dequant_granularity == QuantGranularity::PER_TOKEN) {
+            fused_pertoken_dequant_runner.SetArgs(reinterpret_cast<__gm__ T *>(buff[rank]), workspace_info, reinterpret_cast<__gm__ float32_t*>(gm_quant_scale),
+                batch_size, m, k, n, m0,k0, n0, m_loop, n_loop, core_loop, rank, swizzl_direct,
+                swizzl_count, p_value, EP, TP, local_expert_nums, is_moe_averaged, 1, maxOutputSize, buffer_size, global_tokens_per_expert_matrix);
+        }
+    }
+
+    inline __attribute__((always_inline)) __aicore__ void EndFlagsAndBias()
+    {
+        ResetIpcFlags(2);
+        if (real_core_idx < rank_size) {
+            CheckBuffFlag(ctrl_flags_UB, (__gm__ int32_t *)buff[real_core_idx] + flag_offset + FLAG_ZERO_IDX, 0);
+        }
+        PipeBarrier<PIPE_ALL>();
+    }
+
+
+
+
+    template <typename CommType>
+    inline __attribute__((always_inline)) __aicore__ void MoveResultFromSrcToDst(__gm__ CommType *gm_src, __gm__ CommType *gm_dst,
+                                                                                 int32_t m_actual,int32_t n_actual)
+    {
+        __ubuf__ CommType *output_UB_T[2] = {(__ubuf__ CommType *)(32), (__ubuf__ CommType *)(97440)};
+        int32_t max_move_m = (max_ub_ping_pong_size / Block32B<CommType>::AlignUp(n_actual));
+        if (max_move_m > 4095)
+            max_move_m = 4095;
+        int32_t ping_pong_move_count = DivCeil(m_actual, max_move_m); 
+        for (int32_t move_idx = 0; move_idx < ping_pong_move_count; ++move_idx) {
+            int32_t actual_move_m = max_move_m; // 4
+            int32_t actual_move_n = n_actual;//3584
+            if(move_idx == ping_pong_move_count - 1) {
+                actual_move_m = m_actual - move_idx * max_move_m;
+            }
+
+            auto event_id = (move_idx & 1) ? EVENT_ID0 : EVENT_ID1;
+            auto ub_buff_st = (move_idx & 1) ? output_UB_T[0] : output_UB_T[1];
+            WaitFlag<HardEvent::MTE3_MTE2>(event_id);
+            CopyGmToUbufAlignB16(ub_buff_st, gm_src, actual_move_m ,actual_move_n * sizeof(CommType), 0, 0);
+
+            SetFlag<HardEvent::MTE2_MTE3>(event_id);
+            WaitFlag<HardEvent::MTE2_MTE3>(event_id);
+            CopyUbufToGmAlignB16(gm_dst, ub_buff_st, actual_move_m , actual_move_n * sizeof(CommType), 0, (n - actual_move_n) * sizeof(CommType));
+            gm_src += actual_move_m * actual_move_n;
+            gm_dst += actual_move_m * n;
+            SetFlag<HardEvent::MTE3_MTE2>(event_id);
+        }
+    }
+    
+
+
+    inline __attribute__((always_inline)) __aicore__ void Run()
+    {
+        preprocessor.Run(local_expert_nums);
+        if (is_moe_averaged) {
+            max_m = m;
+        } else {
+            if (maxOutputSize == -1) {
+                max_m = 0;
+                for(int32_t ep_idx = 0; ep_idx < EP; ep_idx ++) {
+                    int32_t sum_m_ep = 0;
+                    for(int32_t local_expert_id = 0; local_expert_id < local_expert_nums; local_expert_id ++) {
+                        int32_t expert_id = local_expert_id + ep_idx * local_expert_nums;
+                        for(int32_t i = 0; i < EP; i++) {
+                            sum_m_ep += global_tokens_per_expert_matrix[i * expert_nums + expert_id];
+                        }
+                    }
+                    max_m = max(max_m, sum_m_ep);
+                }
+            } else {
+                max_m = maxOutputSize;
+            }
+        }
+
+        comm_n = p_value * n0;
+        gm_a_pingpong_size = max_m * comm_n;
+        gm_a_pingpong_num = buffer_size * 1024 * 1024 / 2 / gm_a_pingpong_size;
+        if (gm_a_pingpong_num > 8) {
+            gm_a_pingpong_num = 8;
+        }
+
+        cal_count = DivCeil(n, comm_n);
+        int32_t max_flag_id = cal_count < gm_a_pingpong_num ? cal_count : gm_a_pingpong_num;
+        for (int64_t cal_idx = 0; cal_idx < max_flag_id; ++cal_idx) {
+            SetAicSync(cal_idx);
+        }
+
+        int64_t dst_before_expert_sum[16] = {0};    // 当前expert搬运起点，src的位置
+        int32_t sum_num_local_tokens_per_expert[16] = {0};  // 当前expert搬运dst的位置
+        int32_t gmm_ep_idx = real_core_idx < rank_size ? real_core_idx : rank_size - 1;
+        if (!is_moe_averaged) {
+            int32_t hcumsum = 0;
+            for (int32_t j = 0; j <= gmm_ep_idx; j++) {
+                for(int32_t i = 0; i < local_expert_nums; i++) {
+                    if (j == gmm_ep_idx)
+                        sum_num_local_tokens_per_expert[i] = hcumsum;
+                    hcumsum += global_tokens_per_expert_matrix[rank * expert_nums + i + j * local_expert_nums];
+                }
+            }
+
+            int32_t cumsum = 0;
+            for (int32_t i = 0; i < local_expert_nums; i++) {
+                for(int32_t j = 0; j < rank_size; j++) {
+                    if (j == rank) {
+                        dst_before_expert_sum[i] = cumsum;
+                    }
+                    cumsum += global_tokens_per_expert_matrix[j * expert_nums + i + gmm_ep_idx * local_expert_nums];
+                }
+            }
+        } else {
+            for (int32_t i = 0; i < local_expert_nums; i++) {
+                sum_num_local_tokens_per_expert[i] = (m / expert_nums) * (gmm_ep_idx * local_expert_nums + i);
+                dst_before_expert_sum[i] = (m / expert_nums) * (EP * i + rank);
+            }
+        }
+
+        for (int32_t cal_idx = 0; cal_idx < cal_count; ++cal_idx) {
+            uint64_t flag_idx = cal_idx % gm_a_pingpong_num;
+            WaitEvent(flag_idx);
+
+            if (dequant_granularity == QuantGranularity::PER_TOKEN) {
+                SetAndWaitAivSync(flag_idx,gm_a_pingpong_num);
+                fused_pertoken_dequant_runner.DequantPerTokenMatmulAllToAllHidden(cal_idx);
+            }
+            SetAndWaitAivSync(flag_idx, gm_a_pingpong_num);
+            int64_t n_len, m_len;
+            if(cal_idx == cal_count - 1){
+                n_len = n - cal_idx * comm_n;
+            } else {
+                n_len = comm_n;
+            }
+            int32_t n_loop_cal = DivCeil(n_len, n0);
+
+            if (real_core_idx < rank_size) {
+                if (real_core_idx == rank) {
+                    SetBuffFlagByAdd(
+                        ctrl_flags_UB, (__gm__ int32_t *)buff[rank] + flag_offset + FLAG_ZERO_IDX, FLAG_VALUE);
+                }
+                CheckBuffFlag(ctrl_flags_UB, (__gm__ int32_t *)buff[real_core_idx] + flag_offset + FLAG_ZERO_IDX, FLAG_VALUE * (cal_idx + 1));
+                for(int32_t local_expert_id = 0; local_expert_id < local_expert_nums; local_expert_id ++) {
+                    int32_t expert_id = real_core_idx * local_expert_nums + local_expert_id;
+                    if(is_moe_averaged) {
+                        m_len = m / EP / local_expert_nums;
+                    } else {
+                        m_len = global_tokens_per_expert_matrix[rank * expert_nums + expert_id];
+                    }
+
+                    if (maxOutputSize > 0 && m_len > maxOutputSize - dst_before_expert_sum[local_expert_id]) {
+                        m_len = maxOutputSize - dst_before_expert_sum[local_expert_id];
+                    }
+
+                    if (m_len <= 0) {
+                        continue;
+                    }
+                    int64_t buff_offset = flag_idx * gm_a_pingpong_size + 1LL * dst_before_expert_sum[local_expert_id] * n_len;
+
+                    int64_t gm_offset = 1LL * sum_num_local_tokens_per_expert[local_expert_id] * n + 1LL * cal_idx * comm_n;
+                    __gm__ T *src_address, *dst_address;
+                    src_address = buff[real_core_idx] + buff_offset;
+                    dst_address = gm_out + gm_offset;
+                    SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);  // MTE2等MTE3
+                    SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);  // MTE2等MTE3
+                    MoveResultFromSrcToDst(src_address, dst_address, m_len, n_len);
+                    WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);  // MTE2等MTE3
+                    WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);  // MTE2等MTE3
+                }
+                SetBuffFlagByAdd(ctrl_flags_UB, (__gm__ int32_t *)buff[real_core_idx] + flag_offset + FLAG_ONE_IDX, FLAG_VALUE);
+                if (real_core_idx == rank) {
+                    CheckBuffFlag(ctrl_flags_UB, (__gm__ int32_t *)buff[rank] + flag_offset + FLAG_ONE_IDX,
+                        FLAG_VALUE * (cal_idx + 1) * EP);
+                }
+            }
+            SetAndWaitAivSync(flag_idx, gm_a_pingpong_num);
+            SetAicSync(flag_idx);
+        }
+        EndFlagsAndBias();
+    }
+
+    using CocCommBase<T>::SetAicSync;
+    using CocCommBase<T>::SetAndWaitAivSync;
+    using CocCommBase<T>::SetBuffFlag;
+    using CocCommBase<T>::SetBuffFlagByAdd;
+    using CocCommBase<T>::CheckBuffFlag;
+    using CocCommBase<T>::FillZero;
+    using CocCommBase<T>::FirstStepInPeerMem;
+    using CocCommBase<T>::ResetIpcFlags;
+    using CocCommBase<T>::CrossRankSyncV1;
+    using CocCommBase<T>::CrossRankSyncV2;
+    using CocCommBase<T>::buff;
+    using CocCommBase<T>::gm_out;
+    using CocCommBase<T>::ctrl_flags_UB;
+    using CocCommBase<T>::output_UB_T;
+    using CocCommBase<T>::batch_size;
+    using CocCommBase<T>::m;
+    using CocCommBase<T>::k;
+    using CocCommBase<T>::n;
+    using CocCommBase<T>::m0;
+    using CocCommBase<T>::k0;
+    using CocCommBase<T>::n0;
+    using CocCommBase<T>::m_loop;
+    using CocCommBase<T>::n_loop;
+    using CocCommBase<T>::k_loop;
+    using CocCommBase<T>::core_loop;
+    using CocCommBase<T>::real_core_idx;
+    using CocCommBase<T>::rank;
+    using CocCommBase<T>::rank_size;
+    using CocCommBase<T>::buffer_size;
+    using CocCommBase<T>::tiling_key;
+    using CocCommBase<T>::swizzl_count;
+    using CocCommBase<T>::swizzl_direct;
+    using CocCommBase<T>::trans_a;
+    using CocCommBase<T>::trans_b;
+    using CocCommBase<T>::is_int8;
+    using CocCommBase<T>::p_value;
+    using CocCommBase<T>::aiv_idx;
+    using CocCommBase<T>::other_rank;
+    using CocCommBase<T>::max_ub_single_dma_size;
+    using CocCommBase<T>::max_ub_ping_pong_size;
+    using CocCommBase<T>::loop_num_per_comm;
+    using CocCommBase<T>::dequant_granularity;
+    using CocCommBase<T>::dequant_group_size;
+    using CocCommBase<T>::quant_granularity;
+    using CocCommBase<T>::quant_group_size;
+    using CocCommBase<T>::workspace_info;
+    using CocCommBase<T>::maxOutputSize;
+    using CocCommBase<T>::is_moe;
+    using CocCommBase<T>::is_moe_averaged;
+    using CocCommBase<T>::is_alltoallvc;
+    using CocCommBase<T>::is_deterministic;
+    using CocCommBase<T>::flag_offset;
+    using CocCommBase<T>::weight_nz;
+
+    int32_t gm_a_pingpong_size;
+    int32_t gm_a_pingpong_num;
+    int32_t cal_count;
+    int32_t comm_n;
+    int32_t max_m;
+    
+    int32_t m_align;
+    int32_t k_align;
+    int32_t n_align;
+
+
+    using CocCommBase<T>::global_tokens_per_expert_matrix;
+    using CocCommBase<T>::expert_nums;
+    using CocCommBase<T>::local_expert_nums;
+    using CocCommBase<T>::TP;
+    using CocCommBase<T>::EP;
+    Preprocessor<T> preprocessor;
+    FusedPerTokenDequantRunner<T> fused_pertoken_dequant_runner;
+};
+
+
+template <typename T>
+inline __attribute__((always_inline)) __aicore__ void RunAllToAllVReduceScatterHiddenAlign16(int32_t tiling_key, COC_ARGS_FUN(T))
+{
+    // 16 align
+    AllToAllVReduceScatterHiddenSplit<true, false, false, T> all_to_allv_reduce_scatter_align_16_without_bias;
+    //AllToAllVReduceScatterHiddenSplit<true, false, true, T> all_to_allv_reduce_scatter_align_16_with_bias;
+    switch (tiling_key) {
+        case 0b000000 : case 0b100000 : case 0b010000 : case 0b110000 :
+        case 0b001000 : case 0b101000 : case 0b011000 : case 0b111000 :
+        case 0b000100 : case 0b100100 : case 0b010100 : case 0b110100 :
+        case 0b001100 : case 0b101100 : case 0b011100 : case 0b111100 :
+            all_to_allv_reduce_scatter_align_16_without_bias.SetArgs(COC_ARGS_CALL());
+            all_to_allv_reduce_scatter_align_16_without_bias.Run();
+            break;
+        // case 0b000010 : case 0b100010 : case 0b010010 : case 0b110010 :
+        // case 0b001010 : case 0b101010 : case 0b011010 : case 0b111010 :
+        // case 0b000110 : case 0b100110 : case 0b010110 : case 0b110110 :
+        // case 0b001110 : case 0b101110 : case 0b011110 : case 0b111110 :
+        //     all_to_allv_reduce_scatter_align_16_with_bias.SetArgs(COC_ARGS_CALL());
+        //     all_to_allv_reduce_scatter_align_16_with_bias.Run();
+        //     break;
+        default:
+            break;
+    }
+}
+
+template <typename T>
+inline __attribute__((always_inline)) __aicore__ void RunAllToAllVReduceScatterHiddenUnAlign16(int32_t tiling_key, COC_ARGS_FUN(T))
+{
+    // 16 unalign
+    AllToAllVReduceScatterHiddenSplit<false, false, false, T> all_to_allv_reduce_scatter_unalign_16_without_bias;
+    AllToAllVReduceScatterHiddenSplit<false, false, true, T> all_to_allv_reduce_scatter_unalign_16_with_bias;
+    switch (tiling_key) {
+        case 0b000000 : case 0b100000 : case 0b010000 : case 0b110000 :
+        case 0b001000 : case 0b101000 : case 0b011000 : case 0b111000 :
+        case 0b000100 : case 0b100100 : case 0b010100 : case 0b110100 :
+        case 0b001100 : case 0b101100 : case 0b011100 : case 0b111100 :
+            all_to_allv_reduce_scatter_unalign_16_without_bias.SetArgs(COC_ARGS_CALL());
+            all_to_allv_reduce_scatter_unalign_16_without_bias.Run();
+            break;
+        case 0b000010 : case 0b100010 : case 0b010010 : case 0b110010 :
+        case 0b001010 : case 0b101010 : case 0b011010 : case 0b111010 :
+        case 0b000110 : case 0b100110 : case 0b010110 : case 0b110110 :
+        case 0b001110 : case 0b101110 : case 0b011110 : case 0b111110 :
+            all_to_allv_reduce_scatter_unalign_16_with_bias.SetArgs(COC_ARGS_CALL());
+            all_to_allv_reduce_scatter_unalign_16_with_bias.Run();
+            break;
+        default:
+            break;
+    }
+}
+
+template <typename T>
+inline __attribute__((always_inline)) __aicore__ void CocMatmulAllToAllVReduceScatterHiddenAiv(COC_ARGS_FUN(T))
+{
+    SetAtomicNone();
+    SetMaskNormImpl();
+    SetSyncBaseAddr((uint64_t)ffts_addr);
+    SetVectorMask<T>((uint64_t)-1, (uint64_t)-1);
+
+    auto para = reinterpret_cast<__gm__ Lcal::CoCKernelParam *>(para_gm);
+    auto cocTilingData = &para->cocTilingData;
+    int32_t n = cocTilingData->n;
+    int32_t tiling_key = cocTilingData->tilingKey;
+    if (n % BLOCK_SIZE_16 == 0) {
+        RunAllToAllVReduceScatterHiddenAlign16(tiling_key, COC_ARGS_CALL());
+    } else {
+        RunAllToAllVReduceScatterHiddenUnAlign16(tiling_key, COC_ARGS_CALL());
+    }
+
+    PipeBarrier<PIPE_ALL>();
+}
+
+#endif

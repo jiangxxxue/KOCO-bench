@@ -1,0 +1,97 @@
+# Builds Tripy wheels and documentation and deploys them to GitHub releases and pages respectively.
+name: Tripy Release Pipeline
+
+on:
+  push:
+    tags:
+      - "tripy-v*.*.*"
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: tripy-self-hosted
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    container:
+      image: ghcr.io/nvidia/tensorrt-incubator/tripy:latest
+      volumes:
+        - ${{ github.workspace }}/tripy:/tripy
+      options: --gpus all
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: build-package
+      run: |
+        cd /tripy/
+        python3 -m build . -w -n
+
+    - name: build-docs
+      run: |
+        cd /tripy/
+        python3 docs/generate_rsts.py
+        sphinx-build build/doc_sources build/docs -c docs/ -j 4 -W -n
+        cp docs/packages.html build/docs/
+
+    # We want to make sure all functional tests, including L1, are passing before we release the wheel.
+    - name : test
+      run: |
+        cd /tripy/
+        pytest --cov=nvtripy/ --cov-config=.coveragerc tests/ -v -m "not l1" -n 4 --durations=15 --ignore tests/performance
+
+    - name: Upload distributions
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-dists
+        path: /tripy/dist/
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      with:
+        generate_release_notes: true
+        files: /tripy/dist/nvtripy-*.whl
+        fail_on_unmatched_files: true
+
+    - uses: actions/configure-pages@v5
+
+    - uses: actions/upload-pages-artifact@v3
+      with:
+        path: "/tripy/build/docs"
+
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
+
+  pypi-publish:
+    runs-on: ubuntu-latest
+    needs:
+      - build-and-release
+
+    # Dedicated environments with protections for publishing are strongly recommended.
+    # For more information, see: https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment#deployment-protection-rules
+    environment:
+      name: pypi
+      url: https://pypi.org/p/nvtripy
+
+    steps:
+      - name: Retrieve release distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dists
+          path: dist/
+
+      - name: Publish release distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

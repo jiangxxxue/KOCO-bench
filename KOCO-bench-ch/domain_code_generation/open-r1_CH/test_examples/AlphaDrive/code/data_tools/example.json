@@ -1,0 +1,6 @@
+{
+    "image": "example.jpg",
+    "problem": "You are an expert driving assistant. Your current speed is 4.2m/s, the navigation command is '{'100m': 'Straight', '200m': 'Straight'}', based on the understanding of the driving scene and the navigation information, what is your driving plan for the next three seconds? Output the planning reasoning process in <think> </think> and final planning answer in <answer> </answer> tags, respectively. Planning answer consists of SPEED plan and PATH plan, SPEED includes KEEP, ACCELERATE, DECELERATE, and STOP. PATH includes STRAIGHT, RIGHT_CHANGE, LEFT_CHANGE, RIGHT_TURN, and LEFT_TURN. For example, a correct answer format is like '<think> planning reasoning process here </think> <answer> KEEP, LEFT_TURN </answer>'.",
+    "solution": "<answer> ACCELERATE, STRAIGHT </answer>",
+    "thinking": "<think> The driving decision to accelerate and go straight is based on the navigation command indicating that the next 100 meters should be driven straight, and there appears to be no immediate obstacles that would require a change in direction or speed. The road ahead is clear, and the light is green, allowing for safe acceleration to pass the intersection. </think>"
+}

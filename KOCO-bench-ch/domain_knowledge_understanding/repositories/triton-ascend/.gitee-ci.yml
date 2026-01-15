@@ -1,0 +1,21 @@
+stages:
+  - check_commit  # Define Check Phases
+
+commit_message_check:
+  stage: check_commit
+  script:
+    - |
+      # Obtain the latest PR submission information.
+      COMMIT_MSG=$(git log -1 --pretty=%B)
+      
+      # Check for compliance with specifications
+      if ! echo "$COMMIT_MSG" | grep -qE "^(feat|fix|docs|style|refactor|test|chore|revert)(\(.*\))?: .+"; then
+        echo "❌ The submitted information does not comply with the specifications.！"
+        echo "Format Requirements: <type>(<scope>): <subject>"
+        echo "e.g.: feat(user): The login function is added."
+        echo "Allowed Types: feat | fix | docs | style | refactor | test | chore | revert"
+        exit 1  # Failed to exit, preventing PR combination
+      fi
+      echo "✅ The submitted information complies with the specifications."
+  only:
+    - merge_request  # Run only when PR is triggered

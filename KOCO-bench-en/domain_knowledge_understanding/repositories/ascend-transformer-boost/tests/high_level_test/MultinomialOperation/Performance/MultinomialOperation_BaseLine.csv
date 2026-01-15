@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|MultinomialOperation1|195.375|195.375
+2|MultinomialOperation2|222.81|222.81
+3|MultinomialOperation3|251.785|251.785
+4|MultinomialOperation4|166.045|166.045

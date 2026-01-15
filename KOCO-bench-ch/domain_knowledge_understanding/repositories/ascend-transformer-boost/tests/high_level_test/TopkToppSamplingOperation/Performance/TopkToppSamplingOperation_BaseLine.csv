@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|TopkToppSamplingOperation1|689.33|689.33
+2|TopkToppSamplingOperation2|688.27|688.27
+3|TopkToppSamplingOperation3|682.775|682.775
+4|TopkToppSamplingOperation4|683.345|683.345

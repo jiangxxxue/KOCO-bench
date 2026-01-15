@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|PadOperation1|251.44|251.44
+2|PadOperation2|241.65|241.65
+3|PadOperation3|337.395|337.395
+4|PadOperation4|265.09|265.09

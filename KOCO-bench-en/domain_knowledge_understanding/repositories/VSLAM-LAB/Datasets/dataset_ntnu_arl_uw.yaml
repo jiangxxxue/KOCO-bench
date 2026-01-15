@@ -1,0 +1,8 @@
+dataset_name : ntnu_arl_uw 
+
+rgb_hz: 20.0
+url_download_root: ""
+image_topic: "/alphasense_driver_ros"
+
+sequence_names:
+  - fjord_1-cam0

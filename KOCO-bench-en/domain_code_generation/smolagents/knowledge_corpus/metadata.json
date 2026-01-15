@@ -1,0 +1,4 @@
+{
+    "framework_name": "smolagents",
+    "framework_description": "smolagents is a lightweight, open-source Python library from Hugging Face designed to make it extremely easy to build and run intelligent agents with just a few lines of code. It emphasizes simplicity and minimal abstractions, supporting both CodeAgents that generate executable code actions and traditional tool-calling agents. The framework is model-agnostic—working with any LLM via transformers, Hub models, or external providers—and integrates with the Hugging Face Hub for sharing tools and agents. It also includes sandboxed execution environments for secure code execution and supports multimodal inputs, enabling flexible real-world agent workflows."
+}

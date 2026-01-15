@@ -1,0 +1,44 @@
+#ifdef __CCE_KT_TEST__
+#define __aicore__
+#else
+#define __aicore__ [aicore]
+#endif
+
+
+
+#include "coc_ppmatmul_switch.cce"
+#include "coc_alltoallv_allgather.cce"
+#include "coc_alltoall_allgather_hidden.cce"
+#ifdef __DAV_C220_CUBE__
+
+
+#define COC_ALL_TO_ALL_ALL_GATHER_MATMUL_FUNC_AUTO_DEF(type) \
+extern "C" __global__ __aicore__ void LcalAllToAllVAllGatherMatmul_##type##_mix_aic(COC_ARGS_FUN(type)){ \
+    return CocPpmatmulSwitchAic<type, PPMATMUL_RUN_ALL_TO_ALL_ALL_GATHER_MATMUL>(COC_ARGS_CALL()); \
+}
+#define COC_ALL_TO_ALL_ALL_GATHER_MATMUL_HIDDEN_FUNC_AUTO_DEF(type) \
+extern "C" __global__ __aicore__ void LcalAllToAllVAllGatherMatmulHidden_##type##_mix_aic(COC_ARGS_FUN(type)){ \
+    return CocPpmatmulSwitchAic<type, PPMATMUL_RUN_ALL_TO_ALL_ALL_GATHER_MATMUL_HIDDEN>(COC_ARGS_CALL()); \
+}
+
+
+#elif __DAV_C220_VEC__
+#define COC_ALL_TO_ALL_ALL_GATHER_MATMUL_FUNC_AUTO_DEF(type) \
+extern "C" __global__ __aicore__ void LcalAllToAllVAllGatherMatmul_##type##_mix_aiv(COC_ARGS_FUN(type)){ \
+    return CocAllToAllVAllGatherAiv<type>(COC_ARGS_CALL()); \
+}
+#define COC_ALL_TO_ALL_ALL_GATHER_MATMUL_HIDDEN_FUNC_AUTO_DEF(type) \
+extern "C" __global__ __aicore__ void LcalAllToAllVAllGatherMatmulHidden_##type##_mix_aiv(COC_ARGS_FUN(type)){ \
+    return CocAllToAllVAllGatherHiddenAiv<type>(COC_ARGS_CALL()); \
+}
+
+#endif
+
+
+#if defined(__DAV_C220_CUBE__) || defined(__DAV_C220_VEC__) //
+#define COC_TYPE_FUNC(fun) fun(float16_t);fun(bfloat16_t)
+
+COC_TYPE_FUNC(COC_ALL_TO_ALL_ALL_GATHER_MATMUL_FUNC_AUTO_DEF);
+COC_TYPE_FUNC(COC_ALL_TO_ALL_ALL_GATHER_MATMUL_HIDDEN_FUNC_AUTO_DEF);
+
+#endif

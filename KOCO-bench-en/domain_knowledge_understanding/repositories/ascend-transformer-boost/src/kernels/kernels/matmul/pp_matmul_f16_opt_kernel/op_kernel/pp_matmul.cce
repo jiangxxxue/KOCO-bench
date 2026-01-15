@@ -1,0 +1,450 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+
+#ifdef __CCE_KT_TEST__
+#include "stub_def.h"
+#include "stub_fun.h"
+#else
+#define __aicore__ [aicore]
+#endif
+
+#include "kernels/matmul/tiling/tiling_data.h"
+#include "kernels/utils/kernel/common.h"
+#include "kernels/utils/kernel/iterator.h"
+#include "kernels/utils/kernel/mem.h"
+#include "kernels/utils/kernel/mma.h"
+#include "kernels/utils/kernel/utils.h"
+
+constexpr uint64_t L0_PINGPONG_BUFFER_LEN = 16384;
+constexpr uint64_t L1_PINGPONG_BUFFER_LEN = 131072;
+constexpr uint64_t BLOCK_SIZE_16 = 16;
+constexpr uint64_t CUBE_MATRIX_SIZE_256 = 256;
+constexpr uint64_t CONST16 = 16;
+constexpr uint64_t CONST256 = 256;
+
+__aicore__ __force_inline__ uint64_t Min(const uint64_t a, const uint64_t b) { return a < b ? a : b; }
+
+__aicore__ __force_inline__ uint64_t Max(const uint64_t a, const uint64_t b) { return a > b ? a : b; }
+
+__aicore__ __force_inline__ uint64_t CeilDiv(const uint64_t dividend, const uint64_t divisor)
+{
+    if (divisor == 0) {
+        return UINT32_MAX;
+    }
+    return (dividend + divisor - 1) / divisor;
+}
+
+__aicore__ __force_inline__ uint64_t CeilDiv256(const uint64_t dividend)
+{
+    return (dividend + CONST256 - 1) / CONST256;
+}
+
+__aicore__ __force_inline__ uint64_t RoundUp(const uint64_t val, const uint64_t align = BLOCK_SIZE_16)
+{
+    if (align == 0) {
+        return UINT32_MAX;
+    }
+    return (val + align - 1) / align * align;
+}
+
+__aicore__ __force_inline__ uint64_t RoundUp16(const uint64_t val) { return (val + CONST16 - 1) / CONST16 * CONST16; }
+
+__aicore__ __force_inline__ uint64_t RoundUp256(const uint64_t val)
+{
+    return (val + CONST256 - 1) / CONST256 * CONST256;
+}
+
+__aicore__ __force_inline__ uint64_t RoundDown(const uint64_t val, const uint64_t align = BLOCK_SIZE_16)
+{
+    if (align == 0) {
+        return UINT32_MAX;
+    }
+    return val / align * align;
+}
+
+__aicore__ __force_inline__ uint64_t RoundDown16(const uint64_t val) { return val / CONST16 * CONST16; }
+
+template <bool transA, bool transB, typename InDtype = half, typename OutDtype = half> class PpMatmul {
+public:
+    __aicore__ explicit PpMatmul(__gm__ uint8_t *__restrict__ a, __gm__ uint8_t *__restrict__ b,
+                                 __gm__ uint8_t *__restrict__ c, __gm__ uint8_t *__restrict__ tiling_data)
+    {
+        gm_a.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(a));
+        gm_b.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(b));
+        gm_c.SetGlobalBuffer(reinterpret_cast<__gm__ OutDtype *>(c));
+        auto *gm_tiling_data = reinterpret_cast<__gm__ AsdOps::PpMatmulTilingData *>(tiling_data);
+        batch = gm_tiling_data->batch;
+        m = gm_tiling_data->m;
+        k = gm_tiling_data->k;
+        n = gm_tiling_data->n;
+        m0 = gm_tiling_data->m0;
+        n0 = gm_tiling_data->n0;
+        k0 = gm_tiling_data->k0;
+        m_loop = gm_tiling_data->mLoop;
+        k_loop = gm_tiling_data->kLoop;
+        n_loop = gm_tiling_data->nLoop;
+        core_loop = gm_tiling_data->coreLoop;
+        l1_base_a = buf.GetBuffer<BufferType::ASCEND_CB, InDtype>(0);
+        l1_base_b = buf.GetBuffer<BufferType::ASCEND_CB, InDtype>(RoundUp256(m0 * k0 * sizeof(InDtype)));
+        core_num = AscendC::GetBlockNum();
+        core_idx = AscendC::GetBlockIdx();
+
+        ping_flag = 1;
+    }
+
+    __aicore__ __force_inline__ void Process()
+    {
+        SET_FLAG(MTE1, MTE2, EVENT_ID0);
+        SET_FLAG(MTE1, MTE2, EVENT_ID1);
+        SET_FLAG(MTE1, MTE2, EVENT_ID2);
+        SET_FLAG(MTE1, MTE2, EVENT_ID3);
+        SET_FLAG(M, MTE1, EVENT_ID0);
+        SET_FLAG(M, MTE1, EVENT_ID1);
+        SET_FLAG(FIX, M, EVENT_ID0);
+
+        for (uint64_t loop_idx = core_idx; loop_idx < core_loop; loop_idx += core_num) {
+            b_idx = loop_idx / m_loop / n_loop;
+            m_idx = loop_idx / n_loop % m_loop;
+            n_idx = loop_idx % n_loop;
+            m_actual = (m_idx == (m_loop - 1)) ? (m - m_idx * m0) : m0;
+            k_actual = (k_loop == 1) ? k : k0;
+            n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+            m_round = RoundUp16(m_actual);
+            k_round = RoundUp16(k_actual);
+            n_round = RoundUp16(n_actual);
+            if (transA) {
+                offset_a = b_idx * m * k + m_idx * m0;
+            } else {
+                offset_a = b_idx * m * k + m_idx * m0 * k;
+            }
+            if (transB) {
+                offset_b = b_idx * RoundUp16(n) * RoundUp16(k) + n_idx * n0 * BLOCK_SIZE_16;
+            } else {
+                offset_b = b_idx * RoundUp16(k) * RoundUp16(n) + n_idx * n0 * RoundUp16(k);
+            }
+            offset_c = b_idx * m * n + m_idx * m0 * n + n_idx * n0;
+            k_part_len = RoundDown16(L0_PINGPONG_BUFFER_LEN / Max(m_round, n_round));
+
+            AscendC::LocalTensor<InDtype> l1_buf_a = ping_flag ? l1_base_a : l1_base_a[L1_PINGPONG_BUFFER_LEN];
+            AscendC::LocalTensor<InDtype> l1_buf_b = ping_flag ? l1_base_b : l1_base_b[L1_PINGPONG_BUFFER_LEN];
+            AscendC::LocalTensor<InDtype> l0a_buf = ping_flag ? l0a_base : l0a_base[L0_PINGPONG_BUFFER_LEN];
+            AscendC::LocalTensor<InDtype> l0b_buf = ping_flag ? l0b_base : l0b_base[L0_PINGPONG_BUFFER_LEN];
+            auto event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+            WAIT_FLAG(MTE1, MTE2, event_id);
+            // *** load matrix A to L1
+            if (m == 1 || m_actual == 1 && !transA) {
+                gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::ND>(
+                    l1_buf_a, gm_a[offset_a], 1, RoundUp16(1), 1, k_round, RoundUp16(k_round), k_round);
+            } else {
+                if (transA) {
+                    gm_to_l1<ArchType::ASCEND_V220, half, DataFormat::ND, DataFormat::NZ>(
+                        l1_buf_a, gm_a[offset_a], k_actual, k_round, k, m_actual, m_round, m);
+                } else {
+                    gm_to_l1<ArchType::ASCEND_V220, half, DataFormat::ND, DataFormat::NZ>(
+                        l1_buf_a, gm_a[offset_a], m_actual, m_round, m, k_actual, m_round, k);
+                }
+            }
+            SET_FLAG(MTE2, MTE1, event_id);
+
+            // *** load matrix B to L1
+            WAIT_FLAG(MTE1, MTE2, event_id + 2);
+            if (transB) {
+                gm_to_l1<ArchType::ASCEND_V220, half, DataFormat::NZ, DataFormat::NZ>(
+                    l1_buf_b, gm_b[offset_b], n_actual, n_round, RoundUp16(n), k_actual, k_round, RoundUp16(k));
+            } else {
+                gm_to_l1<ArchType::ASCEND_V220, half, DataFormat::NZ, DataFormat::NZ>(
+                    l1_buf_b, gm_b[offset_b], k_actual, k_round, RoundUp16(k), n_actual, n_round, RoundUp16(n));
+            }
+            SET_FLAG(MTE2, MTE1, event_id + 2);
+
+            for (uint64_t k_idx = 0; k_idx < k_loop; k_idx++) {
+
+                uint64_t k_actual = (k_idx == (k_loop - 1)) ? (k - k_idx * k0) : k0;
+                uint64_t k_round = RoundUp16(k_actual);
+                uint64_t k_part_loop = (k_actual + k_part_len - 1) / k_part_len;
+
+                AscendC::LocalTensor<InDtype> l1_buf_a = ping_flag ? l1_base_a : l1_base_a[L1_PINGPONG_BUFFER_LEN];
+                AscendC::LocalTensor<InDtype> l1_buf_b = ping_flag ? l1_base_b : l1_base_b[L1_PINGPONG_BUFFER_LEN];
+                auto event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+                if (k_idx < k_loop - 1) {
+                    if (transA) {
+                        offset_a_next = b_idx * m * k + (k_idx + 1) * k0 * m + m_idx * m0;
+                    } else {
+                        offset_a_next = b_idx * m * k + m_idx * m0 * k + (k_idx + 1) * k0;
+                    }
+
+                    if (transB) {
+                        offset_b_next = b_idx * RoundUp16(n) * RoundUp16(k) + (k_idx + 1) * k0 * RoundUp16(n) +
+                                        n_idx * n0 * BLOCK_SIZE_16;
+                    } else {
+                        offset_b_next = b_idx * RoundUp16(k) * RoundUp16(n) + n_idx * n0 * RoundUp16(k) +
+                                        (k_idx + 1) * k0 * BLOCK_SIZE_16;
+                    }
+
+                    uint64_t k_actual_next = ((k_idx + 1) == (k_loop - 1)) ? (k - (k_idx + 1) * k0) : k0;
+                    uint64_t k_round_next = RoundUp16(k_actual_next);
+
+                    AscendC::LocalTensor<InDtype> l1_buf_a_next =
+                        (1 - ping_flag) ? l1_base_a : l1_base_a[L1_PINGPONG_BUFFER_LEN];
+                    AscendC::LocalTensor<InDtype> l1_buf_b_next =
+                        (1 - ping_flag) ? l1_base_b : l1_base_b[L1_PINGPONG_BUFFER_LEN];
+                    auto event_id_next = (1 - ping_flag) ? EVENT_ID0 : EVENT_ID1;
+
+                    WAIT_FLAG(MTE1, MTE2, event_id_next);
+                    // *** load matrix A to L1
+                    if (m == 1 || m_actual == 1 && !transA) {
+                        gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::ND>(
+                            l1_buf_a_next,       // dst
+                            gm_a[offset_a_next], // src
+                            1, RoundUp16(1), 1, k_round_next, RoundUp16(k_round_next), k_round_next);
+                    } else {
+                        if (transA) {
+                            gm_to_l1<ArchType::ASCEND_V220, half, DataFormat::ND, DataFormat::NZ>(
+                                l1_buf_a_next, gm_a[offset_a_next], k_actual_next, k_round_next, k, m_actual, m_round,
+                                m);
+                        } else {
+                            gm_to_l1<ArchType::ASCEND_V220, half, DataFormat::ND, DataFormat::NZ>(
+                                l1_buf_a_next, gm_a[offset_a_next], m_actual, m_round, m, k_actual_next, m_round, k);
+                        }
+                    }
+                    SET_FLAG(MTE2, MTE1, event_id_next);
+
+                    // *** load matrix B to L1
+                    WAIT_FLAG(MTE1, MTE2, event_id_next + 2);
+                    if (transB) {
+                        gm_to_l1<ArchType::ASCEND_V220, half, DataFormat::NZ, DataFormat::NZ>(
+                            l1_buf_b_next, gm_b[offset_b_next], n_actual, n_round, RoundUp16(n), k_actual_next,
+                            k_round_next, RoundUp16(k));
+                    } else {
+                        gm_to_l1<ArchType::ASCEND_V220, half, DataFormat::NZ, DataFormat::NZ>(
+                            l1_buf_b_next, gm_b[offset_b_next], k_actual_next, k_round_next, RoundUp16(k), n_actual,
+                            n_round, RoundUp16(n));
+                    }
+                    SET_FLAG(MTE2, MTE1, event_id_next + 2);
+                }
+
+                for (uint64_t k_part_idx = 0; k_part_idx < k_part_loop; k_part_idx++) {
+                    uint64_t k0_round =
+                        (k_part_idx < (k_part_loop - 1)) ? k_part_len : k_round - k_part_idx * k_part_len;
+                    uint64_t k0_actual =
+                        (k_part_idx < (k_part_loop - 1)) ? k_part_len : k_actual - k_part_idx * k_part_len;
+
+                    auto mte1_mad_ping_flag = 1 - k_part_idx % 2;
+                    auto mte1_mad_event_id = mte1_mad_ping_flag ? EVENT_ID0 : EVENT_ID1;
+                    AscendC::LocalTensor<InDtype> l0a_buf = l0a_base[(k_part_idx % 2) * L0_PINGPONG_BUFFER_LEN];
+                    AscendC::LocalTensor<InDtype> l0b_buf = l0b_base[(k_part_idx % 2) * L0_PINGPONG_BUFFER_LEN];
+
+                    // *** load matrix A from L1 to L0A
+                    if (k_part_idx == 0) {
+                        WAIT_FLAG(MTE2, MTE1, event_id);
+                    }
+                    WAIT_FLAG(M, MTE1, mte1_mad_event_id);
+                    if (m == 1 || m_actual == 1 && !transA) {
+                        l1_to_l0_a<ArchType::ASCEND_V220, InDtype, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                            l0a_buf, l1_buf_a[k_part_idx * k_part_len], 0,
+                            CeilDiv256(k0_round), // repeat
+                            0,
+                            1, // srcStride
+                            0,
+                            0 // dstStride
+                        );
+                    } else {
+                        if (transA) {
+                            l1_to_l0_a<ArchType::ASCEND_V220, InDtype, true, DataFormat::ZN, DataFormat::ZZ>(
+                                l0a_buf, l1_buf_a[k_part_idx * k_part_len * BLOCK_SIZE_16], m_round,
+                                k0_round, // repeat
+                                k_round / BLOCK_SIZE_16,
+                                1, // srcStride
+                                k0_round / BLOCK_SIZE_16,
+                                1 // dstStride
+                            );
+                        } else {
+                            l1_to_l0_a<ArchType::ASCEND_V220, InDtype, false, DataFormat::ZN, DataFormat::ZZ>(
+                                l0a_buf, l1_buf_a[k_part_idx * k_part_len * m_round], m_round,
+                                k0_round, // repeat
+                                1,
+                                m_round / BLOCK_SIZE_16, // srcStride
+                                k0_round / BLOCK_SIZE_16,
+                                1 // dstStride
+                            );
+                        }
+                    }
+
+                    if (k_part_idx == k_part_loop - 1) {
+                        SET_FLAG(MTE1, MTE2, event_id);
+                    }
+
+                    // *** load matrix B from L1 to L0B
+                    if (k_part_idx == 0) {
+                        WAIT_FLAG(MTE2, MTE1, event_id + 2);
+                    }
+                    if (transB) {
+                        l1_to_l0_b<ArchType::ASCEND_V220, InDtype, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                            l0b_buf,                                     // dst
+                            l1_buf_b[k_part_idx * k_part_len * n_round], // src
+                            0,
+                            k0_round * n_round / CUBE_MATRIX_SIZE_256, // repeat
+                            0,
+                            1, // srcStride
+                            0,
+                            0 // dstStride
+                        );
+                    } else {
+                        l1_to_l0_b<ArchType::ASCEND_V220, InDtype, false, DataFormat::ZN, DataFormat::NZ>(
+                            l0b_buf,                                           // dst
+                            l1_buf_b[k_part_idx * k_part_len * BLOCK_SIZE_16], // src
+                            n_round,
+                            k0_round, // repeat
+                            k_round / BLOCK_SIZE_16,
+                            1, // srcStride
+                            1,
+                            n_round / BLOCK_SIZE_16 // dstStride
+                        );
+                    }
+                    if (k_part_idx == k_part_loop - 1) {
+                        SET_FLAG(MTE1, MTE2, event_id + 2);
+                    }
+
+                    SET_FLAG(MTE1, M, mte1_mad_event_id);
+                    WAIT_FLAG(MTE1, M, mte1_mad_event_id);
+
+                    bool init_c = (k_idx == 0 && k_part_idx == 0);
+                    if (init_c) {
+                        WAIT_FLAG(FIX, M, EVENT_ID0);
+                    }
+                    if (m != 1 && m_actual == 1 && transA) {
+                        mmad<ArchType::ASCEND_V220, InDtype, InDtype, float, false>(l0c_buf, l0a_buf, l0b_buf,
+                                                                                    BLOCK_SIZE_16, // m
+                                                                                    n_actual,      // n
+                                                                                    k0_actual,     // k
+                                                                                    init_c         // cmatrixInitVal
+                        );
+                    } else {
+                        mmad<ArchType::ASCEND_V220, InDtype, InDtype, float, false>(l0c_buf, l0a_buf, l0b_buf,
+                                                                                    m_actual,  // m
+                                                                                    n_actual,  // n
+                                                                                    k0_actual, // k
+                                                                                    init_c     // cmatrixInitVal
+                        );
+                    }
+
+                    AscendC::PipeBarrier<PIPE_M>();
+                    SET_FLAG(M, MTE1, mte1_mad_event_id);
+                }
+
+                ping_flag = 1 - ping_flag;
+            }
+
+            SET_FLAG(M, FIX, EVENT_ID0);
+            WAIT_FLAG(M, FIX, EVENT_ID0);
+
+            // copy from L0C to gm
+            l0c_to_gm<ArchType::ASCEND_V220, DataFormat::ND, OutDtype, float>(gm_c[offset_c], l0c_buf,
+                                                                              m_actual, // MSize
+                                                                              n_actual, // NSize
+                                                                              m_round,  // srcStride
+                                                                              n         // dstStride_dst_D
+            );
+            SET_FLAG(FIX, M, EVENT_ID0);
+        }
+
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID0);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID1);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID2);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID3);
+        WAIT_FLAG(M, MTE1, EVENT_ID0);
+        WAIT_FLAG(M, MTE1, EVENT_ID1);
+        WAIT_FLAG(FIX, M, EVENT_ID0);
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
+
+private:
+    AsdopsBuffer<ArchType::ASCEND_V220> buf;
+
+    AscendC::GlobalTensor<InDtype> gm_a;
+    AscendC::GlobalTensor<InDtype> gm_b;
+    AscendC::GlobalTensor<OutDtype> gm_c;
+
+    AscendC::LocalTensor<InDtype> l1_base_a = buf.template GetBuffer<BufferType::ASCEND_CB, InDtype>(0);
+    AscendC::LocalTensor<InDtype> l1_base_b = buf.template GetBuffer<BufferType::ASCEND_CB, InDtype>(128 * 1024);
+    AscendC::LocalTensor<InDtype> l0a_base = buf.template GetBuffer<BufferType::ASCEND_L0A, InDtype>(0);
+    AscendC::LocalTensor<InDtype> l0b_base = buf.template GetBuffer<BufferType::ASCEND_L0B, InDtype>(0);
+    AscendC::LocalTensor<float> l0c_buf = buf.template GetBuffer<BufferType::ASCEND_L0C, float>(0);
+
+    uint64_t batch{0};
+    uint64_t m{0};
+    uint64_t k{0};
+    uint64_t n{0};
+    uint64_t m0{0};
+    uint64_t k0{0};
+    uint64_t n0{0};
+    uint64_t m_loop{0};
+    uint64_t n_loop{0};
+    uint64_t k_loop{0};
+
+    uint64_t b_idx{0};
+    uint64_t m_idx{0};
+    uint64_t n_idx{0};
+    uint64_t offset_a{0};
+    uint64_t offset_b{0};
+    uint64_t offset_c{0};
+    uint64_t offset_a_next{0};
+    uint64_t offset_b_next{0};
+    uint64_t m_actual{0};
+    uint64_t k_actual{0};
+    uint64_t n_actual{0};
+    uint64_t m_round{0};
+    uint64_t k_round{0};
+    uint64_t n_round{0};
+    uint64_t k_part_len{0};
+
+    uint64_t core_loop{0};
+    uint64_t core_idx{0};
+    uint64_t core_num{0};
+    uint64_t ping_flag{0};
+};
+
+extern "C" __global__ __aicore__ void pp_matmul_f16_opt(__gm__ uint8_t *__restrict__ gm_a,
+                                                        __gm__ uint8_t *__restrict__ gm_b,
+                                                        __gm__ uint8_t *__restrict__ gm_c,
+                                                        __gm__ uint8_t *__restrict__ tiling_data)
+{
+    PpMatmul<false, false> matmu_nn(gm_a, gm_b, gm_c, tiling_data);
+    PpMatmul<true, false> matmul_tn(gm_a, gm_b, gm_c, tiling_data);
+    PpMatmul<false, true> matmul_nt(gm_a, gm_b, gm_c, tiling_data);
+    PpMatmul<true, true> matmul_tt(gm_a, gm_b, gm_c, tiling_data);
+
+    SetPadding<uint64_t>((uint64_t)0);
+    SetAtomicnone();
+    SetNdpara(1, 0, 0);
+
+    auto gm_tiling_data = reinterpret_cast<__gm__ AsdOps::PpMatmulTilingData *>(tiling_data);
+    switch (gm_tiling_data->tilingKey) {
+        case 0b000000: // swizzl = 0 transa = 0 transb = 0 int8 = 0 bias = 0 splitk = 0
+        case 0b100000: // swizzl = 1 transa = 0 transb = 0 int8 = 0 bias = 0 splitk = 0
+            matmu_nn.Process();
+            break;
+        case 0b010000: // swizzl = 0 transa = 1 transb = 0 int8 = 0 bias = 0 splitk = 0
+        case 0b110000: // swizzl = 1 transa = 1 transb = 0 int8 = 0 bias = 0 splitk = 0
+            matmul_tn.Process();
+            break;
+        case 0b001000: // swizzl = 0 transa = 0 transb = 1 int8 = 0 bias = 0 splitk = 0
+        case 0b101000: // swizzl = 1 transa = 0 transb = 1 int8 = 0 bias = 0 splitk = 0
+            matmul_nt.Process();
+            break;
+        case 0b011000: // swizzl = 0 transa = 1 transb = 1 int8 = 0 bias = 0 splitk = 0
+        case 0b111000: // swizzl = 1 transa = 1 transb = 1 int8 = 0 bias = 0 splitk = 0
+            matmul_tt.Process();
+            break;
+        default: break;
+    }
+}

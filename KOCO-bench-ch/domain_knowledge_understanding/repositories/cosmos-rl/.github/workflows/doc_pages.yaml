@@ -1,0 +1,35 @@
+name: build-doc
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          pip install pydantic sphinx-autobuild  sphinx_rtd_theme recommonmark sphinx_markdown_tables sphinx-argparse sphinx-jsonschema
+
+      - name: Build Sphinx docs
+        run: |
+          cd docs
+          make html
+
+      - name: Deploy to GitHub Pages
+        if: github.event_name == 'push'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs/_build/html

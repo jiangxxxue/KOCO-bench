@@ -1,0 +1,52 @@
+# mix算子用例
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/mix/attention TEST_MIX_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/mix/attention_nz TEST_MIX_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/mix/kvcache TEST_MIX_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/mix/pagedattention TEST_MIX_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/mix/rope TEST_MIX_SRC)
+
+# 非mix算子用例
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR} TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/activation TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/asstrided TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/concat TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/copy TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/cumsum TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/elewise TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/expand TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/fill TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/gather TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/matmul TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/matmul_nd TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/multinomial TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/norm TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/reduce TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/reverse TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/slice TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/softmax TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/sort TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/split TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/transdata TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/transpose TEST_SRC)
+aux_source_directory(${CMAKE_CURRENT_LIST_DIR}/zeroslike TEST_SRC)
+
+set_source_files_properties(${TEST_MIX_SRC} PROPERTIES COMPILE_DEFINITIONS OpSpace=AtbOps)
+set_source_files_properties(${TEST_SRC} PROPERTIES COMPILE_DEFINITIONS OpSpace=AsdOps)
+
+add_executable(kernels_unittest ${TEST_MIX_SRC} ${TEST_SRC})
+target_include_directories(kernels_unittest PRIVATE ${CMAKE_CURRENT_LIST_DIR} ${PROJECT_SOURCE_DIR}/3rdparty/metadef/inc)
+target_include_directories(kernels_unittest PRIVATE ${PROJECT_SOURCE_DIR}/3rdparty/googletest/include)
+target_include_directories(kernels_unittest PRIVATE ${PROJECT_SOURCE_DIR}/src/kernels)
+target_include_directories(kernels_unittest PRIVATE ${PROJECT_SOURCE_DIR}/tests/framework/c++/kernels)
+target_include_directories(kernels_unittest PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+target_link_directories(kernels_unittest PRIVATE ${PROJECT_SOURCE_DIR}/3rdparty/googletest/lib)
+target_link_libraries(kernels_unittest PRIVATE atb_kernels_test_utils mki_test_autogen asdops atb_mixops mki gtest gtest_main pthread)
+target_compile_options(kernels_unittest PRIVATE
+    -Wno-sign-compare
+    -Wno-narrowing
+    -Wno-missing-field-initializers
+)
+if(NOT ${LINK_PYTHON} STREQUAL "")
+    target_link_libraries(kernels_unittest PRIVATE ${LINK_PYTHON})
+endif()
+install(TARGETS kernels_unittest DESTINATION bin)

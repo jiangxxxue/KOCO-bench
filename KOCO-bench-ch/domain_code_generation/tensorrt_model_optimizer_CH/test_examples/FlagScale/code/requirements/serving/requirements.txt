@@ -1,0 +1,15 @@
+diffusers
+translate
+imageio
+python-multipart
+imageio[ffmpeg]
+ks3sdk
+pyarrow
+pandas
+
+# robotics serving
+h5py
+flask
+flask_cors
+tqdm_loggable
+types_boto3_s3

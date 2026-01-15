@@ -1,0 +1,529 @@
+/*
+* Copyright (c) 2024 Huawei Technologies Co., Ltd.
+* This file is a part of the CANN Open Software.
+* Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+* Please refer to the License for details. You may not use this file except in compliance with the License.
+* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+* INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+* See LICENSE in the root of the software repository for the full text of the License.
+*/
+#include "kernels/utils/kernel/common.h"
+#include "kernels/utils/kernel/common_func.h"
+#include "kernels/utils/kernel/simd.h"
+#include "kernels/utils/kernel/iterator.h"
+#include "kernels/utils/kernel/mma.h"
+#include "kernels/utils/kernel/utils.h"
+#include "paged_attention_decoder_nd_common.cce"
+
+#ifdef __CCE_KT_TEST__
+#define __aicore__
+#else
+#define __aicore__ [aicore]
+#endif
+
+extern "C" __global__ __aicore__ void paged_attention_mask(
+    __gm__ uint8_t *__restrict__ sync,
+    __gm__ uint8_t *__restrict__ q_gm,
+    __gm__ uint8_t *__restrict__ k_gm,
+    __gm__ uint8_t *__restrict__ v_gm,
+    __gm__ uint8_t *__restrict__ block_tables_gm,
+    __gm__ uint8_t *__restrict__ mask_gm,
+    __gm__ uint8_t *__restrict__ deq_scale1_gm,
+    __gm__ uint8_t *__restrict__ offset1_gm,
+    __gm__ uint8_t *__restrict__ deq_scale2_gm,
+    __gm__ uint8_t *__restrict__ offset2_gm,
+    __gm__ uint8_t *__restrict__ razorOffset,
+    __gm__ uint8_t *__restrict__ scale_gm,
+    __gm__ uint8_t *__restrict__ logN_gm,
+    __gm__ uint8_t *__restrict__ eye_gm,
+    __gm__ uint8_t *__restrict__ o_gm,
+    __gm__ uint8_t *__restrict__ s_gm,
+    __gm__ uint8_t *__restrict__ p_gm,
+    __gm__ uint8_t *__restrict__ o_tmp_gm,
+    __gm__ uint8_t *__restrict__ go_gm,
+    __gm__ uint8_t *__restrict__ o_core_tmp_gm,
+    __gm__ uint8_t *__restrict__ l_gm,
+    __gm__ uint8_t *__restrict__ gm_k16,
+    __gm__ uint8_t *__restrict__ gm_v16,
+    __gm__ uint8_t *__restrict__ tiling_para_gm)
+{ 
+    SetFftsBaseAddr((unsigned long)sync);
+    SetAtomicnone();
+    SetMasknorm();
+#ifdef __DAV_C220_VEC__
+    SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+#elif __DAV_C220_CUBE__
+    SetPadding<uint64_t>(0);
+    SetNdpara(1, 0, 0);
+#endif
+    uint32_t prefill_batch_size = (uint32_t)(*((__gm__ int32_t *)tiling_para_gm + TILING_PREFILL_BS));
+    uint32_t decoder_batch_size = (uint32_t)(*((__gm__ int32_t *)tiling_para_gm + TILING_DECODER_BS));
+    if (TILING_KEY_IS(0)) { // fp16
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_HALF_DATA, half, half, half> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+        pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_fp16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(1)) { // bf16
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, __bf16> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+        pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_bf16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_BF16_DATA, __bf16, __bf16> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(4)) { // cube dequant to half
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_INT8_CUBE_QUANT, half, half, int8_t> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, eye_gm);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_INT8_CUBE_QUANT, half, half> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(8)) { // vector dequant to half
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_INT8_VEC_QUANT, half, half, int8_t> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_INT8_VEC_QUANT, half, half> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv_int8.Run();
+#endif
+    } else if (TILING_KEY_IS(9)) { // vector dequant to bf16 
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_INT8_VEC_QUANTBF16, __bf16, __bf16, __bf16> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_INT8_VEC_QUANTBF16, __bf16, __bf16, false> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv_int8.Run();
+#endif
+    } else if (TILING_KEY_IS(12)) { //  quant to fp16 
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_QUANT_FP16OUT, int8_t, half, int8_t> pa_aic_int8(prefill_batch_size, decoder_batch_size);
+        pa_aic_int8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_int8.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_QUANT_FP16OUT, int8_t, half, false> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv_int8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, scale_gm);
+        pa_aiv_int8.Run();
+#endif
+    } else if (TILING_KEY_IS(14)) { //  quant to bf16 
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_QUANT_BF16OUT, int8_t, __bf16, int8_t> pa_aic_int8(prefill_batch_size, decoder_batch_size);
+        pa_aic_int8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_int8.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_QUANT_BF16OUT, int8_t, __bf16, false> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv_int8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, scale_gm);
+        pa_aiv_int8.Run();
+#endif
+    } else if (TILING_KEY_IS(16)) { // fp16 splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_HALF_DATA, half, half, half> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+        pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_fp16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(17)) { // bf16 splitkv 
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, __bf16> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+        pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_bf16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(20)) { // cube dequant to half splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_INT8_CUBE_QUANT, half, half, int8_t> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, eye_gm);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_INT8_CUBE_QUANT, half, half, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(24)) { // vector dequant to half splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_INT8_VEC_QUANT, half, half, int8_t> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();    
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_INT8_VEC_QUANT, half, half, true> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv_int8.Run();    
+#endif
+    } else if (TILING_KEY_IS(25)){ // vector dequant to bf16 splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_INT8_VEC_QUANTBF16, __bf16, __bf16, __bf16> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();  
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_INT8_VEC_QUANTBF16, __bf16, __bf16, true> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv_int8.Run();
+#endif
+    } else if (TILING_KEY_IS(28)) { //  quant to fp16 splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_QUANT_FP16OUT, int8_t, half, int8_t> pa_aic_int8(prefill_batch_size, decoder_batch_size);
+        pa_aic_int8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_int8.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_QUANT_FP16OUT, int8_t, half, true> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv_int8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, scale_gm);
+        pa_aiv_int8.Run();
+#endif
+    } else if (TILING_KEY_IS(30)) { //  quant to bf16  splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_QUANT_BF16OUT, int8_t, __bf16, int8_t> pa_aic_int8(prefill_batch_size, decoder_batch_size);
+        pa_aic_int8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_int8.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_QUANT_BF16OUT, int8_t, __bf16, true> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv_int8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, scale_gm);
+        pa_aiv_int8.Run();
+#endif
+    } else if (TILING_KEY_IS(32)) { // prefill pa fp16
+#ifdef __DAV_C220_CUBE__
+        PagedAttentionParallelAic<half, half> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.Run();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAic<false, TilingKeyType::TILING_HALF_DATA, half, half, half> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+            pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+            pa_aic_fp16.Run();       
+        }
+#elif __DAV_C220_VEC__
+        PagedAttentionParallelAiv<half, half, half> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.Run();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half> pa_aiv(prefill_batch_size, decoder_batch_size);
+            pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                        mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+            pa_aiv.Run();
+        }       
+#endif
+    } else if (TILING_KEY_IS(36)) { // prefill pa cube dequant to half
+#ifdef __DAV_C220_CUBE__
+        PagedAttentionParallelAic<half, half> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.Run();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAic<false, TilingKeyType::TILING_INT8_CUBE_QUANT, half, half, int8_t> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+            pa_aic_kvint8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, eye_gm);
+            pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+            pa_aic_kvint8.Run();
+        } 
+#elif __DAV_C220_VEC__
+        PagedAttentionParallelAiv<half, half, half> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.Run();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half> pa_aiv(prefill_batch_size, decoder_batch_size);
+            pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+            pa_aiv.Run();
+        } 
+#endif
+    } else if (TILING_KEY_IS(48)) {  // prefill pa half splitkv
+#ifdef __DAV_C220_CUBE__
+        PagedAttentionParallelAic<half, half> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.Run();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAic<true, TilingKeyType::TILING_HALF_DATA, half, half, half> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+            pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+            pa_aic_fp16.Run();    
+        }
+#elif __DAV_C220_VEC__
+        PagedAttentionParallelAiv<half, half, half> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.Run();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+            pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+            pa_aiv.Run();
+        }
+#endif
+    } else if (TILING_KEY_IS(52)) { // prefill pa cube dequant to half splitkv
+#ifdef __DAV_C220_CUBE__
+        PagedAttentionParallelAic<half, half> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.Run();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAic<true, TilingKeyType::TILING_INT8_CUBE_QUANT, half, half, int8_t> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+            pa_aic_kvint8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, eye_gm);
+            pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+            pa_aic_kvint8.Run();
+        }
+#elif __DAV_C220_VEC__
+        PagedAttentionParallelAiv<half, half, half> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.Run();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+            pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                        mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+            pa_aiv.Run();
+        }
+#endif
+    } else if (TILING_KEY_IS(33)) { // prefill pa bf16
+#ifdef __DAV_C220_CUBE__
+        PagedAttentionParallelAic<__bf16, float> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.RunHighPrec();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAic<false, TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, __bf16> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+            pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+            pa_aic_bf16.Run();          
+        }
+#elif __DAV_C220_VEC__
+        PagedAttentionParallelAiv<float, __bf16, __bf16> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.RunHighPrec();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAiv<TilingKeyType::TILING_BF16_DATA, __bf16, __bf16> pa_aiv(prefill_batch_size, decoder_batch_size);
+            pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                        mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+            pa_aiv.Run();
+        }
+#endif
+    } else if (TILING_KEY_IS(49)) {// prefill pa bf16 splitkv
+#ifdef __DAV_C220_CUBE__
+        PagedAttentionParallelAic<__bf16, float> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.RunHighPrec();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAic<true, TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, __bf16> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+            pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+            pa_aic_bf16.Run();       
+        }
+#elif __DAV_C220_VEC__
+        PagedAttentionParallelAiv<float, __bf16, __bf16> prefill_pa(prefill_batch_size, decoder_batch_size);
+        prefill_pa.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, tiling_para_gm);
+        prefill_pa.RunHighPrec();
+        if (decoder_batch_size > 0) {
+            UnpadAttentionDecoderAiv<TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+            pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                        mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+            pa_aiv.Run();           
+        }
+#endif
+    } else if (TILING_KEY_IS(64)) { // BNSD fp16 not splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_HALF_DATA, half, half, half, PagedAttnVariant::DEFAULT, DataShapeType::BNSD> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+        pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_fp16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(65)) { // BNSD bf16 not splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, __bf16, PagedAttnVariant::DEFAULT, DataShapeType::BNSD> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+        pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_bf16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_BF16_DATA, __bf16, __bf16> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(80)) { // BNSD fp16 splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_HALF_DATA, half, half, half, PagedAttnVariant::DEFAULT, DataShapeType::BNSD> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+        pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_fp16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(81)) { // BNSD bf16 splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, __bf16, PagedAttnVariant::DEFAULT, DataShapeType::BNSD> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+        pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_bf16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(128)) { // fp16
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_HALF_DATA, half, half, half, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_UNDEFINED, true> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+        pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_fp16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(129)) { // bf16
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, __bf16, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_UNDEFINED, true> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+        pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_bf16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_BF16_DATA, __bf16, __bf16> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(144)) { // fp16 splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_HALF_DATA, half, half, half, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_UNDEFINED, true> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+        pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_fp16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(145)) { // bf16 splitkv 
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, __bf16, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_UNDEFINED, true> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+        pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_bf16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(512)) { // razor fp16
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_HALF_DATA, half, half, half, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_KVHEAD> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+        pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_fp16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half, false, PagedAttnVariant::DEFAULT, CompressType::COMPRESS_TYPE_KVHEAD> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(513)) { // razor bf16
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, __bf16, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_KVHEAD> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+        pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_bf16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, false, PagedAttnVariant::DEFAULT, CompressType::COMPRESS_TYPE_KVHEAD> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(516)) { // razor cube dequant to half
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_INT8_CUBE_QUANT, half, half, int8_t, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_KVHEAD> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, eye_gm);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_INT8_CUBE_QUANT, half, half, false, PagedAttnVariant::DEFAULT, CompressType::COMPRESS_TYPE_KVHEAD> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(520)) { // razor vector dequant to half
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<false, TilingKeyType::TILING_INT8_VEC_QUANT, half, half, int8_t, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_KVHEAD> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_INT8_VEC_QUANT, half, half, false, PagedAttnVariant::DEFAULT, CompressType::COMPRESS_TYPE_KVHEAD> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv_int8.Run();
+#endif
+    } else if (TILING_KEY_IS(528)) { // razor fp16 splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_HALF_DATA, half, half, half, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_KVHEAD> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+        pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_fp16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_HALF_DATA, half, half, true, PagedAttnVariant::DEFAULT, CompressType::COMPRESS_TYPE_KVHEAD> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(529)) { // razor bf16 splitkv 
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, __bf16, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_KVHEAD> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+        pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_bf16.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_BF16_DATA, __bf16, __bf16, true, PagedAttnVariant::DEFAULT, CompressType::COMPRESS_TYPE_KVHEAD> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(532)) { // razor cube dequant to half splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_INT8_CUBE_QUANT, half, half, int8_t, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_KVHEAD> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, eye_gm);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_INT8_CUBE_QUANT, half, half, true, PagedAttnVariant::DEFAULT, CompressType::COMPRESS_TYPE_KVHEAD> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(536)) { // razor vector dequant to half splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadAttentionDecoderAic<true, TilingKeyType::TILING_INT8_VEC_QUANT, half, half, int8_t, PagedAttnVariant::DEFAULT, DataShapeType::BSND, CompressType::COMPRESS_TYPE_KVHEAD> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();    
+#elif __DAV_C220_VEC__
+        UnpadAttentionDecoderAiv<TilingKeyType::TILING_INT8_VEC_QUANT, half, half, true, PagedAttnVariant::DEFAULT, CompressType::COMPRESS_TYPE_KVHEAD> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset, logN_gm);
+        pa_aiv_int8.Run();
+#endif
+    }
+    PIPE_BARRIER(ALL);
+}

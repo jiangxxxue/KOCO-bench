@@ -1,0 +1,3 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|TransposeOperation1|169.7|169.7
+2|TransposeOperation2|163.5|163.5

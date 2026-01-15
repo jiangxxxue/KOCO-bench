@@ -1,0 +1,8 @@
+cd SCPTS_PACK_DIR
+0
+[ -d "/home/test" ] || sudo mkdir -p /home/test
+0
+sudo chmod 777 /home/test
+0
+bash SCPTS_PACK_NAME --noexec --extract=/home/test
+0

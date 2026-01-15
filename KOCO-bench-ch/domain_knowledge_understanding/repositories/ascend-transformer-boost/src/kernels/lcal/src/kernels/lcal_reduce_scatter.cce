@@ -1,0 +1,107 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include "collectives.cce"
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void CpInputToBuffAndOutput(__ubuf__ T** inputUB, __gm__ T* buff, __gm__ T* input, __gm__ T* output,
+                                              int64_t dataOffsetNum, int64_t dataNumDMARemain, int64_t inputOffset,
+                                              int64_t outputOffsetNum, int32_t rank, int64_t corePerRank,
+                                              int64_t UB_SINGLE_DMA_NUM_MAX)
+{
+    int64_t dataProcessingBatchTime = 0;
+    while (dataNumDMARemain >= UB_SINGLE_DMA_NUM_MAX) {
+        CpGM2UB(inputUB[0], input + inputOffset + UB_SINGLE_DMA_NUM_MAX * dataProcessingBatchTime,
+                      UB_SINGLE_DMA_SIZE_MAX);
+        AscendC::PipeBarrier<PIPE_ALL>();
+        if (GetBlockIdx() >= rank * corePerRank && (GetBlockIdx() < (rank * corePerRank + corePerRank))) {
+            CpUB2GM((__gm__ T *)output + outputOffsetNum + UB_SINGLE_DMA_NUM_MAX * dataProcessingBatchTime,
+                          inputUB[0], UB_SINGLE_DMA_SIZE_MAX);
+        } else {
+            CpUB2GM(
+                (__gm__ T *)((__gm__ int64_t *)buff + dataOffsetNum) + inputOffset + UB_SINGLE_DMA_NUM_MAX * dataProcessingBatchTime,
+                inputUB[0], UB_SINGLE_DMA_SIZE_MAX);
+        }
+        AscendC::PipeBarrier<PIPE_ALL>();
+        dataNumDMARemain -= UB_SINGLE_DMA_NUM_MAX;
+        dataProcessingBatchTime += 1;
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
+    if (dataNumDMARemain <= 0) {
+        return;
+    }
+    CpGM2UB(inputUB[0], input + inputOffset + UB_SINGLE_DMA_NUM_MAX * dataProcessingBatchTime,
+                  dataNumDMARemain * sizeof(T));
+    AscendC::PipeBarrier<PIPE_ALL>();
+    if (GetBlockIdx() >= rank * corePerRank && (GetBlockIdx() < (rank * corePerRank + corePerRank))) {
+        CpUB2GM((__gm__ T *)output + outputOffsetNum + UB_SINGLE_DMA_NUM_MAX * dataProcessingBatchTime,
+                      inputUB[0], dataNumDMARemain * sizeof(T));
+        AscendC::PipeBarrier<PIPE_ALL>();
+    } else {
+        CpUB2GM(
+            (__gm__ T *)((__gm__ int64_t *)buff + dataOffsetNum) + inputOffset + UB_SINGLE_DMA_NUM_MAX * dataProcessingBatchTime,
+            inputUB[0], dataNumDMARemain * sizeof(T));
+    }
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void LcalReduceScatter(ALLREDUCE_ARGS_FUN(T))
+{
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, static_cast<Op>(op));
+    const int64_t dataOffsetNum = GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM;
+    const int64_t flagOffset1st = MEM_DMA_UNIT_INT_NUM * GetBlockIdx();
+    __gm__ T* buff[8] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7
+    };
+    __ubuf__ T* inputUB[2] = {(__ubuf__ T*)(64), (__ubuf__ T*)(98304)};
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t*)(0);
+    const int64_t flagOffset2nd = MEM_DMA_UNIT_INT_NUM * GetLcalBlockNum() + flagOffset1st;
+    const int64_t UB_SINGLE_DMA_NUM_MAX = UB_SINGLE_DMA_SIZE_MAX / sizeof(T);
+
+    const int64_t corePerRank = GetLcalBlockNum() / rankSize;
+    const int64_t coreSegmentedIdx = GetBlockIdx() % corePerRank;
+    const int64_t inputNum = len * rankSize;
+    const int64_t dataDMAPerCore = CeilDiv(len, corePerRank);
+    const int64_t inputOffset = GetBlockIdx() / corePerRank * len + coreSegmentedIdx * dataDMAPerCore;
+
+    int64_t dataNumDMARemain = dataDMAPerCore;
+    int64_t oneNPUProcessNum = len;
+    int64_t oneCoreProcessNum = CeilDiv(len, corePerRank);
+    const int64_t outputOffsetNum = oneCoreProcessNum * (GetBlockIdx() % corePerRank);
+    int64_t dataSizeRemain = oneCoreProcessNum * sizeof(T);
+    if (coreSegmentedIdx == corePerRank - 1) {
+        dataNumDMARemain = len - coreSegmentedIdx * dataDMAPerCore;
+        dataSizeRemain = (len - coreSegmentedIdx * oneCoreProcessNum) * sizeof(T);
+    }
+
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, static_cast<Op>(op));
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+    AscendC::PipeBarrier<PIPE_ALL>();
+    CpInputToBuffAndOutput<T>(inputUB, buff[rank], input, output, dataOffsetNum, dataNumDMARemain,
+                              inputOffset, outputOffsetNum, rank, corePerRank, UB_SINGLE_DMA_NUM_MAX);
+    SyncWithinNPU(ctrlFlagsUB, (__gm__ int64_t *)((__gm__ T *)((__gm__ int64_t *)buff[rank] + dataOffsetNum) + inputNum) + MEM_DMA_UNIT_INT_NUM, magic);
+
+    SetFlag(ctrlFlagsUB, (__gm__ int64_t*)buff[rank] + flagOffset1st, (int64_t)magic);
+    const int64_t x = GetBlockIdx() / corePerRank;
+    AscendC::PipeBarrier<PIPE_ALL>();
+    if (x == rank) {
+        SetFlag((__ubuf__ int64_t*)ctrlFlagsUB, (__gm__ int64_t*)buff[rank] + flagOffset2nd, (int64_t)magic);
+        DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+        return;
+    }
+    const int64_t buffOffsetNum = rank * oneNPUProcessNum + outputOffsetNum;
+
+    CheckFlag((__ubuf__ int64_t*)ctrlFlagsUB,
+              (__gm__ int64_t*)buff[x] + (rank * corePerRank + (GetBlockIdx() % corePerRank)) * MEM_DMA_UNIT_INT_NUM,
+              (int64_t)magic);
+
+    ProcessData<T>(dataSizeRemain, inputUB[0], buff[x], dataOffsetNum, buffOffsetNum, output, outputOffsetNum, op);
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+}

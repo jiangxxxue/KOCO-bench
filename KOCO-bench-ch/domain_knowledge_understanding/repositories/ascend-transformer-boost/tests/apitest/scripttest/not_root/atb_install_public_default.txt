@@ -1,0 +1,20 @@
+cd SCPTS_PACK_DIR
+0
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+0
+[ -d "/home/$(whoami)/Ascend" ] || sudo mkdir -p /home/$(whoami)/Ascend
+0
+sudo chmod 777 /home/$(whoami)/Ascend
+0
+[ ! -d "/home/$(whoami)/Ascend/atb" ]
+0
+bash SCPTS_PACK_NAME --quiet --install
+0
+[ -d "/home/$(whoami)/Ascend/atb" ]
+0
+bash SCPTS_PACK_NAME --uninstall
+0
+[ ! -d "/home/$(whoami)/Ascend/atb" ]
+0
+[ ! -d "/home/$(whoami)/Ascend/atb" ] || sudo rm -rf /home/$(whoami)/Ascend/atb
+0

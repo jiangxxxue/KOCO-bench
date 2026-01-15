@@ -1,0 +1,424 @@
+{
+  "summary": {
+    "model": "openai/gpt-5-mini",
+    "total": 22,
+    "correct": 9,
+    "incorrect": 13,
+    "accuracy_percent": 40.91
+  },
+  "results": [
+    {
+      "id": 1,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "When designing the physics simulation for kitchen manipulation tasks, RoboCasa must balance multiple competing objectives. Which design decisions in the codebase reflect trade-offs between simulation fidelity and computational efficiency?\n\n- (A) Using lite_physics=True in the Kitchen environment initialization to reduce computational overhead while maintaining sufficient contact dynamics for manipulation\n- (B) Setting control_freq=20Hz as a compromise between responsive control and simulation stability, avoiding the need for smaller integration timesteps\n- (C) Implementing a settling phase after object placement where the simulation steps through multiple iterations without robot actions to stabilize physics\n- (D) Using single collision geometries for most objects rather than decomposed convex hulls to reduce collision detection complexity\n- (E) Disabling self-collision checking for robot links to prevent numerical instabilities in the constraint solver",
+      "explanation": "This tests understanding of physics simulation trade-offs across kitchen.py, placement_samplers.py, and object models. (A) is correct - lite_physics reduces solver iterations. (B) is correct - 20Hz balances control responsiveness with stable integration. (C) is correct - the settling phase in _reset_internal() prevents objects from falling through surfaces due to initial penetration. (D) is incorrect - the codebase uses detailed collision meshes from Objaverse/AI-generated models. (E) is incorrect - self-collision is typically enabled for articulated robots to prevent unrealistic configurations.",
+      "pred_raw": "Step-by-step reasoning:\n- (A) lite_physics=True explicitly trades off full high-fidelity contact simulation for lower computational cost while preserving enough contact dynamics for manipulation — this is a fidelity vs efficiency choice.\n- (B) Choosing control_freq=20Hz is a clear compromise: lower than very high rates to save computation but high enough for responsive control and to avoid very small integration timesteps — another trade-off.\n- (C) A settling phase adds extra simulation steps (cost) to improve physical stability and realism after placement, so it’s a deliberate fidelity/stability vs runtime trade-off.\n- (D) Using single collision geometries instead of decomposed convex hulls reduces collision detection complexity (efficiency) at the expense of collision fidelity — a trade-off.\n- (E) Disabling self-collision checking removes fidelity (missed self-collisions) but reduces solver complexity and potential numerical issues, trading fidelity for computational stability/efficiency.\n\n\\boxed{A,B,C,D,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 3,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "RoboCasa's procedural scene generation system must handle complex spatial constraints when placing objects and fixtures. Which architectural patterns enable the framework to generate valid, collision-free scenes while maintaining task-relevant spatial relationships?\n\n- (A) The SequentialCompositeSampler chains multiple placement initializers, allowing objects to be placed relative to previously placed objects or fixtures\n- (B) The UniformRandomSampler's obj_in_region() check ensures object bounding boxes remain fully within designated regions by testing against region boundary points\n- (C) The placement system uses a two-phase approach: first placing fixtures with fxtr_placements, then placing objects with object_placements that can reference fixture positions\n- (D) The objs_intersect() collision detection uses axis-aligned bounding box (AABB) tests for computational efficiency\n- (E) Placement samplers support hierarchical containment where objects can be placed inside container objects, which are then added to the scene",
+      "explanation": "This tests understanding of the procedural generation architecture across placement_samplers.py, kitchen.py, and object_utils.py. (A) is correct - SequentialCompositeSampler enables chaining with placed_objects tracking. (B) is correct - obj_in_region() tests if all object boundary points lie within the region defined by p0, px, py. (C) is correct - _load_model() first samples fxtr_placements, then object_placements can reference them. (E) is correct - _create_objects() implements try_to_place_in logic for containers. (D) is incorrect - objs_intersect() uses oriented bounding box (OBB) tests with rotation, not simple AABB.",
+      "pred_raw": "Reasoning:\n- A: SequentialCompositeSampler enables chaining placement initializers so later placements can be conditioned on earlier ones (e.g., place an object relative to a fixture), which supports task-relevant spatial relationships.\n- C: A two-phase pipeline that places fixtures first (fxtr_placements) and then objects (object_placements referencing fixture positions) enforces scene structure and simplifies constraint satisfaction.\n- D: Using AABB tests in objs_intersect() is a common, efficient collision-detection strategy to quickly rule out overlaps and keep scenes collision-free.\n- E: Hierarchical containment (placing objects inside container objects that are themselves part of the scene) is necessary to represent nested spatial relationships and constrainted placements.\n- B: This is an implementation detail phrased imprecisely; ensuring objects lie within regions is required but the specific “testing against region boundary points” claim is not a general architectural pattern and may be handled differently.\n\n\\boxed{A,C,D,E}",
+      "pred_letters": [
+        "A",
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 4,
+      "dataset": "robocasa",
+      "instruction": "choose ONE option",
+      "stem": "The framework supports multiple robot embodiments (mobile manipulators, humanoids) with different kinematic structures. How does the composite controller architecture in RoboCasa handle the coordination of heterogeneous control modalities (arm, gripper, base, torso)?\n\n- (A) Each body part has an independent controller that publishes commands to a shared action buffer, which are then synchronized by a central arbitrator\n- (B) The refactor_composite_controller_config() function restructures controller configurations to match RoboSuite v1.5's composite controller format, with body_part_ordering specifying the control sequence\n- (C) A hierarchical state machine coordinates transitions between different control modes (navigation, manipulation, whole-body) based on task phase\n- (D) All body parts share a single unified controller that computes joint commands using whole-body inverse kinematics",
+      "explanation": "This tests understanding of the robot control architecture across kitchen.py and config_utils.py. (B) is correct - refactor_composite_controller_config() converts old controller configs to the new composite format, and for PandaOmron specifically sets body_part_ordering=['right', 'right_gripper', 'base', 'torso'] to define control structure. This enables RoboSuite's composite controller to properly coordinate different body parts. (A) is incorrect - there's no action buffer arbitration pattern. (C) is incorrect - no hierarchical state machine for mode switching exists. (D) is incorrect - body parts have separate controllers, not unified whole-body IK.",
+      "pred_raw": "1. The question references a composite controller architecture and mentions different body parts (arm, gripper, base, torso) — typical RoboSuite-style setups use a composite controller that composes per-body-part controllers in a specified order rather than a single monolithic IK controller or a runtime arbitrator/state machine.\n2. RoboCasa includes a utility refactor_composite_controller_config() to convert controller specs into the RoboSuite v1.5 composite format, and it uses a body_part_ordering field to determine the sequence and mapping of per-part controllers.\n3. Options A, C, and D describe alternative runtime arbitration or whole-body IK schemes that are not how the composite config is described to handle heterogeneous modalities in RoboCasa.\n\n\\boxed{B}",
+      "pred_letters": [
+        "B"
+      ],
+      "gt_letters": [
+        "B"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 5,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Computer vision systems for robot learning require careful camera placement and configuration. Which design principles guide RoboCasa's camera system architecture to support both policy learning and human interpretability?\n\n- (A) The _cam_configs system in CamUtils provides robot-specific camera configurations that account for different robot morphologies and workspace geometries\n- (B) Camera randomization applies Gaussian noise to agentview camera poses but not eye-in-hand cameras to maintain consistent end-effector observations\n- (C) The set_cameras() method dynamically adjusts camera positions based on the kitchen layout_id to ensure relevant fixtures remain in view\n- (D) Multiple camera viewpoints (agentview_center, agentview_left, agentview_right) provide overlapping coverage for depth estimation and occlusion handling\n- (E) The translucent_robot rendering mode reduces visual occlusions by making the robot semi-transparent, improving visibility of manipulation targets",
+      "explanation": "This tests understanding of the vision system design across camera_utils.py, kitchen.py, and visualization code. (A) is correct - get_robot_cam_configs() returns robot-specific configurations. (B) is correct - _randomize_cameras() applies noise to agentview but sets pos_noise=np.zeros_like() for eye_in_hand. (C) is correct - set_cameras() uses LAYOUT_CAMS.get(layout_id) for layout-specific positioning. (E) is correct - visualize() sets alpha=0.10 for robot geoms when translucent_robot=True. (D) is incorrect - while multiple viewpoints exist, they're not specifically designed for stereo depth estimation; they provide different perspectives for policy learning.",
+      "pred_raw": "Reasoning:\n- (A) True — CamUtils exposes cam_configs to store robot- and workspace-specific camera placements so different morphologies and kitchen geometries are accounted for.\n- (C) True — set_cameras() uses the environment/layout information (layout_id) to place cameras so important fixtures remain visible for tasks and learning.\n- (D) True — multiple agentview variants (center/left/right) give overlapping viewpoints to reduce occlusions and support multi-view cues (improved depth/coverage).\n- (E) True — a translucent_robot rendering mode is used to make the robot semi-transparent, reducing visual occlusion of manipulated objects and aiding interpretability.\n- (B) False — camera randomization is applied to agentview cameras for robustness, but the claim that eye-in-hand cameras are deliberately left un-noised is not generally true in the architecture (eye-in-hand may also be configured or randomized depending on the experiment).\n\n\\boxed{A,C,D,E}",
+      "pred_letters": [
+        "A",
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 6,
+      "dataset": "robocasa",
+      "instruction": "choose ONE option",
+      "stem": "The texture_swap system enables visual domain randomization by procedurally varying material appearances. What is the architectural relationship between texture randomization and the generative_textures parameter in scene generation?\n\n- (A) When generative_textures='100p', all textures are replaced with AI-generated alternatives; when None/False, human-designed textures from the asset library are used\n- (B) The texture swap system operates independently of generative_textures, which only controls object geometry generation\n- (C) Texture randomization is applied during every reset() call to maximize visual diversity, while generative_textures is a one-time scene initialization parameter\n- (D) The system uses a hybrid approach where generative_textures controls fixture textures while object textures are always randomized",
+      "explanation": "This tests understanding of the texture system architecture across texture_swap.py and kitchen.py. (A) is correct - the _curr_gen_fixtures variable stores generative texture info from _ep_meta, and edit_model_xml() uses this to determine whether to apply AI-generated textures (when '100p') or use standard textures. The replace_*_texture() functions in texture_swap.py handle the actual swapping. (B) is incorrect - generative_textures affects visual appearance, not geometry. (C) is incorrect - texture selection happens during _load_model(), not every reset(). (D) is incorrect - the parameter affects both fixtures and objects uniformly.",
+      "pred_raw": "Reasoning:\n- The texture_swap system is the mechanism that procedurally varies material appearances (i.e., it performs texture randomization).\n- The generative_textures parameter selects the source/type of textures used by that system (whether to use generative/AI-produced textures or the asset library).\n- A setting like '100p' indicates using generative textures for all surfaces, while None/False means falling back to the human-designed asset textures.\n\n\\boxed{A}",
+      "pred_letters": [
+        "A"
+      ],
+      "gt_letters": [
+        "A"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 7,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The object sampling system must handle diverse physical properties and task requirements. Which mechanisms enable the framework to select task-appropriate objects while maintaining physical realism?\n\n- (A) The OBJ_CATEGORIES dictionary encodes physical affordances (graspable, washable, microwavable, cookable, freezable) that constrain object selection based on task requirements\n- (B) Object scaling factors (aigen vs objaverse) compensate for different asset sources having inconsistent real-world dimensions\n- (C) The obj_instance_split parameter enables train/test dataset splitting by partitioning object instances, with 'A' using most instances and 'B' using the remainder\n- (D) The exclude list in object categories removes specific instances with mesh defects (holes, inconsistent normals) that cause physics instabilities\n- (E) Object groups (fruit, vegetable, utensil, etc.) are hierarchically organized to support semantic task specifications",
+      "explanation": "This tests understanding of the object system design across kitchen_objects.py, kitchen.py, and sample_object(). (A) is correct - OBJ_CATEGORIES defines affordances used in sample_object() filtering. (B) is correct - different scale values for aigen vs objaverse compensate for asset inconsistencies. (C) is correct - obj_instance_split implements train/test splitting as documented. (D) is correct - exclude lists remove problematic meshes (e.g., 'bagel_8', 'bar_1' with holes). (E) is correct - types tuples create hierarchical groupings (e.g., apple has types=('fruit',)).",
+      "pred_raw": "1) A — The OBJ_CATEGORIES affordances constrain which objects are suitable for tasks (e.g., microwavable, graspable), directly enabling task-appropriate selection.  \n2) B — Scaling factors correct inconsistent asset dimensions across sources so objects behave with realistic sizes and physics, preserving physical realism.  \n3) C — obj_instance_split is a dataset partitioning mechanism (train/test split) and does not by itself enable task-appropriate selection or physical realism, so it’s not relevant here.  \n4) D — An exclude list removes known-bad meshes (holes, bad normals) that would produce unstable physics, directly supporting physical realism.  \n5) E — Hierarchical object groups (fruit, utensil, etc.) allow semantic specification of required object types for tasks, aiding task-appropriate selection.\n\n\\boxed{A,B,D,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 8,
+      "dataset": "robocasa",
+      "instruction": "choose ONE option",
+      "stem": "Scene generation must handle the challenge of creating diverse kitchen layouts while ensuring robot reachability. How does the layout and style system balance environmental diversity with task feasibility?\n\n- (A) The scene_registry maintains a fixed set of 120 pre-designed kitchen scenes that are loaded deterministically based on layout_id and style_id combinations\n- (B) Layouts are procedurally generated using grammar-based rules, while styles are selected from a fixed palette of material/color schemes\n- (C) The EXCLUDE_LAYOUTS mechanism allows tasks to filter out layouts where spatial constraints make the task infeasible, such as fixtures being too far apart\n- (D) All layouts are guaranteed to be reachable by all robot types through workspace analysis during scene generation",
+      "explanation": "This tests understanding of scene generation constraints across scene_registry.py, kitchen.py, and task implementations. (C) is correct - tasks can set EXCLUDE_LAYOUTS (e.g., PnPCounterToMicrowave excludes layout 8 because the microwave is far from counters), and layout_and_style_ids are filtered to remove excluded layouts. This balances diversity (many layouts) with feasibility (task-specific filtering). (A) is incorrect - while there are 120 scenes, they're combinations of layouts and styles, not fully pre-designed. (B) is incorrect - layouts are pre-designed, not procedurally generated. (D) is incorrect - reachability is not guaranteed; tasks must handle this via exclusions.",
+      "pred_raw": "1) The question asks how diversity is balanced with task feasibility (robot reachability).  \n2) Option C directly describes a mechanism (EXCLUDE_LAYOUTS) that filters out layouts that make tasks infeasible (e.g., fixtures too far apart), which preserves diversity while ensuring reachability.  \n3) Option A implies a fixed deterministic set (limited diversity); B covers generation/style but doesn't address feasibility filtering; D overstates a guarantee that all layouts are reachable by all robots.\n\n\\boxed{C}",
+      "pred_letters": [
+        "C"
+      ],
+      "gt_letters": [
+        "C"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 9,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The framework must bridge the gap between high-level task specifications and low-level control. Which architectural components facilitate this hierarchical task decomposition?\n\n- (A) The distinction between single_stage (atomic) and multi_stage (composite) tasks reflects a two-level hierarchy where composite tasks sequence multiple atomic skills\n- (B) The _get_obj_cfgs() method in task classes specifies object configurations that define the initial scene state required for task execution\n- (C) The staged() decorator system enables tasks to define sequential subtasks with automatic state transitions and reward shaping\n- (D) Task classes inherit from Kitchen which provides fixture and object management, while task-specific logic is implemented in _check_success() and reward computation\n- (E) The ManipulationTask model from RoboSuite provides the underlying MJCF composition that merges arena, robots, and objects",
+      "explanation": "This tests understanding of task architecture across task implementations, kitchen.py, and RoboSuite integration. (A) is correct - the directory structure and task organization explicitly separate atomic (single_stage/) from composite (multi_stage/) tasks. (B) is correct - _get_obj_cfgs() defines object requirements for tasks. (D) is correct - Kitchen provides infrastructure while tasks implement success conditions. (E) is correct - ManipulationTask in _load_model() handles MJCF merging. (C) is incorrect - there's no staged() decorator system; multi-stage tasks are implemented as monolithic classes, not with automatic subtask transitions.",
+      "pred_raw": "1) A: True — distinguishing single_stage vs multi_stage explicitly creates a two-level task hierarchy where composite tasks sequence atomic skills, directly supporting hierarchical decomposition.  \n2) B: False — _get_obj_cfgs() handles initial object/scene configuration, which is environment setup, not the mechanism for decomposing tasks hierarchically.  \n3) C: True — the staged() decorator lets tasks declare sequential subtasks, managing state transitions and shaping rewards, enabling hierarchical task structuring.  \n4) D: False — inheriting from a Kitchen base provides fixture/object management and hooks like _check_success()/reward, but these are per-task implementation details rather than the architectural mechanism for hierarchical decomposition.  \n5) E: False — ManipulationTask and MJCF composition handle low-level simulation assembly (arena, robots, objects), not the hierarchical task decomposition layer.\n\n\\boxed{A,C}",
+      "pred_letters": [
+        "A",
+        "C"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 10,
+      "dataset": "robocasa",
+      "instruction": "choose ONE option",
+      "stem": "Contact-rich manipulation tasks like opening drawers and doors require careful modeling of friction and contact dynamics. What design choice in RoboCasa's physics configuration most directly impacts the stability and realism of these interactions?\n\n- (A) Using MuJoCo's implicit contact model with complementarity constraints to handle stiff contacts without requiring extremely small timesteps\n- (B) Implementing custom contact callbacks that detect drawer/door contacts and apply corrective forces to prevent penetration\n- (C) Setting lite_physics=True which reduces solver iterations but maintains sufficient contact resolution for manipulation tasks\n- (D) Using a hybrid physics approach where contacts are detected in MuJoCo but resolved using a separate constraint-based solver",
+      "explanation": "This tests understanding of contact dynamics and physics solver configuration across kitchen.py and MuJoCo integration. (A) is correct - MuJoCo's implicit contact model (the default) uses complementarity constraints to handle stiff contacts efficiently, which is crucial for drawer/door manipulation. The framework relies on this by using mujoco==3.2.6 with its default contact settings. (C) is partially relevant but not the most direct factor - lite_physics affects overall simulation speed but doesn't fundamentally change contact handling. (B) is incorrect - no custom contact callbacks exist. (D) is incorrect - MuJoCo handles all contact resolution internally.",
+      "pred_raw": "1) Contact-rich tasks hinge on how contacts and friction are numerically formulated and solved — that determines stability (no jitter/penetration) and physical realism (correct frictional stick/slip).  \n2) MuJoCo's implicit contact formulation with complementarity constraints directly encodes contact/constraint equations and Coulomb-like friction, allowing larger timesteps while resolving stiff contacts stably.  \n3) The other choices are either ad-hoc (callbacks applying corrective forces), reduce solver fidelity (lite_physics=True), or add extra complexity (hybrid solver) — none affect the fundamental numerical contact model as directly as the implicit complementarity solver.\n\n\\boxed{A}",
+      "pred_letters": [
+        "A"
+      ],
+      "gt_letters": [
+        "A"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 11,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Demonstration collection and dataset generation require careful coordination between simulation, control, and data recording. Which components work together to enable high-quality trajectory collection?\n\n- (A) The collect_demos.py script integrates with teleoperation devices (keyboard, spacemouse) to record human demonstrations with synchronized state and observation data\n- (B) The dataset_registry.py maintains mappings between task names and dataset paths, supporting multiple dataset types (human_raw, human_im, mg_im)\n- (C) Episode metadata (get_ep_meta()) captures scene configuration (layout_id, style_id, object_cfgs) to enable deterministic replay\n- (D) The h5py format stores trajectories with hierarchical organization: states, actions, observations, and rewards at each timestep\n- (E) MimicGen integration enables automatic data augmentation by generating synthetic demonstrations from human seeds",
+      "explanation": "This tests understanding of the data collection pipeline across collect_demos.py, dataset_registry.py, kitchen.py, and MimicGen integration. (A) is correct - collect_demos.py handles teleoperation and recording. (B) is correct - dataset_registry.py maps tasks to dataset paths and types. (C) is correct - get_ep_meta() stores scene config for replay. (D) is correct - h5py is used for trajectory storage (referenced in scripts). (E) is correct - the codebase imports mimicgen and supports mg_im datasets.",
+      "pred_raw": "- A: collect_demos.py is the typical data-collection script that interfaces with teleoperation input (keyboard, spacemouse) and synchronizes recorded observations and simulator states — essential for high-quality human demonstrations.\n- B: dataset_registry.py provides mappings from task names to dataset paths/types (e.g., human_raw, human_im, mg_im), enabling organized storage and retrieval across dataset variants.\n- C: Episode metadata (via get_ep_meta()) stores scene configuration like layout_id, style_id, and object_cfgs so experiments can deterministically replay and reproduce trajectories.\n- D: The h5py-backed dataset format commonly stores trajectories hierarchically (states, actions, observations, rewards) per timestep, which supports efficient I/O and structured dataset generation.\n- E: MimicGen (mg) integration is used to augment human-seeded data by generating synthetic demonstrations from human seeds, helping expand and diversify the dataset.\n\n\\boxed{A,B,C,D,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 13,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Articulated object manipulation (cabinets, drawers, microwaves) presents unique challenges for both physics simulation and control. Which aspects of the framework's design specifically address these challenges?\n\n- (A) Fixture classes (SingleCabinet, Drawer, Microwave) encapsulate joint definitions and kinematic constraints for articulated objects\n- (B) The get_fixture() method with FixtureType enum provides type-safe access to specific fixture instances in the scene\n- (C) Joint position initialization in _reset_internal() sets articulated objects to specific configurations (open/closed) based on task requirements\n- (D) Impedance control is used for all articulated object interactions to handle contact forces safely\n- (E) The fixture placement system ensures articulated objects are positioned to avoid kinematic singularities during operation",
+      "explanation": "This tests understanding of articulated object handling across fixture implementations, kitchen.py, and task code. (A) is correct - fixture classes in models/fixtures/ define joints and constraints. (B) is correct - get_fixture() with FixtureType provides structured access. (C) is correct - _reset_internal() in tasks sets joint positions via set_joint_qpos(). (D) is incorrect - the framework uses position/velocity control, not specifically impedance control for fixtures. (E) is incorrect - placement focuses on collision avoidance and reachability, not kinematic singularities.",
+      "pred_raw": "Reasoning:\n- A: Fixture classes that encapsulate joint definitions and kinematic constraints directly address articulated-object simulation and control by centralizing the articulation parameters and constraints needed for realistic dynamics and controller interfaces.\n- B: Type-safe access via get_fixture()/FixtureType is an API convenience for scene management, but it doesn't directly solve physics or control challenges of articulated manipulation.\n- C: Initializing joint positions in _reset_internal() to specific configurations (open/closed) is important for reproducible simulation states and controller setup, addressing initialization and task-specific control requirements.\n- D: Using impedance control for articulated interactions explicitly addresses the control-side challenge of handling contact forces and compliance during manipulation.\n- E: While placement can help avoid poor configurations, guaranteeing avoidance of kinematic singularities is not typically enforced by a generic fixture placement system and is not a primary design feature for addressing simulation/control challenges.\n\n\\boxed{A,C,D}",
+      "pred_letters": [
+        "A",
+        "C",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 15,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Collision detection and avoidance are critical for safe manipulation in cluttered kitchen environments. Which mechanisms contribute to collision handling in the simulation?\n\n- (A) The objs_intersect() function uses oriented bounding box (OBB) intersection tests to detect collisions between objects during placement\n- (B) MuJoCo's built-in collision detection handles runtime collisions between robot, objects, and fixtures using the defined collision geometries\n- (C) The ensure_valid_placement flag in samplers enables/disables collision checking during object placement to balance scene validity with generation speed\n- (D) A motion planning module computes collision-free trajectories for all robot movements\n- (E) The placement system uses iterative sampling with collision checking, retrying up to 5000 times to find valid object positions",
+      "explanation": "This tests understanding of collision handling across placement_samplers.py, object_utils.py, and physics simulation. (A) is correct - objs_intersect() in object_utils.py performs OBB tests. (B) is correct - MuJoCo handles runtime collision detection using collision meshes. (C) is correct - ensure_valid_placement in UniformRandomSampler controls whether collision checking is performed. (E) is correct - the sample() method in UniformRandomSampler uses a loop with range(5000) for retries. (D) is incorrect - no motion planning module exists; the framework relies on learned policies or teleoperation.",
+      "pred_raw": "Reasoning:\n1. A is true: placement-time collision checks commonly use OBB intersection tests (objs_intersect()) to quickly detect object-object overlaps before committing placements.\n2. B is true: MuJoCo provides built-in collision/contact detection at runtime using the collision geometries, which handles robot-object-fixture interactions.\n3. C is true: samplers often include an ensure_valid_placement flag to toggle collision-checking during placement to trade off between scene validity and generation speed.\n4. D is false: the simulation description does not state a full motion-planning module that computes collision-free trajectories for all robot movements; runtime control relies on MuJoCo and controllers rather than a global planner.\n5. E is true: the placement system uses iterative sampling with collision checking and a high retry cap (commonly up to 5000 attempts) to find valid positions.\n\n\\boxed{A,B,C,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 16,
+      "dataset": "robocasa",
+      "instruction": "choose ONE option",
+      "stem": "The framework must handle the challenge of generating realistic object interactions (grasping, placing, stacking). What physics modeling choice most directly enables stable grasping of diverse object geometries?\n\n- (A) Using soft contact models with compliance parameters tuned for each object material type\n- (B) Implementing suction-based grasping that doesn't require precise contact modeling\n- (C) Relying on MuJoCo's friction pyramid model with appropriate friction coefficients defined in object MJCF files to generate realistic contact forces\n- (D) Using constraint-based grasping where objects are rigidly attached to the gripper upon contact",
+      "explanation": "This tests understanding of grasping physics across object models and MuJoCo integration. (C) is correct - MuJoCo uses friction pyramid models for contacts, and object MJCF files (from Objaverse/AI-generated assets) define friction coefficients. The framework relies on this standard contact model rather than implementing custom grasping physics. Gripper models from RoboSuite provide the gripper geometry, and MuJoCo's contact solver handles the grasping dynamics. (A) is incorrect - while MuJoCo supports soft contacts, the framework doesn't tune per-material compliance. (B) is incorrect - parallel-jaw grippers are used, not suction. (D) is incorrect - no rigid attachment mechanism exists; grasping emerges from contact forces.",
+      "pred_raw": "Step-by-step reasoning:\n1. Stable grasping across diverse geometries depends on how contacts form and distribute forces, especially with deformable contact patches and non-ideal surfaces.\n2. Soft contact/compliance models explicitly capture deformation, contact area, and force distribution so the gripper can conform to different shapes and avoid fragile point contacts that slip.\n3. Friction coefficients (C) help but don’t model deformation or contact patch formation; suction (B) is limited to certain geometries; rigid attachment (D) is unrealistic and hides failure modes.\n4. Therefore, modeling compliant (soft) contacts with appropriate material tuning most directly enables robust, realistic grasping across varied objects.\n\n\\boxed{A}",
+      "pred_letters": [
+        "A"
+      ],
+      "gt_letters": [
+        "C"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 17,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The framework's scene representation must support both simulation and policy learning. Which design decisions enable efficient scene representation while maintaining the information needed for learning?\n\n- (A) The MJCF (MuJoCo XML) format provides a hierarchical scene description that separates kinematic structure, visual appearance, and collision geometry\n- (B) The edit_model_xml() method post-processes generated MJCF to apply texture swaps, fix naming conventions, and adjust rendering properties\n- (C) Scene state is represented as a flat vector of joint positions and velocities for efficient neural network processing\n- (D) The KitchenArena class encapsulates scene construction, providing methods to query fixture positions and spatial relationships\n- (E) Object and fixture models are loaded lazily during simulation to reduce memory footprint",
+      "explanation": "This tests understanding of scene representation across MJCF handling, kitchen.py, and scene construction. (A) is correct - MJCF separates structure (body/joint), visuals (geom with visual properties), and collision (geom with collision properties). (B) is correct - edit_model_xml() in kitchen.py modifies MJCF for textures, naming, and rendering. (D) is correct - KitchenArena in models/scenes/ handles scene construction and provides fixture access. (C) is incorrect - while state can be vectorized, the framework maintains structured state representation through MuJoCo's data structures. (E) is incorrect - models are loaded during _load_model(), not lazily.",
+      "pred_raw": "Step-by-step reasoning:\n1. A is correct: using MJCF to separate kinematic structure, visuals, and collision geometry gives a clear, simulation-native hierarchical representation while keeping visual and physical details separate for learning and rendering.\n2. B is correct: post-processing MJCF (texture swaps, consistent names, rendering tweaks) ensures observations and model interfaces remain consistent and usable by policies and simulators.\n3. C is correct: representing scene state as a flat vector of joint positions/velocities yields an efficient, network-friendly observation while still encoding the necessary dynamical state for simulation.\n4. D is correct: encapsulating scene construction and providing query methods (e.g., fixture positions, spatial relations) makes it easy for policies to access structured information and keeps the scene representation modular.\n5. E is not chosen: lazy loading reduces memory but can complicate timely access to all needed scene information for learning and simulation; it’s an efficiency optimization but not a core design choice ensuring both efficient representation and completeness for learning.\n\n\\boxed{A,B,C,D}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 18,
+      "dataset": "robocasa",
+      "instruction": "choose ONE option",
+      "stem": "Multi-stage tasks require coordinating multiple subtasks with different success conditions. How does the framework's architecture support compositional task specification without requiring explicit state machines?\n\n- (A) Multi-stage tasks use a blackboard architecture where subtasks communicate through shared memory\n- (B) Multi-stage tasks are implemented as monolithic classes that check all subtask conditions in a single _check_success() method, relying on the task designer to implement the coordination logic\n- (C) The framework automatically infers task structure from the directory hierarchy and generates state machines\n- (D) Multi-stage tasks use behavior trees to compose atomic skills with fallback and sequence nodes",
+      "explanation": "This tests understanding of multi-stage task architecture across multi_stage/ task implementations. (B) is correct - examining multi-stage tasks (e.g., PrepareCoffee, FillKettle) shows they implement all logic in a single class with _check_success() checking multiple conditions. There's no automatic state machine or behavior tree system; task designers manually implement the coordination. This is simpler but less modular than hierarchical approaches. (A) is incorrect - no blackboard pattern exists. (C) is incorrect - no automatic inference from directory structure. (D) is incorrect - no behavior tree system is implemented.",
+      "pred_raw": "Step-by-step reasoning:\n1. The question asks for a compositional way to specify multi-stage tasks without explicit state machines.\n2. Behavior trees are a standard method for composing atomic skills into sequences and fallbacks, handling control flow and success/failure propagation without encoding explicit global state machines.\n3. Options A and B describe shared memory or monolithic checks, which don't provide the structured sequencing and fallback composition implied by \"multi-stage\" without state machines.\n4. Option C (automatic inference from directory hierarchy) is unlikely and not a common architectural pattern for compositional task specification.\n5. Therefore behavior trees (option D) best match the described capability.\n\n\\boxed{D}",
+      "pred_letters": [
+        "D"
+      ],
+      "gt_letters": [
+        "B"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 19,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The framework must handle different robot morphologies with varying kinematic capabilities. Which design patterns enable cross-embodiment support?\n\n- (A) The _ROBOT_POS_OFFSETS dictionary provides robot-specific base position offsets to account for different robot heights and base geometries\n- (B) Robot models are defined in RoboSuite with standardized interfaces (robot_model, gripper_model, base_model) that Kitchen can interact with uniformly\n- (C) The compute_robot_base_placement_pose() method applies robot-specific offsets when positioning robots relative to fixtures\n- (D) All robots must have identical joint configurations to ensure policy transferability\n- (E) The refactor_composite_controller_config() function adapts controller configurations to different robot control structures",
+      "explanation": "This tests understanding of cross-embodiment support across kitchen.py, config_utils.py, and RoboSuite integration. (A) is correct - _ROBOT_POS_OFFSETS defines per-robot offsets for GR1, G1, GoogleRobot, etc. (B) is correct - RoboSuite's robot abstraction provides uniform interfaces. (C) is correct - compute_robot_base_placement_pose() uses _ROBOT_POS_OFFSETS for robot-specific positioning. (E) is correct - refactor_composite_controller_config() adapts configs to different control structures. (D) is incorrect - robots have different joint configurations; the framework handles this through abstraction, not requiring identical kinematics.",
+      "pred_raw": "Step-by-step reasoning:\n1. A (ROBOT_POS_OFFSETS): Providing robot-specific base position offsets is a clear mechanism to handle different heights/base geometries, enabling the same tasks to be placed relative to each robot — so this supports cross-embodiment.\n2. B (standardized robot model interfaces): Defining robot models with standardized interfaces (robot_model, gripper_model, base_model) lets Kitchen interact uniformly with different morphologies, which is essential for cross-embodiment support.\n3. C (compute_robot_base_placement_pose): A method that applies robot-specific offsets when positioning robots relative to fixtures is an application of the offset pattern and is necessary to place varied robots correctly — this enables cross-embodiment operation.\n4. D (identical joint configurations): Requiring identical joint configurations is overly restrictive and not a design pattern that supports diverse embodiments; it prevents, rather than enables, cross-embodiment.\n5. E (refactor_composite_controller_config): Adapting controller configurations to different robot control structures allows the same higher-level policies to work across robots with different actuators/control schemas, supporting cross-embodiment.\n\n\\boxed{A,B,C,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 21,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Visual rendering quality impacts both policy learning and human interpretability. Which rendering techniques does the framework employ to balance realism with computational efficiency?\n\n- (A) The framework supports both onscreen (mjviewer) and offscreen rendering modes for different use cases (interactive visualization vs. headless training)\n- (B) Photo-realistic rendering is achieved through MuJoCo's built-in renderer with configurable lighting and shadows\n- (C) The render_gpu_device_id parameter enables distributed rendering across multiple GPUs for parallel data collection\n- (D) Texture resolution is dynamically adjusted based on object distance from camera to optimize memory usage\n- (E) The renderer_config parameter allows customization of camera settings (position, orientation, field of view) for different layouts",
+      "explanation": "This tests understanding of rendering architecture across kitchen.py and RoboSuite's rendering system. (A) is correct - has_renderer and has_offscreen_renderer control rendering modes. (B) is correct - MuJoCo 3.2.6 provides the rendering with lighting/shadows. (C) is correct - render_gpu_device_id in __init__ enables GPU selection. (E) is correct - renderer_config with cam_config is used in set_cameras() for layout-specific camera settings. (D) is incorrect - no dynamic texture LOD system exists; textures are fixed resolution.",
+      "pred_raw": "1) A is true — common frameworks provide both onscreen (mjviewer) for interactive visualization and offscreen rendering for headless training to save resources.  \n2) B is false — MuJoCo’s renderer supports lighting/shadow parameters but is not aimed at full photo-realism; frameworks rarely claim photo-realistic rendering solely via MuJoCo.  \n3) C is true — a render_gpu_device_id parameter is typically used to assign rendering to specific GPUs, allowing parallel/distributed rendering across workers.  \n4) D is false — dynamic per-object texture resolution (distance-based LOD) is not a standard MuJoCo/framework feature.  \n5) E is true — renderer_config commonly exposes camera parameters (position, orientation, FOV) to customize views for different layouts.\n\n\\boxed{A,C,E}",
+      "pred_letters": [
+        "A",
+        "C",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 23,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The framework's integration with policy learning frameworks requires careful interface design. Which architectural decisions facilitate this integration?\n\n- (A) The environment follows the OpenAI Gym interface with reset(), step(), and observation/action spaces\n- (B) The tianshou dependency provides reinforcement learning algorithm implementations that work with the environment\n- (C) Episode metadata and camera configurations are included in the info dictionary returned by step() to support off-policy learning\n- (D) The framework provides pre-trained policy checkpoints that can be fine-tuned for new tasks\n- (E) Integration with robomimic enables imitation learning from demonstration datasets",
+      "explanation": "This tests understanding of policy learning integration across kitchen.py, setup.py, and documentation. (A) is correct - Kitchen inherits from ManipulationEnv which follows Gym interface. (B) is correct - setup.py includes tianshou==0.4.10 dependency. (C) is correct - get_ep_meta() data is available for learning algorithms. (E) is correct - policy_learning.md documents robomimic integration for BC-Transformer and other algorithms. (D) is incorrect - the framework provides datasets and environments, but pre-trained checkpoints are not part of the core codebase.",
+      "pred_raw": "1) The Gym-style API (reset(), step(), defined obs/action spaces) is the canonical interface expected by most policy learning libraries, so (A) is necessary for straightforward integration.  \n2) Providing a dependency like tianshou (which supplies RL algorithm implementations and trainer loops geared to Gym-like envs) directly facilitates pairing the framework with off-the-shelf RL methods, so (B) is relevant.  \n3) Returning episode metadata (and reproducible camera configurations) in the step() info dict makes it possible to store, replay, and reconstruct experiences for off-policy algorithms and logging/debugging, so (C) helps integration.  \n4) Supporting robomimic lets the framework consume standard demonstration datasets and interfaces used for imitation learning, so (E) enables integration with imitation-policy learning workflows.  \n5) Pre-trained checkpoints (D) are useful for transfer/fine-tuning but are not primarily an interface/architectural decision required to integrate with policy learning frameworks, so it is not selected.\n\n\\boxed{A,B,C,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 24,
+      "dataset": "robocasa",
+      "instruction": "choose ONE option",
+      "stem": "The framework must handle the computational challenge of simulating complex scenes with many objects. What is the primary strategy for managing simulation performance?\n\n- (A) Using level-of-detail (LOD) systems that simplify distant objects\n- (B) Implementing spatial partitioning (octrees/BVH) for efficient collision detection\n- (C) Setting lite_physics=True to reduce MuJoCo solver iterations while maintaining sufficient accuracy for manipulation, combined with careful control frequency selection (20Hz)\n- (D) Offloading physics computation to GPU using MuJoCo's CUDA backend",
+      "explanation": "This tests understanding of performance optimization across kitchen.py and MuJoCo configuration. (C) is correct - Kitchen.__init__ explicitly sets lite_physics=True and control_freq=20. lite_physics reduces solver iterations (fewer constraint solver passes), trading some accuracy for speed. The 20Hz control frequency balances responsiveness with computational cost. This is the primary performance strategy visible in the codebase. (A) is incorrect - no LOD system exists. (B) is incorrect - MuJoCo handles collision detection internally; no custom spatial partitioning is implemented. (D) is incorrect - MuJoCo 3.2.6 doesn't use GPU for physics (only rendering).",
+      "pred_raw": "- The question asks for the primary strategy used by the framework to manage simulation performance for complex scenes.\n- Options A and B are general graphics/physics optimizations (LOD and spatial partitioning) that help, but they're not the specific approach recommended by the framework.\n- Option D (GPU/CUDA) is not the documented primary method here and may not be available/used.\n- The framework explicitly uses a reduced-accuracy mode for MuJoCo (lite_physics=True) plus a lower control frequency (around 20 Hz) to cut solver work while keeping sufficient accuracy for manipulation tasks.\n\\boxed{C}",
+      "pred_letters": [
+        "C"
+      ],
+      "gt_letters": [
+        "C"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 25,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The object asset pipeline must handle diverse sources (Objaverse, AI-generated) with varying quality. Which quality control mechanisms are implemented?\n\n- (A) The exclude lists in OBJ_CATEGORIES remove specific object instances with known defects (holes, inconsistent normals, inertia violations)\n- (B) Automated mesh validation checks for watertight geometry, manifold edges, and proper UV mapping\n- (C) Different scale factors for aigen vs objaverse assets compensate for inconsistent real-world sizing across sources\n- (D) Object instances are manually curated and tested before inclusion in the asset library\n- (E) The framework automatically repairs mesh defects using hole-filling and remeshing algorithms",
+      "explanation": "This tests understanding of asset quality control across kitchen_objects.py and asset management. (A) is correct - OBJ_CATEGORIES contains exclude lists with comments explaining defects (e.g., 'bagel_8' excluded, 'bar_1' has holes, 'can_5' has inconsistent orientation). (C) is correct - different scale values for aigen vs objaverse indicate manual calibration for size consistency. (D) is correct - the existence of curated exclude lists and specific scale factors indicates manual curation. (B) is incorrect - no automated validation code exists in the codebase. (E) is incorrect - no automatic repair algorithms are implemented; defective assets are excluded instead.",
+      "pred_raw": "Reasoning:\n- A: True — the pipeline maintains exclude lists (OBJ_CATEGORIES) to filter out known-bad instances (holes, bad normals, inertia issues).\n- B: True — automated mesh validation is used to check watertightness, manifoldness, and UV/normal consistency before acceptance.\n- C: True — different scale factors are applied per source (e.g., aigen vs Objaverse) to correct inconsistent real-world sizing.\n- D: Not generally true as a blanket mechanism — full manual curation/testing of every instance is impractical; curation is limited to targeted checks and exclude lists.\n- E: Not relied on — the system prefers exclusion/validation rather than automatic mesh repair (hole-filling/remeshing) in the core pipeline.\n\n\\boxed{A,B,C}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "gt_letters": [
+        "A",
+        "C",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 27,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The framework's scene generation must handle spatial reasoning about fixture relationships. Which mechanisms enable the system to reason about spatial configurations?\n\n- (A) The get_fixture() method with FixtureType and fixture_id enables querying specific fixtures by type and instance\n- (B) The OU.point_in_fixture() function tests whether a point lies within a fixture's 2D or 3D bounds\n- (C) The get_rel_transform() function computes relative transformations between fixtures for positioning objects\n- (D) A scene graph data structure maintains parent-child relationships between all scene elements\n- (E) The fixture placement system uses constraint satisfaction to ensure fixtures don't overlap",
+      "explanation": "This tests understanding of spatial reasoning across kitchen.py, object_utils.py, and fixture management. (A) is correct - get_fixture() provides structured access to fixtures. (B) is correct - OU.point_in_fixture() is used in compute_robot_base_placement_pose() for spatial queries. (C) is correct - OU.get_rel_transform() computes relative poses between fixtures. (E) is correct - fixture placement uses SequentialCompositeSampler with collision checking. (D) is incorrect - while MuJoCo has a kinematic tree, there's no explicit scene graph abstraction in the Python code for spatial reasoning.",
+      "pred_raw": "1) OU.point_in_fixture() (B) directly tests geometric containment, a core spatial reasoning operation for deciding whether points or objects lie inside fixture bounds.  \n2) get_rel_transform() (C) yields transforms between fixtures, allowing computation of positions and orientations relative to other fixtures, essential for spatial relationships.  \n3) A scene graph (D) encodes parent–child spatial relationships and hierarchical transforms, enabling propagation and queries of spatial configuration.  \n4) Constraint-based fixture placement (E) enforces spatial constraints (e.g., non-overlap), which is a reasoning mechanism used during layout and collision-free arrangement.  \n5) get_fixture() (A) is useful for retrieving fixtures by type/id but is primarily an access method rather than a spatial reasoning mechanism, so it’s not included.\n\n\\boxed{B,C,D,E}",
+      "pred_letters": [
+        "B",
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 29,
+      "dataset": "robocasa",
+      "instruction": "choose MULTIPLE options",
+      "stem": "The framework's MJCF post-processing system must handle various model adjustments. Which transformations are applied during edit_model_xml()?\n\n- (A) Renaming elements starting with 'base0_' to 'mobilebase0_' for backward compatibility with old PandaOmron demonstrations\n- (B) Applying texture swaps by replacing texture file paths in visual geometry elements\n- (C) Adjusting collision geometry resolution based on object importance for performance optimization\n- (D) Setting rendering properties like reflectance and specularity for visual realism\n- (E) Removing unused joints and bodies to reduce model complexity",
+      "explanation": "This tests understanding of MJCF post-processing in kitchen.py's edit_model_xml(). (A) is correct - the code explicitly renames 'base0_' to 'mobilebase0_' with a comment about PandaOmron demos. (B) is correct - texture swap functions are called within edit_model_xml() to replace textures. (D) is correct - the method adjusts rendering properties for fixtures and objects. (C) is incorrect - no adaptive collision resolution exists. (E) is incorrect - no pruning of unused elements is performed.",
+      "pred_raw": "Reasoning:\n- B: edit_model_xml operates on the MJCF XML and commonly updates visual geometry entries, so replacing texture file paths (texture swaps) is a typical post-processing transformation.\n- D: The function also adjusts visual/material attributes (e.g., reflectance/specularity/shininess) to ensure consistent rendering across environments, so setting rendering properties is expected.\n- E: Post-processing often includes cleanup steps to reduce model complexity (removing unused joints/bodies) to avoid unused elements being simulated or exported.\n- A: The specific renaming of \"base0_\" to \"mobilebase0_\" for an old \"PandaOmron\" demo is too specific and not a general MJCF post-processing step.\n- C: Dynamically adjusting collision geometry resolution by object importance is a higher-level optimization that is unlikely to be performed in edit_model_xml.\n\n\\boxed{B,D,E}",
+      "pred_letters": [
+        "B",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": false
+    }
+  ]
+}

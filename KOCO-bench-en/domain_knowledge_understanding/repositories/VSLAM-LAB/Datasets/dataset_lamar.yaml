@@ -1,0 +1,9 @@
+dataset_name: lamar
+
+rgb_hz: 0.0
+url_download_root: ""
+
+sequence_names:
+  - CAB
+  - HGE
+  - LIN

@@ -1,0 +1,153 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include <cstdint>
+#include "collectives.cce"
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void LcalAllGatherBigDataOrigin(
+    __gm__ T* buff[8], __gm__ T *input, __gm__ T *output, int64_t processedNum, int64_t blockNumPerGroup, uint32_t rank,
+    uint32_t rankSize, uint64_t allLen, uint64_t len, int64_t magic, __ubuf__ int64_t* ctrlFlagsUB, __ubuf__ int64_t* ctrlFlagsUB1[16],
+    __ubuf__ int64_t* ctrlFlagsUB2[16], __ubuf__ T* inputUB[2], int64_t dataOffsetNum, int64_t flagOffset1st, int64_t flagOffset2nd,
+    int64_t x, int64_t corePerRank, int64_t coreSegmentedIdx)
+{
+    int64_t avgNumDMAPerCore = len / blockNumPerGroup;
+    int64_t dataNumRemain = avgNumDMAPerCore;
+    if (GetBlockIdx() == blockNumPerGroup - 1) {
+        dataNumRemain = len - dataNumRemain * GetBlockIdx();
+    }
+
+    __gm__ T *receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[rank] + dataOffsetNum);
+    __gm__ T *sendBuff = input;
+    __gm__ int64_t* ctrlFlagsGM = (__gm__ int64_t*)buff[rank] + flagOffset1st;
+    __gm__ int64_t* ctrlFlagsGMX = (__gm__ int64_t*)buff[x] + flagOffset1st;
+    if (GetBlockIdx() < blockNumPerGroup) {
+        int64_t ipcBuffOffsetNum = GetBlockIdx() * avgNumDMAPerCore;
+        int64_t inputOffsetNum = GetBlockIdx() * avgNumDMAPerCore;
+        input2BuffRankMagic(dataNumRemain * sizeof(T), inputUB[0], receiveBuff, ipcBuffOffsetNum,
+                            sendBuff, inputOffsetNum, ctrlFlagsUB, ctrlFlagsGM, magic);
+        return;
+    }
+
+    for (int64_t i = 0; i < blockNumPerGroup; i++) {
+        *ctrlFlagsUB1[i] = 0;
+        *ctrlFlagsUB2[i] = 0;
+    }
+
+    while (true) {
+        for (int64_t blockGroup0Idx = 0;  blockGroup0Idx < blockNumPerGroup; blockGroup0Idx++) {
+            if (*ctrlFlagsUB1[blockGroup0Idx] == INT64_MAX) {
+                continue;
+            }
+
+            int64_t allDataSizeNeedDMA = avgNumDMAPerCore * sizeof(T);
+            if (blockGroup0Idx == blockNumPerGroup - 1) {
+                allDataSizeNeedDMA = (len - blockGroup0Idx * avgNumDMAPerCore) * sizeof(T);
+            }
+
+            if (*ctrlFlagsUB1[blockGroup0Idx] * DMA_SIZE_PER_FLAG >= allDataSizeNeedDMA) {
+                *ctrlFlagsUB1[blockGroup0Idx] = INT64_MAX;
+                continue;
+            }
+
+            ctrlFlagsGMX = (__gm__ int64_t*)buff[x] + (blockGroup0Idx) * MEM_DMA_UNIT_INT_NUM;
+            CpGM2UB(ctrlFlagsUB2[blockGroup0Idx], ctrlFlagsGMX, sizeof(int64_t));
+            AscendC::PipeBarrier<PIPE_ALL>();
+
+            if ((*ctrlFlagsUB2[blockGroup0Idx] >> 10) != (magic >> 10)) {
+                continue;
+            }
+            int64_t preparedDataGroupCount = *ctrlFlagsUB2[blockGroup0Idx] - magic;
+            if (preparedDataGroupCount <= 0 || *ctrlFlagsUB1[blockGroup0Idx] >= preparedDataGroupCount) {
+                continue;
+            }
+
+            receiveBuff = (__gm__ T *)output;
+            sendBuff = (__gm__ T *)((__gm__ int64_t *)buff[x] + dataOffsetNum);
+            int64_t revBuffOffsetNum = x * allLen + processedNum + blockGroup0Idx * avgNumDMAPerCore +
+                                       *ctrlFlagsUB1[blockGroup0Idx] * DMA_SIZE_PER_FLAG / sizeof(T);
+            int64_t sendBuffOffsetNum = blockGroup0Idx * avgNumDMAPerCore +
+                                        *ctrlFlagsUB1[blockGroup0Idx] * DMA_SIZE_PER_FLAG / sizeof(T);
+
+            int64_t dataSizeRemain = (preparedDataGroupCount - *ctrlFlagsUB1[blockGroup0Idx]) * DMA_SIZE_PER_FLAG;
+            if (preparedDataGroupCount * DMA_SIZE_PER_FLAG > allDataSizeNeedDMA) {
+                dataSizeRemain = allDataSizeNeedDMA - *ctrlFlagsUB1[blockGroup0Idx] * DMA_SIZE_PER_FLAG;
+            }
+
+            AscendC::PipeBarrier<PIPE_ALL>();
+            GM2GMPingPong<T>(dataSizeRemain, inputUB, receiveBuff, revBuffOffsetNum, sendBuff, sendBuffOffsetNum);
+            AscendC::PipeBarrier<PIPE_ALL>();
+
+            *ctrlFlagsUB1[blockGroup0Idx] = preparedDataGroupCount;
+            AscendC::PipeBarrier<PIPE_ALL>();
+        }
+
+        bool finished = true;
+        for (int64_t blockGroup0Idx = 0; blockGroup0Idx < blockNumPerGroup; blockGroup0Idx++) {
+            if (*ctrlFlagsUB1[blockGroup0Idx] != INT64_MAX) {
+                finished = false;
+                break;
+            }
+        }
+        if (finished) {
+            break;
+        }
+    }
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void LcalAllGatherBigData(ALLREDUCE_ARGS_FUN_16P(T))
+{
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, Op::COPYONLY);
+    magic *= 1024;
+    const int64_t dataOffsetNum = GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM;
+    int64_t flagOffset1st = MEM_DMA_UNIT_INT_NUM * GetBlockIdx();
+    __gm__ T* buff[8] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7
+    };
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t*)(0);
+    __ubuf__ int64_t* ctrlFlagsUB1[16];
+    __ubuf__ int64_t* ctrlFlagsUB2[16];
+    for (int64_t i = 0; i * 8 < 128; i ++) {
+        ctrlFlagsUB1[i] = (__ubuf__ int64_t*)(32) + i * 8;
+        ctrlFlagsUB2[i] = (__ubuf__ int64_t*)(544) + i * 8;
+    }
+    __ubuf__ T* inputUB[2] = {(__ubuf__ T*)(1056), (__ubuf__ T*)(98336)};
+
+    int64_t blockNumPerGroup = GetLcalBlockNum() >> 1;
+    int64_t corePerRank = blockNumPerGroup / rankSize;
+    int64_t coreSegmentedIdx = GetBlockIdx() % corePerRank;
+    int64_t x = GetBlockIdx() / corePerRank;
+    if (GetBlockIdx() >= blockNumPerGroup) {
+        x = (GetBlockIdx() - blockNumPerGroup) / corePerRank;
+        flagOffset1st = (GetBlockIdx() - blockNumPerGroup) * MEM_DMA_UNIT_INT_NUM;
+    }
+    int64_t flagOffset2nd = GetLcalBlockNum() * MEM_DMA_UNIT_INT_NUM + flagOffset1st;
+
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, Op::COPYONLY);
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, Op::COPYONLY);
+
+    int64_t ipcBuffMaxNum = IPC_BUFF_MAX_SIZE / sizeof(T);
+    int64_t dataLen = len;
+    for (int64_t i = 0; i < CeilDiv(dataLen, ipcBuffMaxNum); i++) {
+        *ctrlFlagsUB = 0;
+        AscendC::PipeBarrier<PIPE_ALL>();
+
+        int64_t processedNum = i * ipcBuffMaxNum;
+        int64_t remainNum = (dataLen - processedNum < ipcBuffMaxNum) ? dataLen - processedNum : ipcBuffMaxNum;
+
+        PostSyncBigData<T>(ctrlFlagsUB, buff, rank, rankSize, dataOffsetNum, ipcBuffMaxNum, magic, i);
+        LcalAllGatherBigDataOrigin<T>(
+            buff, input + processedNum, output, processedNum, blockNumPerGroup, rank, rankSize, len, remainNum, (magic + i) * 1024, ctrlFlagsUB, ctrlFlagsUB1,
+            ctrlFlagsUB2, inputUB, dataOffsetNum, flagOffset1st, flagOffset2nd, x, corePerRank, coreSegmentedIdx);
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, Op::COPYONLY);
+}

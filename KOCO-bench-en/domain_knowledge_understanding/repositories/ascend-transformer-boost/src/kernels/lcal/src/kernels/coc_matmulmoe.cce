@@ -1,0 +1,1171 @@
+#include "coc_internal.cce"
+#include "coc_ppmatmul.cce"
+#ifdef __DAV_C220_CUBE__
+template<uint32_t RUN_TYPE, typename MmadDtype, typename OutDtype, bool TA, bool TB>
+class PpMatmulMoe : public PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB> {
+    using T_ACCUM = typename GetAccumType<MmadDtype>::T;
+    static constexpr bool IS_INT8 = std::is_same<MmadDtype, int8_t>::value;
+public:
+    __aicore__ explicit PpMatmulMoe() {};
+    inline __aicore__ void SetArgs(PP_MATMUL_AIC_ARGS_FUN(MmadDtype, OutDtype))
+    {
+        PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::SetArgs(PP_MATMUL_AIC_ARGS_CALL());
+
+        // moe args
+        is_moe_averaged = 0;
+        if (global_tokens_per_expert_matrix != nullptr) {
+            this -> global_tokens_per_expert_matrix = global_tokens_per_expert_matrix;
+        } else {
+            is_moe_averaged = 1;
+        }
+        this->local_expert_nums = local_expert_nums;
+        expert_nums = local_expert_nums * EP;
+        this->EP = EP;
+        this->TP = TP;
+        this->maxOutputSize = maxOutputSize;
+
+    }
+
+    //GMM
+    inline __aicore__ void CalLoop(int64_t batch_idx, int64_t m_idx, int64_t n_idx, int32_t m_actual, int32_t n_actual,
+                                   __gm__ MmadDtype *gm_a_src_tmp, __gm__ MmadDtype *gm_b_src_tmp, int32_t k, int32_t k_all, int32_t expert_dequant_param_offset = 0) {
+
+                                    
+        int32_t k_loop = DivCeil(k, k0);
+        int32_t k_align = Block512B<MmadDtype>::AlignUp(k);
+        int32_t k_all_align = Block512B<MmadDtype>::AlignUp(k_all);
+        if (k != k_all) {
+            k_align = k;
+        }
+
+        int64_t offset_a, offset_b, offset_a_next, offset_b_next;
+        int32_t m_round, n_round;
+        if (IS_INT8) {
+            // directive Restrictions
+            if (TA) {
+                m_round = DivCeil(m_actual, BLOCK_SIZE_32) * BLOCK_SIZE_32;
+            } else {
+                m_round = DivCeil(m_actual, BLOCK_SIZE_16) * BLOCK_SIZE_16;
+            }
+            if (TB) {
+                n_round = DivCeil(n_actual, BLOCK_SIZE_16) * BLOCK_SIZE_16;
+            } else {
+                n_round = DivCeil(n_actual, BLOCK_SIZE_32) * BLOCK_SIZE_32;
+            }
+        } else {
+            m_round = DivCeil(m_actual, BLOCK_SIZE_16) * BLOCK_SIZE_16;
+            n_round = DivCeil(n_actual, BLOCK_SIZE_16) * BLOCK_SIZE_16;
+        }
+
+        int32_t mn_max = m_round > n_round ? m_round : n_round;
+        int32_t k_part_len = L0AB_PINGPONG_BUFFER_LEN / mn_max / block_size * block_size;
+        if (TA) {
+            if (aligned_a == 1) {
+                offset_a = batch_idx * k * m_align + m_idx * m0;
+            } else {
+                offset_a = batch_idx * k * m + m_idx * m0;
+            }
+        } else {
+            if (aligned_a == 1) {
+                offset_a = batch_idx * m * k_align + m_idx * m0 * k_align;
+            } else {
+                offset_a = batch_idx * m * k + m_idx * m0 * k;
+            }
+        }
+
+        if (TB) {
+            if (aligned_b == 1) {
+                offset_b = batch_idx * n * k_all_align + n_idx * n0 * k_all_align;
+            } else {
+                if (weight_nz) {
+                    offset_b = n_idx * n0 * block_size;
+                } else {
+                    offset_b = n_idx * n0 * k_all;
+                }
+            }
+        } else {
+            if (aligned_b == 1) {
+                offset_b = batch_idx * k * n_align + n_idx * n0;
+            } else {
+                if (weight_nz) {
+                    offset_b = n_idx * n0 * k_align16;
+                } else {
+                    offset_b = n_idx * n0;
+                }
+            }
+        }
+
+        int64_t dequant_param_offset = n_idx * n0 + expert_dequant_param_offset;
+
+        int32_t k_actual = (k_loop == 1) ? k : k0;
+        int32_t k_round = DivCeil(k_actual, block_size) * block_size; // int8 ：32 fp16 ：16
+
+        auto l1_buf_a = ping_flag ? l1_base_a : l1_base_a + L1_PINGPONG_BUFFER_LEN;
+        auto l1_buf_b = ping_flag ? l1_base_b : l1_base_b + L1_PINGPONG_BUFFER_LEN;
+        auto l0a_buf = ping_flag ? l0a_base : l0a_base + L0AB_PINGPONG_BUFFER_LEN;
+        auto l0b_buf = ping_flag ? l0b_base : l0b_base + L0AB_PINGPONG_BUFFER_LEN;
+        auto event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+        if (IS_INT8 && has_offset) {
+            PipeBarrier<PIPE_MTE2>();
+            IntrinsicCopyGmToL1Nd2Nz<int32_t>::move(
+                ((__cbuf__ int32_t *)bias_l1),
+                ((__gm__ int32_t *)gm_format_dequant_offset) + dequant_param_offset,
+                0,           // sid
+                1,           // ndNum
+                1,           // nValue
+                n_actual,    // dValue
+                0,           // srcNdMatrixStride, unused
+                n,           // srcDValue
+                1,          // dstNzC0Stride
+                1,           // dstNzNStride
+                0            // dstNzMatrixStride, unused
+            );
+            SetFlag<HardEvent::MTE2_MTE1>(EVENT_ID0);
+            WaitFlag<HardEvent::MTE2_MTE1>(EVENT_ID0);
+            WaitFlag<HardEvent::FIX_MTE1>(EVENT_ID1);
+            CopyCubfToBt(((uint64_t)bias_bt), ((__cbuf__ int32_t *)bias_l1),
+                            (uint16_t)0ULL, 1, (n_actual * 4 + 63) / 64, 0, 0);
+            SetFlag<HardEvent::FIX_MTE2>(EVENT_ID1); // bias ready, mte2 can begin move A/B or scalar
+            SetFlag<HardEvent::FIX_M>(EVENT_ID1); // bias ready, mmad can begin
+            WaitFlag<HardEvent::FIX_MTE2>(EVENT_ID1); // A/B or scalar wait moving bias from L1 to BT
+
+        }
+
+        auto gm_src_a = gm_a_src_tmp + offset_a;
+        //auto gm_src_b = gm_b_src + offset_b;
+        auto gm_src_b = gm_b_src_tmp + offset_b;
+        WaitFlag<HardEvent::MTE1_MTE2>(event_id);
+        // *** load matrix A to L1
+        if (m_actual == 1 && !TA) {
+            CopyGmToCbuf(
+                l1_buf_a,
+                gm_src_a,
+                0,             // sid
+                1,             // nBurst
+                k_round / block_size,  // lenBurst
+                0,             // srcGap
+                0,             // dstGap
+                PAD_NONE       // padMode
+            );
+        } else {
+            if (TA) {
+                auto src_len = m;
+                if (aligned_a == 1) {
+                    src_len = m_align;
+                }
+                CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_a, gm_src_a, k_actual, m_actual, src_len, k_round);
+            } else {
+                auto src_len = k;
+                if (aligned_a == 1) {
+                    src_len = k_align;
+                }
+                CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_a, gm_src_a, m_actual, k_actual, src_len, m_round);
+            }
+        }
+        SetFlag<HardEvent::MTE2_MTE1>(event_id);
+
+        // *** load matrix B to L1
+        WaitFlag<HardEvent::MTE1_MTE2>(event_id + 2);
+        if (TB) {
+            //auto src_len = k;
+            auto src_len = k_all;
+            if (aligned_b == 1) {
+                //src_len = k_align;
+                src_len = k_all_align;
+            }
+            if (weight_nz) {
+                int32_t num_col = DivCeil(k_actual, block_size);
+                CopyGmToCbuf(l1_buf_b, gm_src_b, 0, num_col, n_actual, n_align16 - n_actual, n_round - n_actual, PAD_NONE);
+            } else {
+                CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_b, gm_src_b, n_actual, k_actual, src_len, n_round);
+            }
+        } else {
+            auto src_len = n;
+            if (aligned_b == 1) {
+                src_len = n_align;
+            }
+            if (weight_nz) {
+                int32_t num_col = DivCeil(n_actual, block_size);
+                CopyGmToCbuf(l1_buf_b, gm_src_b, 0, num_col, k_actual, k_align16 - k_actual, k_round - k_actual, PAD_NONE);
+            } else {
+                CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_b, gm_src_b, k_actual, n_actual, src_len, k_round);
+            }
+        }
+        SetFlag<HardEvent::MTE2_MTE1>(event_id + 2);
+
+        int mte1_mad_ping_flag = 1;
+        
+        for (int64_t k_idx = 0; k_idx < k_loop; k_idx++) {
+
+            int32_t k_actual = (k_idx == (k_loop - 1)) ? (k - k_idx * k0) : k0;
+            int32_t k_round = DivCeil(k_actual, block_size) * block_size;
+            int32_t k_part_loop = DivCeil(k_actual, k_part_len);
+
+            __cbuf__ MmadDtype *l1_buf_a = ping_flag ? l1_base_a : l1_base_a + L1_PINGPONG_BUFFER_LEN;
+            __cbuf__ MmadDtype *l1_buf_b = ping_flag ? l1_base_b : l1_base_b + L1_PINGPONG_BUFFER_LEN;
+            auto event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+            if (k_idx < k_loop - 1) {
+                if (TA) {
+                    if (aligned_a == 1) {
+                        offset_a_next = batch_idx * k * m_align + (k_idx + 1) * k0 * m_align + m_idx * m0;
+                    } else {
+                        offset_a_next = batch_idx * k * m + (k_idx + 1) * k0 * m + m_idx * m0;
+                    }
+                } else {
+                    if (aligned_a == 1) {
+                        offset_a_next = batch_idx * m * k_align + m_idx * m0 * k_align + (k_idx + 1) * k0;
+                    } else {
+                        offset_a_next = batch_idx * m * k + m_idx * m0 * k + (k_idx + 1) * k0;
+                    }
+                }
+                if (TB) {
+                    if (aligned_b == 1) {
+                        //offset_b_next = batch_idx * n * k_align + n_idx * n0 * k_align + (k_idx + 1) * k0;
+                        offset_b_next = batch_idx * n * k_align + n_idx * n0 * k_all_align + (k_idx + 1) * k0;
+                    } else {
+                        if (weight_nz) {
+                            offset_b_next = batch_idx * n * k + (k_idx + 1) * k0 * n_align16 + n_idx * n0 * block_size;
+                        } else {
+                            offset_b_next = batch_idx * n * k + n_idx * n0 * k_all + (k_idx + 1) * k0;
+                        }
+                        //offset_b_next = batch_idx * n * k + n_idx * n0 * k + (k_idx + 1) * k0;
+                        //offset_b_next = batch_idx * n * k + n_idx * n0 * k_all + (k_idx + 1) * k0;
+                    }
+                } else {
+                    if (aligned_b == 1) {
+                        offset_b_next = batch_idx * k * n_align + (k_idx + 1) * k0 * n_align + n_idx * n0;
+                    } else {
+                        //offset_b_next = batch_idx * k * n + (k_idx + 1) * k0 * n + n_idx * n0;
+                        if (weight_nz) {
+                            offset_b_next = batch_idx * k * n + (k_idx + 1) * k0 * block_size + n_idx * n0 * k_align16;
+                        } else {
+                            offset_b_next = batch_idx * k * n + (k_idx + 1) * k0 * n + n_idx * n0;
+                       }
+                    }
+                }
+
+                int32_t k_actual_next = ((k_idx + 1) == (k_loop - 1)) ? (k - (k_idx + 1) * k0) : k0;
+                int32_t k_round_next = DivCeil(k_actual_next, block_size) * block_size;
+
+                __cbuf__ MmadDtype *l1_buf_a_next = (1 - ping_flag) ? l1_base_a : l1_base_a + L1_PINGPONG_BUFFER_LEN;
+                __cbuf__ MmadDtype *l1_buf_b_next = (1 - ping_flag) ? l1_base_b : l1_base_b + L1_PINGPONG_BUFFER_LEN;
+                auto event_id_next = (1 - ping_flag) ? EVENT_ID0 : EVENT_ID1;
+
+                auto gm_src_a = gm_a_src_tmp + offset_a_next;
+                //auto gm_src_b = gm_b_src + offset_b_next;
+                auto gm_src_b = gm_b_src_tmp + offset_b_next;
+                WaitFlag<HardEvent::MTE1_MTE2>(event_id_next);
+                // *** load matrix A to L1
+                if (m_actual == 1 && !TA) {
+                    CopyGmToCbuf(
+                        l1_buf_a_next,
+                        gm_src_a,
+                        0,                          // sid
+                        1,                          // nBurst
+                        k_round_next / block_size,  // lenBurst
+                        0,                          // srcGap
+                        0,                          // dstGap
+                        PAD_NONE                    // padMode
+                    );
+                } else {
+                    if (TA) {
+                        auto src_len = m;
+                        if (aligned_a == 1) {
+                            src_len = m_align;
+                        }
+                        CopyGmToL1Nd2zN<MmadDtype>::move(
+                                l1_buf_a_next, gm_src_a, k_actual_next, m_actual, src_len, k_round_next);
+                    } else {
+                        auto src_len = k;
+                        if (aligned_a == 1) {
+                            src_len = k_align;
+                        }
+                        CopyGmToL1Nd2zN<MmadDtype>::move(
+                                l1_buf_a_next, gm_src_a, m_actual, k_actual_next, src_len, m_round);
+                    }
+                }
+                SetFlag<HardEvent::MTE2_MTE1>(event_id_next);
+
+                // *** load matrix B to L1
+                WaitFlag<HardEvent::MTE1_MTE2>(event_id_next + 2);
+                if (TB) {
+                    //auto src_len = k;
+                    auto src_len = k_all;
+                    if (aligned_b == 1) {
+                        //src_len = k_align;
+                        src_len = k_all_align;
+                    }
+                    if (weight_nz) {
+                        int32_t num_col = DivCeil(k_actual_next, block_size);
+                        CopyGmToCbuf(l1_buf_b_next, gm_src_b, 0, num_col, n_actual, n_align16 - n_actual, n_round - n_actual, PAD_NONE);
+                    } else {
+                        CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_b_next, gm_src_b, n_actual, k_actual_next, src_len, n_round);
+                    }
+                    // CopyGmToL1Nd2zN<MmadDtype>::move(
+                    //         l1_buf_b_next, gm_src_b, n_actual, k_actual_next, src_len, n_round);
+                } else {
+                    auto src_len = n;
+                    if (aligned_b == 1) {
+                        src_len = n_align;
+                    }
+                    if (weight_nz) {
+                        int32_t num_col = DivCeil(n_actual, block_size);
+                        CopyGmToCbuf(l1_buf_b_next, gm_src_b, 0, num_col, k_actual_next, k_align16 - k_actual_next, k_round_next - k_actual_next, PAD_NONE);
+                    } else {
+                        CopyGmToL1Nd2zN<MmadDtype>::move(l1_buf_b_next, gm_src_b, k_actual_next, n_actual, src_len, k_round_next);
+                    }
+                    // CopyGmToL1Nd2zN<MmadDtype>::move(
+                    //         l1_buf_b_next, gm_src_b, k_actual_next, n_actual, src_len, k_round_next);
+                }
+                SetFlag<HardEvent::MTE2_MTE1>(event_id_next + 2);
+            }
+
+            for (int k_part_idx = 0; k_part_idx < k_part_loop; k_part_idx++) {
+                int32_t k0_round = (k_part_idx < k_part_loop - 1) ?
+                    k_part_len : k_round - k_part_idx * k_part_len;
+                int32_t k0_actual = (k_part_idx < k_part_loop - 1) ?
+                    k_part_len : k_actual - k_part_idx * k_part_len;
+
+                auto mte1_mad_event_id = mte1_mad_ping_flag ? EVENT_ID0 : EVENT_ID1;
+                auto l0a_buf = l0a_base + (1 - mte1_mad_ping_flag) * L0AB_PINGPONG_BUFFER_LEN;
+                auto l0b_buf = l0b_base + (1 - mte1_mad_ping_flag) * L0AB_PINGPONG_BUFFER_LEN;
+
+                // *** load matrix A from L1 to L0A
+                if (k_part_idx == 0) {
+                    WaitFlag<HardEvent::MTE2_MTE1>(event_id);
+                }
+                WaitFlag<HardEvent::M_MTE1>(mte1_mad_event_id);
+                if (m_actual == 1 && !TA) {
+                    LoadCbufToCa(
+                            l0a_buf,
+                            l1_buf_a + k_part_idx * k_part_len,
+                            0,                                                    // baseIdx
+                            DivCeil(k0_round, cube_matrix_size), // repeat
+                            1,                                                    // srcStride
+                            0,                                                    // dstStride
+                            0,                                                    // sid
+                            false,                                                // transpose
+                            inc                                                   // addr_cal_mode_t
+                    );
+                } else {
+                    if (TA) {
+                        if (IS_INT8) {
+                            for (int i = 0; i < m_round / BLOCK_SIZE_32; i++) {
+                                LoadCbufToCaTranspose(
+                                    l0a_buf + i * k0_round * BLOCK_SIZE_32,
+                                    l1_buf_a + k_part_idx * k_part_len * BLOCK_SIZE_32 +
+                                        i * k_round * BLOCK_SIZE_32,
+                                    0,   // baseIdx
+                                    k0_round / BLOCK_SIZE_32,  // repeat
+                                    1,   // srcStride
+                                    0,   // dstStride
+                                    0,   // addrmode
+                                    k0_round / BLOCK_SIZE_32 - 1 // dstFracStride
+                                );
+                            }
+                        } else {
+                            for (int i = 0; i < m_round / BLOCK_SIZE_16; i++) {
+                                LoadCbufToCa(
+                                        l0a_buf + i * k0_round * BLOCK_SIZE_16,
+                                        l1_buf_a + k_part_idx * k_part_len * BLOCK_SIZE_16 +
+                                            i * k_round * BLOCK_SIZE_16,
+                                        0,                                      // baseIdx
+                                        k0_round / BLOCK_SIZE_16,                  // repeat
+                                        1,                                      // srcStride
+                                        0,                                      // dstStride
+                                        0,                                      // sid
+                                        true,                                   // transpose
+                                        inc                                     // addr_cal_mode_t
+                                );
+                            }
+                        }
+                    } else {
+                        for (int32_t i = 0; i < k0_round / block_size; i++) {
+                            LoadCbufToCa(
+                                l0a_buf + i * cube_matrix_size,
+                                l1_buf_a + k_part_idx * k_part_len * m_round +
+                                    i * m_round * block_size,
+                                0,                          // baseIdx
+                                m_round / BLOCK_SIZE_16,    // repeat
+                                1,                          // srcStride
+                                k0_round / block_size - 1,  // dstStride
+                                0,                      // sid
+                                false,                  // transpose
+                                inc                     // addr_cal_mode_t
+                            );
+                        }
+                    }
+                }
+                if (k_part_idx == k_part_loop - 1) {
+                    SetFlag<HardEvent::MTE1_MTE2>(event_id);
+                }
+
+                // *** load matrix B from L1 to L0B
+                if (k_part_idx == 0) {
+                    WaitFlag<HardEvent::MTE2_MTE1>(event_id + 2);
+                }
+                if (TB) {
+                    LoadCbufToCb(
+                            l0b_buf,
+                            l1_buf_b + k_part_idx * k_part_len * n_round,
+                            0,                                      // baseIdx
+                            k0_round * n_round / cube_matrix_size,  // repeat
+                            1,                                      // srcStride
+                            0,                                      // dstStride
+                            0,                                      // sid
+                            false,                                  // transpose
+                            inc                                     // addr_cal_mode_t
+                    );
+                } else {
+                    if (IS_INT8) {
+                        for (int32_t i = 0; i < k0_round / BLOCK_SIZE_32; i++) {
+                            LoadCbufToCbTranspose(
+                                l0b_buf + i * ((n_actual + 15) / 16 * 16) * BLOCK_SIZE_32,
+                                l1_buf_b + (k_part_idx * k_part_len + i * BLOCK_SIZE_32) * BLOCK_SIZE_32,
+                                0,   // baseIdx
+                                n_round / BLOCK_SIZE_32,  // repeat
+                                k_round  / BLOCK_SIZE_32,   // srcStride
+                                1,   // dstStride
+                                0,   // addrmode
+                                0    // dstFracStride
+                            );
+                        }
+                    } else {
+                        for (int32_t i = 0; i < k0_round / BLOCK_SIZE_16; i++) {
+                            LoadCbufToCb(
+                                    l0b_buf + i * n_round * BLOCK_SIZE_16,
+                                    l1_buf_b + (k_part_idx * k_part_len + i * BLOCK_SIZE_16) * BLOCK_SIZE_16,
+                                    0,                              // baseIdx
+                                    n_round / BLOCK_SIZE_16,           // repeat
+                                    k_round / BLOCK_SIZE_16,           // srcStride
+                                    0,                              // dstStride
+                                    0,                              // sid
+                                    true,                           // transpose
+                                    inc                             // addr_cal_mode_t
+                            );
+                        }
+                    }
+                }
+                if (k_part_idx == k_part_loop - 1) {
+                    SetFlag<HardEvent::MTE1_MTE2>(event_id + 2);
+                }
+
+                SetFlag<HardEvent::MTE1_M>(mte1_mad_event_id);
+                WaitFlag<HardEvent::MTE1_M>(mte1_mad_event_id);
+
+                bool init_c = (k_idx == 0 && k_part_idx == 0);
+                if (init_c) {
+                    WaitFlag<HardEvent::FIX_M>(EVENT_ID0);
+                }
+
+                if (IS_INT8 && has_offset) {
+                    if (init_c) {
+                        WaitFlag<HardEvent::FIX_M>(EVENT_ID1); // wait move bias fron L1 to BT
+                    }
+                    PipeBarrier<PIPE_M>();
+                    if (m != 1 && m_actual == 1 && TA) {
+                        mad((__cc__ int32_t *)l0c_buf,
+                            (__ca__ int8_t *)l0a_buf,
+                            (__cb__ int8_t *)l0b_buf,
+                            ((uint64_t)bias_bt),
+                            16,                       // m
+                            k0_actual,                      // k
+                            n_actual,                       // n
+                            0,                              // unitFlag
+                            0,                              // kDirectionAlign
+                            init_c,                         // cmatrixSource add C from BT
+                            0                              // cmatrixInitVal
+                        );
+                    } else {
+                        mad((__cc__ int32_t *)l0c_buf,
+                            (__ca__ int8_t *)l0a_buf,
+                            (__cb__ int8_t *)l0b_buf,
+                            ((uint64_t)bias_bt),
+                            m_actual,                       // m
+                            k0_actual,                      // k
+                            n_actual,                       // n
+                            0,                              // unitFlag
+                            0,                              // kDirectionAlign
+                            init_c,                         // cmatrixSource add C from BT
+                            0                              // cmatrixInitVal
+                        );
+                    }
+                    //has_offset = 0;
+                } else {
+                    PipeBarrier<PIPE_M>();
+                    if (m != 1 && m_actual == 1 && TA) {
+                        mad(l0c_buf,
+                            l0a_buf,
+                            l0b_buf,
+                            16,                             // m
+                            k0_actual,                      // k
+                            n_actual,                       // n
+                            0,                      // unitFlag
+                            0,                              // kDirectionAlign
+                            0,                              // cmatrixSource
+                            init_c                          // cmatrixInitVal
+                        );
+                    } else {
+                        mad(l0c_buf,
+                            l0a_buf,
+                            l0b_buf,
+                            m_actual,                       // m
+                            k0_actual,                      // k
+                            n_actual,                       // n
+                            0,                      // unitFlag
+                            0,                              // kDirectionAlign
+                            0,                              // cmatrixSource
+                            init_c                          // cmatrixInitVal
+                        );
+                    }
+                }
+                PipeBarrier<PIPE_M>();
+                SetFlag<HardEvent::M_MTE1>(mte1_mad_event_id);
+
+                mte1_mad_ping_flag = 1 - mte1_mad_ping_flag;
+            }
+            ping_flag = 1 - ping_flag;
+        }
+        
+
+        if (IS_INT8 && std::is_same<OutDtype, half>::value && (dequant_granularity == QuantGranularity::PER_CHANNEL ||
+            dequant_granularity == QuantGranularity::PER_TOKEN)) {
+        //if (IS_INT8 && std::is_same<OutDtype, half>::value && (dequant_granularity == QuantGranularity::PER_CHANNEL)) {
+            WaitFlag<HardEvent::FIX_MTE2>(EVENT_ID0);
+            PipeBarrier<PIPE_MTE2>();
+            CopyGmToCbuf(
+                scale_l1,
+                gm_dequant_scale + dequant_param_offset,
+                0,
+                1,
+                (n_actual * sizeof(int64_t) + 31) / 32,
+                0,
+                0,
+                PAD_NONE
+            );
+            SetFlag<HardEvent::MTE2_FIX>(EVENT_ID0);
+
+            WaitFlag<HardEvent::MTE2_FIX>(EVENT_ID0);
+            
+            copy_cbuf_to_fbuf(
+                scale_FB,
+                scale_l1,
+                1,
+                (n_actual * sizeof(int64_t) + 127) / 128,
+                0,
+                0
+            );
+            PipeBarrier<PIPE_FIX>();
+        }
+    }
+    
+    inline __aicore__ void MoveL0CToGM(__gm__ OutDtype *gm_dst, int64_t offset_c, int64_t offset_l0c, int32_t m_actual, int32_t n_actual, int32_t src_stride, int32_t dst_stride) {
+        #if (__CCE_AICORE__ == 220)
+        FixpipeParamsV220 FixpipeParams(
+            n_actual,           //        nSize = nSizeIn;
+            m_actual,           //        mSize = mSizeIn;
+            src_stride,         //        srcStride = srcStrideIn;
+            dst_stride,         //        dstStride = dstStrideIn;
+            false               //        reluEn = reluEnIn;
+        );
+        #elif (defined(__DAV_C310__))
+        FixpipeParamsC310 FixpipeParams(
+            n_actual,           //        nSize = nSizeIn;
+            m_actual,           //        mSize = mSizeIn;
+            src_stride,         //        srcStride = srcStrideIn;
+            dst_stride         //        dstStride = dstStrideIn;
+        );
+        #endif
+        LocalTensor<T_ACCUM> srcTensor = CreateLocalTensor<T_ACCUM>
+        (reinterpret_cast<uint64_t>(l0c_buf + offset_l0c), static_cast<uint8_t>(TPosition::CO1));
+        GlobalTensor<OutDtype> dstTensor = CreateGlobalTensor<OutDtype>(gm_dst + offset_c);
+
+        if (IS_INT8) {
+            if constexpr (std::is_same<OutDtype, half>::value) {
+                if (dequant_granularity == QuantGranularity::PER_CHANNEL || dequant_granularity == QuantGranularity::PER_TOKEN) {
+                    SetFpc(scale_FB);
+                    FixpipeParams.quantPre = VDEQF16;
+                    Fixpipe<OutDtype, T_ACCUM, CFG_ROW_MAJOR>(dstTensor, srcTensor, FixpipeParams);
+                    //SetFlag<HardEvent::FIX_MTE2>(EVENT_ID0);
+                } else if (dequant_granularity == QuantGranularity::PER_TENSOR) {
+                    FixpipeParams.quantPre = DEQF16;
+                    FixpipeParams.deqScalar = gm_dequant_scale[0];
+                    Fixpipe<OutDtype, T_ACCUM, CFG_ROW_MAJOR>(dstTensor, srcTensor, FixpipeParams);
+                }
+            } else if constexpr (std::is_same<OutDtype, bfloat16_t>::value) {
+                GlobalTensor<int32_t> dstAccum = CreateGlobalTensor<int32_t>(gm_accum + offset_c);
+                Fixpipe<int32_t, T_ACCUM, CFG_ROW_MAJOR>(dstAccum, srcTensor, FixpipeParams);
+            }
+        } else {
+            if constexpr (std::is_same<OutDtype, __bf16>::value) {
+                FixpipeParams.quantPre = F322BF16;
+                Fixpipe<OutDtype, T_ACCUM, CFG_ROW_MAJOR>(dstTensor, srcTensor, FixpipeParams);
+            } else {
+                FixpipeParams.quantPre = F322F16;
+                Fixpipe<OutDtype, T_ACCUM, CFG_ROW_MAJOR>(dstTensor, srcTensor, FixpipeParams);
+            }
+        }
+    }
+
+
+
+    inline __aicore__ void RunAllToAllAllGatherMatmul(){
+        InitFlags();
+        int32_t k_actual;
+        if (aligned_a){
+            k_actual = k_align;
+        } else {
+            k_actual = k;
+        }
+
+        int64_t gm_a_pingpong_size = m0 * k_align * p_value * rank_size;
+
+        int32_t comm_m = m0 * p_value;
+        int32_t comm_count;
+        if (is_moe_averaged) {
+            comm_count = DivCeil(m / EP , comm_m);
+        } else {
+            int32_t max_comm_count = 0;
+            int32_t max_input_per_ep = 0;
+            int32_t max_output_per_ep = 0;
+            for (int32_t ep_idx = 0; ep_idx < EP; ep_idx++) {
+                int32_t tmp_sum = 0;
+                for(int32_t i = 0; i < local_expert_nums; i++) {
+                    tmp_sum += global_tokens_per_expert_matrix[rank * expert_nums + ep_idx * local_expert_nums + i];
+                }
+                max_output_per_ep = max(max_output_per_ep, tmp_sum);
+                tmp_sum = 0;
+                for(int32_t i = 0; i < local_expert_nums; i++) {
+                    tmp_sum += global_tokens_per_expert_matrix[ep_idx * expert_nums + rank * local_expert_nums + i];
+                }
+                max_input_per_ep = max(max_input_per_ep, tmp_sum);
+                max_comm_count = max(max_comm_count, max(max_output_per_ep,max_input_per_ep));
+            }
+            comm_count = DivCeil(max_comm_count, comm_m);
+        }
+        int32_t in_expert_offset[16 * 16] = {0};//[i][j]代表第i个expert的第j个rank的offset
+        int32_t data_len_in_expert_from_rank[16] = {0};//当前expert从rank[i]收到的token数。
+        int32_t before_expert_offset_dst[16] = {0};
+        int32_t before_rank_offset[16 * 16] = {0};
+
+        for (int32_t local_expert_idx = 0; local_expert_idx < local_expert_nums; local_expert_idx ++) {
+            int32_t expert_idx = rank * local_expert_nums + local_expert_idx;
+            if (is_moe_averaged) {
+                before_expert_offset_dst[local_expert_idx] = local_expert_idx * (m / local_expert_nums);
+            } else {
+                for(int32_t i = 0; i < local_expert_idx; i++) {
+                    for(int32_t j = 0; j < rank_size; j++) {
+                        before_expert_offset_dst[local_expert_idx] += global_tokens_per_expert_matrix[j * expert_nums + i + rank * local_expert_nums];
+                    }
+                }
+            }
+
+            for (int i = 0; i < rank_size - 1; i ++) {
+                int32_t tmp_len;
+                if (is_moe_averaged) {
+                    tmp_len = m / local_expert_nums / rank_size;
+                } else {
+                    tmp_len = global_tokens_per_expert_matrix[i * expert_nums + expert_idx];
+                }
+                before_rank_offset[local_expert_idx * rank_size + i + 1] = before_rank_offset[local_expert_idx * rank_size + i] + tmp_len;
+            }
+        }
+        int32_t out_this_rank[16] = {0};
+        for(int32_t i = 0; i < rank_size; i++) {
+            for (int32_t j = 0; j < local_expert_nums; j++ ) {
+                if (is_moe_averaged) {
+                    out_this_rank[i] = m / EP;
+                } else {
+                    out_this_rank[i] += global_tokens_per_expert_matrix[i * expert_nums + j + rank * local_expert_nums];
+                }
+            }
+        }
+
+        
+
+
+        int32_t sum_loop = 0;
+        for(int32_t comm_idx = 0; comm_idx < comm_count; comm_idx++){
+            uint64_t flag_id = comm_idx % MAX_BLOCK_COUNT;
+            WaitEvent(flag_id);
+            
+            for (int32_t local_expert_idx = 0; local_expert_idx < local_expert_nums; local_expert_idx ++) {
+                int32_t expert_idx = rank * local_expert_nums + local_expert_idx;
+                int32_t expert_num_this_com = 0; //本次通信该expert收到的token数。
+                int32_t before_expert_offset_src = 0; //本次通信该expert在共享内存中的地址的offset。
+                for(int32_t i = 0; i < rank_size; i++) {
+                    int32_t data_len;
+                    if ((comm_idx + 1) * comm_m >= out_this_rank[i]) {
+                        data_len = out_this_rank[i] - comm_idx * comm_m;
+                    } else {
+                        data_len = comm_m;
+                    }
+
+                    //expert token数的前缀和
+                    int32_t sum = 0;
+                    for(int32_t j = 0; j <= local_expert_idx; j++) {
+                        int32_t tmp_expert_id = rank * local_expert_nums + j;
+                        int32_t expert_token_num;
+                        if (is_moe_averaged) {
+                            expert_token_num = (m / expert_nums);
+                        } else {
+                            expert_token_num = global_tokens_per_expert_matrix[i * expert_nums + tmp_expert_id];
+                        }
+
+                        if (comm_idx * comm_m < sum + expert_token_num && comm_idx * comm_m + data_len > sum) {
+                            int32_t tmp_len = min(comm_idx * comm_m + data_len, sum + expert_token_num) - 
+                                            max(comm_idx * comm_m, sum);
+                            if (j < local_expert_idx) {
+                                before_expert_offset_src += tmp_len;
+                            } else {
+                                expert_num_this_com += tmp_len;
+                                data_len_in_expert_from_rank[i] = tmp_len;
+                            }
+                        } else {
+                            if (j == local_expert_idx) {
+                                data_len_in_expert_from_rank[i] = 0;
+                            }
+                        }
+                        sum += expert_token_num;
+                    }
+                }
+
+                int32_t m_loop_in_expert = DivCeil(expert_num_this_com, m0);
+                int32_t loop_in_expert = m_loop_in_expert * n_loop;
+                for(int32_t loop_idx = 0; loop_idx < loop_in_expert; loop_idx ++) {
+                    if ((loop_idx + sum_loop) % core_num != core_idx) {
+                        continue;
+                    }
+                    int64_t m_idx, n_idx;
+                    GetBlockIdx(loop_idx, m_loop_in_expert, n_loop, swizzl_direct, swizzl_count, m_idx, n_idx);
+                    int32_t m_actual = (m_idx == m_loop_in_expert - 1) ? expert_num_this_com - m_idx * m0 : m0;
+                    int32_t n_actual = (n_idx == n_loop - 1) ? n - n_idx * n0 : n0;
+                    __gm__ MmadDtype *gm_peer_mem_st = reinterpret_cast<__gm__ MmadDtype *>(gm_peer_mem)
+                                    + flag_id * gm_a_pingpong_size
+                                    + before_expert_offset_src * k_align;
+
+                    __gm__ MmadDtype *gm_b_src_tmp = gm_b_src + 1LL * local_expert_idx * k * n_align;
+                    if(TB){
+                        gm_b_src_tmp = gm_b_src + 1LL * local_expert_idx * k_align * n;
+                    }
+                    if (weight_nz) {
+                        gm_b_src_tmp = gm_b_src + 1LL * local_expert_idx * k_align16 * n_align16;
+                    }
+                    CalLoop(0, m_idx, n_idx, m_actual, n_actual, gm_peer_mem_st, gm_b_src_tmp, k, k, n * local_expert_idx);
+                    SetFlag<HardEvent::M_FIX>(EVENT_ID0);
+                    WaitFlag<HardEvent::M_FIX>(EVENT_ID0);
+
+                    int64_t rank_offset = 0;
+                    int32_t l0c_offset = 0;
+                    for (int32_t src_rank_id = 0; src_rank_id < rank_size; src_rank_id ++) {
+                        if (rank_offset + data_len_in_expert_from_rank[src_rank_id] > m_idx * m0 && 
+                            rank_offset < m_idx * m0 + m_actual) {
+                            int32_t rank_m_actual = min(m_idx * m0 + m_actual, rank_offset + data_len_in_expert_from_rank[src_rank_id]) - 
+                                max(rank_offset, m_idx * m0);
+                            int32_t dst_stride = n;
+                            int32_t tmp_in_rank_offset = 0;
+                            if (m_idx * m0 > rank_offset) {
+                                tmp_in_rank_offset = m_idx * m0 - rank_offset;
+                            }
+                            int64_t offset_c = before_expert_offset_dst[local_expert_idx] * n + before_rank_offset[local_expert_idx * rank_size + src_rank_id] * n + 
+                                in_expert_offset[local_expert_idx * rank_size + src_rank_id] * n + 
+                                tmp_in_rank_offset * n + 
+                                n_idx * n0;
+                            int32_t src_stride = (m_actual + 15) / 16 * 16;    
+                            int32_t real_rank_m_actual = rank_m_actual;
+                            int64_t m_offset_c = before_expert_offset_dst[local_expert_idx] + before_rank_offset[local_expert_idx * rank_size + src_rank_id] + 
+                                in_expert_offset[local_expert_idx * rank_size + src_rank_id]  + tmp_in_rank_offset;
+                            if (maxOutputSize > 0) {
+                                if (maxOutputSize <= m_offset_c) {
+                                    real_rank_m_actual = 0;
+                                } else if (m_offset_c + real_rank_m_actual > maxOutputSize) {
+                                    real_rank_m_actual = maxOutputSize - m_offset_c;
+                                }
+                            }
+                            if (real_rank_m_actual > 0) {
+                                MoveL0CToGM(gm_c, offset_c, l0c_offset, real_rank_m_actual, n_actual, src_stride, dst_stride);
+                            }
+                            l0c_offset += rank_m_actual * 16;
+                        }
+                        rank_offset += data_len_in_expert_from_rank[src_rank_id];
+                    }
+
+                    if (IS_INT8) {
+                        if constexpr (std::is_same<OutDtype, half>::value) {
+                            if (dequant_granularity == QuantGranularity::PER_CHANNEL || dequant_granularity == QuantGranularity::PER_TOKEN) {
+                                SetFlag<HardEvent::FIX_MTE2>(EVENT_ID0);
+                            }
+                        }
+                    }
+                    SetFlag<HardEvent::FIX_M>(EVENT_ID0);
+                    if (IS_INT8 && has_offset) {
+                        SetFlag<HardEvent::FIX_MTE1>(EVENT_ID1);
+                    }
+                }
+
+                for (int32_t i = 0; i < rank_size; i ++) {
+                    in_expert_offset[local_expert_idx * rank_size + i] += data_len_in_expert_from_rank[i];
+                }
+                sum_loop += loop_in_expert;
+            }
+            FFTSCrossCoreSync<PIPE_FIX>(2, flag_id);
+        }
+        Endflags();
+        PipeBarrier<PIPE_ALL>();
+    }
+
+
+    inline __aicore__ void RunAllToAllAllGatherMatmulHidden(){
+        InitFlags();
+        int32_t max_m;
+        int32_t sum_m[16] = {0};
+        int32_t sum_m_loop = 0;
+        if(is_moe_averaged) {
+            sum_m_loop = DivCeil((m / expert_nums) * EP, m0) * local_expert_nums;
+            max_m = m;
+        } else {
+            if (maxOutputSize == -1) {
+                max_m = 0;
+                for(int32_t ep_idx = 0; ep_idx < EP; ep_idx ++) {
+                    int32_t sum_m_ep = 0;
+                    for(int32_t local_expert_id = 0; local_expert_id < local_expert_nums; local_expert_id ++) {
+                        int32_t expert_id = local_expert_id + ep_idx * local_expert_nums;
+                        for(int32_t i = 0; i < EP; i++) {
+                            sum_m_ep += global_tokens_per_expert_matrix[i * expert_nums + expert_id];
+                        }
+                    }
+                    max_m = max(max_m, sum_m_ep);
+                }
+            } else {
+                max_m = maxOutputSize;
+            }
+            for(int32_t i = 0; i < local_expert_nums; i++){
+                int32_t last_sum_m = (i == 0 ? 0 : sum_m[i - 1]);
+                for(int j = 0; j < EP; j++) {
+                    sum_m[i] += global_tokens_per_expert_matrix[j * expert_nums + rank * local_expert_nums + i];
+                                //global_tokens_per_expert_matrix[j][rank * local_expert_nums + i]
+                }
+                if (maxOutputSize > 0 && sum_m[i] + last_sum_m > maxOutputSize) {
+                    sum_m[i] = maxOutputSize - last_sum_m;
+                }
+                sum_m_loop += DivCeil(sum_m[i], m0);
+                sum_m[i] += (i == 0 ? 0 : sum_m[i - 1]);
+            }
+        }
+
+        int32_t comm_k = k0 * p_value;
+        int64_t gm_a_pingpong_size = comm_k * max_m;
+        int64_t gm_a_pingpong_num = buffer_size * 1024 * 1024 / sizeof(MmadDtype) / gm_a_pingpong_size;
+        if (gm_a_pingpong_num > 8) {
+            gm_a_pingpong_num = 8;
+        }
+        int32_t comm_count = DivCeil(k, comm_k);
+        int32_t sum_loop_num = sum_m_loop * n_loop;
+        int32_t sum_loop = 0;
+        //SetAtomicAdd<OutDtype>();
+        for(int32_t comm_idx = 0; comm_idx < comm_count; comm_idx++){
+            if (comm_idx == 1) {
+                PipeBarrier<PIPE_ALL>();
+                SetAtomicAdd<OutDtype>();
+                PipeBarrier<PIPE_ALL>();
+            }
+            int32_t k_len;
+            if(comm_idx == comm_count - 1) {
+                k_len = k - comm_idx * comm_k;
+            } else {
+                k_len = comm_k;
+            }
+            if (comm_idx == 1) {
+                PipeBarrier<PIPE_ALL>();
+                SetAtomicAdd<OutDtype>();
+                PipeBarrier<PIPE_ALL>();
+                FFTSCrossCoreSync<PIPE_FIX>(0, AIC_FINISH_MATMUL_FLAG_ID);
+                WaitEvent(AIC_FINISH_MATMUL_FLAG_ID);
+            }
+
+            uint64_t flag_id = comm_idx % gm_a_pingpong_num;
+            WaitEvent(flag_id);
+            for(int32_t loop_idx = 0; loop_idx < sum_loop_num; loop_idx ++) {
+                if((loop_idx + sum_loop) % core_num != core_idx) {
+                    continue;
+                }
+                int64_t m_idx, n_idx;
+                GetBlockIdx(loop_idx, sum_m_loop, n_loop, swizzl_direct, swizzl_count, m_idx, n_idx);
+                /*
+                    1.先判断m_idx和n_idx属于哪个expert。
+                    2.再计算在该expert内的坐标。
+                */
+                int32_t sum_loop_before = 0;
+                int32_t local_expert_idx = -1;
+                int32_t m_in_expert;
+                for(int32_t i = 0; i < local_expert_nums; i++) {
+                    if(is_moe_averaged) {
+                        m_in_expert = m / local_expert_nums;
+                    } else {
+                        m_in_expert = sum_m[i] - (i == 0 ? 0 : sum_m[i - 1]);
+                    }
+                    sum_loop_before += DivCeil(m_in_expert, m0);
+                    if(sum_loop_before > m_idx) {
+                        local_expert_idx = i;
+                        break;
+                    }
+                }
+                int32_t m_loop_in_expert = DivCeil(m_in_expert, m0);
+                sum_loop_before -= m_loop_in_expert;
+                int32_t m_idx_in_expert = m_idx - sum_loop_before;
+                int32_t m_actual = (m_idx_in_expert == m_loop_in_expert - 1 ? m_in_expert - m_idx_in_expert * m0 : m0);
+                int32_t n_actual = (n_idx == n_loop - 1) ? n - n_idx * n0 : n0;
+                int32_t sum_m_before;
+                if(is_moe_averaged) {
+                    sum_m_before = local_expert_idx * (m / local_expert_nums);
+                } else {
+                    sum_m_before = sum_m[local_expert_idx] - m_in_expert;
+                }
+
+                __gm__ MmadDtype *gm_peer_mem_st = reinterpret_cast<__gm__ MmadDtype *>(gm_peer_mem)
+                                + 1LL * flag_id * gm_a_pingpong_size
+                                + 1LL * sum_m_before * k_len; 
+                __gm__ MmadDtype *gm_b_src_tmp = gm_b_src + 1LL * local_expert_idx * k * n_align + 1LL * comm_idx * comm_k * n_align;
+                //__gm__ MmadDtype *gm_b_src_tmp = gm_b_src;
+                if(TB){
+                    gm_b_src_tmp = gm_b_src + 1LL * local_expert_idx * k_align * n + 1LL * comm_idx * comm_k;
+                }
+                if (weight_nz) {
+                    gm_b_src_tmp = gm_b_src + 1LL * local_expert_idx * k_align16 * n_align16 + 1LL * comm_idx * comm_k * block_size;
+                    //gm_b_src_tmp = gm_b_src;
+                }
+                //CalLoop(0, m_idx_in_expert, n_idx, m_actual, n_actual, gm_peer_mem_st, gm_b_src_tmp);
+                CalLoop(0, m_idx_in_expert, n_idx, m_actual, n_actual, gm_peer_mem_st, gm_b_src_tmp, k_len, k_align, n * local_expert_idx);
+                //CalLoop(local_expert_idx, m_idx_in_expert, n_idx, m_actual, n_actual, gm_peer_mem_st, gm_b_src_tmp, k_len, k);
+                SetFlag<HardEvent::M_FIX>(EVENT_ID0);
+                WaitFlag<HardEvent::M_FIX>(EVENT_ID0);
+                int64_t offset_c = 1LL * sum_m_before * n + 1LL * m_idx_in_expert * m0 * n + 1LL * n_idx * n0;
+                MoveL0CToGM(gm_c, offset_c, m_actual, n_actual, (m_actual + 15) / 16 * 16, n);
+            }
+            sum_loop += sum_loop_num;
+            has_offset = 0;
+            FFTSCrossCoreSync<PIPE_FIX>(2, flag_id);
+        }
+        PipeBarrier<PIPE_ALL>();
+        SetAtomicNone();
+        PipeBarrier<PIPE_ALL>();
+        
+        Endflags();
+        PipeBarrier<PIPE_ALL>();
+    }
+
+
+    inline __aicore__ void RunMatmulReduceScatterAllToAllHidden(){
+        InitFlags();
+        int32_t comm_n = p_value * n0;
+        int32_t cal_count = DivCeil(n, comm_n);
+        int32_t max_m;
+        int32_t sum_m[16] = {0};
+        int32_t sum_m_loop = 0;
+        if(is_moe_averaged) {
+            sum_m_loop = DivCeil((m / expert_nums) * EP, m0) * local_expert_nums;
+            max_m = m;
+        } else {
+            if (maxOutputSize == -1) {
+                max_m = 0;
+                for(int32_t ep_idx = 0; ep_idx < EP; ep_idx ++) {
+                    int32_t sum_m_ep = 0;
+                    for(int32_t local_expert_id = 0; local_expert_id < local_expert_nums; local_expert_id ++) {
+                        int32_t expert_id = local_expert_id + ep_idx * local_expert_nums;
+                        for(int32_t i = 0; i < EP; i++) {
+                            sum_m_ep += global_tokens_per_expert_matrix[i * expert_nums + expert_id];
+                        }
+                    }
+                    max_m = max(max_m, sum_m_ep);
+                }
+            } else {
+                max_m = maxOutputSize;
+            }
+            for(int32_t i = 0; i < local_expert_nums; i++){
+                int32_t last_sum_m = (i == 0 ? 0 : sum_m[i - 1]);
+                for(int j = 0; j < EP; j++) {
+                    sum_m[i] += global_tokens_per_expert_matrix[j * expert_nums + rank * local_expert_nums + i];
+                                //global_tokens_per_expert_matrix[j][rank * local_expert_nums + i]
+                }
+                if (maxOutputSize > 0 && sum_m[i] + last_sum_m > maxOutputSize) {
+                    sum_m[i] = maxOutputSize - last_sum_m;
+                }
+                sum_m_loop += DivCeil(sum_m[i], m0);
+                sum_m[i] += (i == 0 ? 0 : sum_m[i - 1]);
+            }
+        }
+
+        int64_t gm_a_pingpong_size = comm_n * max_m;
+        int64_t gm_a_pingpong_num = buffer_size * 1024 * 1024 / 2 / gm_a_pingpong_size;
+        if (gm_a_pingpong_num > 8) {
+            gm_a_pingpong_num = 8;
+        }
+        int32_t sum_loop = 0;
+        for (int32_t cal_idx = 0; cal_idx < cal_count; cal_idx++) {
+            int32_t n_len;
+            if(cal_idx == cal_count - 1) {
+                n_len = n - cal_idx * comm_n;
+            } else {
+                n_len = comm_n;
+            }
+            n_loop = DivCeil(n_len,n0);
+            int32_t sum_loop_num = sum_m_loop * n_loop;
+            int32_t flag_id = cal_idx % gm_a_pingpong_num;
+            WaitEvent(flag_id);
+            for(int32_t loop_idx = 0; loop_idx < sum_loop_num; loop_idx ++) {
+                if((loop_idx + sum_loop) % core_num != core_idx) {
+                    continue;
+                }
+                int64_t m_idx, n_idx;
+                GetBlockIdx(loop_idx, sum_m_loop, n_loop, swizzl_direct, swizzl_count, m_idx, n_idx);
+                int32_t sum_loop_before = 0;
+                int32_t local_expert_idx = -1;
+                int32_t m_in_expert;
+                for(int32_t i = 0; i < local_expert_nums; i++) {
+                    if(is_moe_averaged) {
+                        m_in_expert = m / local_expert_nums;
+                    } else {
+                        m_in_expert = sum_m[i] - (i == 0 ? 0 : sum_m[i - 1]);
+                    }
+                    sum_loop_before += DivCeil(m_in_expert, m0);
+                    if(sum_loop_before > m_idx) {
+                        local_expert_idx = i;
+                        break;
+                    }
+                }
+                int32_t m_loop_in_expert = DivCeil(m_in_expert, m0);
+                sum_loop_before -= m_loop_in_expert;
+                int32_t m_idx_in_expert = m_idx - sum_loop_before;
+                int32_t m_actual = ((m_idx_in_expert == m_loop_in_expert - 1) ? (m_in_expert - m_idx_in_expert * m0) : m0);
+                int32_t n_actual = ((n_idx == n_loop - 1) ? (n_len - n_idx * n0) : n0);
+
+                int32_t sum_m_before = 0;
+                if(is_moe_averaged) {
+                    sum_m_before = local_expert_idx * (m / local_expert_nums);
+                } else {
+                    sum_m_before = sum_m[local_expert_idx] - m_in_expert;
+                }
+                __gm__ MmadDtype *gm_a_src_inner = gm_a_src + 1LL * sum_m_before * k_align;
+                __gm__ MmadDtype *gm_b_src_tmp = gm_b_src + 1LL * local_expert_idx * k * n_align;
+               // __gm__ MmadDtype *gm_b_src_tmp = gm_b_src;
+                if(TB){
+                    gm_b_src_tmp = gm_b_src + 1LL * local_expert_idx * k_align * n;
+                }
+                if (weight_nz) {
+                    gm_b_src_tmp = gm_b_src + 1LL * local_expert_idx * k_align16 * n_align16;
+                    //gm_b_src_tmp = gm_b_src;
+                }
+
+                int32_t real_n_idx = n_idx + cal_idx * comm_n / n0;
+                CalLoop(0, m_idx_in_expert, real_n_idx, m_actual, n_actual, gm_a_src_inner, gm_b_src_tmp, k, k, n * local_expert_idx);  
+                //CalLoop(0, m_idx_in_expert, real_n_idx, m_actual, n_actual, gm_a_src_inner);
+                SetFlag<HardEvent::M_FIX>(EVENT_ID0);
+                WaitFlag<HardEvent::M_FIX>(EVENT_ID0);
+
+                int32_t dst_stride = n_len;
+                __gm__ OutDtype *gm_out = reinterpret_cast<__gm__ OutDtype *>(gm_peer_mem);
+                int32_t offset_c = flag_id * gm_a_pingpong_size + 1LL * (sum_m_before + m_idx_in_expert * m0) * n_len + 1LL * n_idx * n0;
+                MoveL0CToGM(gm_out, offset_c, m_actual, n_actual, (m_actual + 15) / 16 * 16, dst_stride);
+            }
+            sum_loop += sum_loop_num;
+            FFTSCrossCoreSync<PIPE_FIX>(2, flag_id);
+        }
+        Endflags();
+        PipeBarrier<PIPE_ALL>();
+    }
+
+    inline __aicore__ void Run() {
+
+        if(RUN_TYPE == PPMATMUL_RUN_ALL_TO_ALL_ALL_GATHER_MATMUL_HIDDEN) {
+            RunAllToAllAllGatherMatmulHidden();
+        } else if(RUN_TYPE == PPMATMUL_RUN_MATMUL_REDUCE_SCATTER_ALL_TO_ALL_HIDDEN){
+            RunMatmulReduceScatterAllToAllHidden();
+        } else if (RUN_TYPE == PPMATMUL_RUN_ALL_TO_ALL_ALL_GATHER_MATMUL) {
+            RunAllToAllAllGatherMatmul();
+        }
+    }
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::gm_a_src;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::gm_b_src;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::gm_c;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::gm_peer_mem;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::gm_dequant_scale;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::gm_format_dequant_offset;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::gm_accum;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::l1_base_a;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::l1_base_b;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::l0a_base;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::l0b_base;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::l0c_buf;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::scale_l1;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::scale_FB;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::bias_l1;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::bias_bt;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::has_offset;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::core_num;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::batch_size;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::m;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::k;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::n;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::m_align;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::k_align;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::n_align;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::k_align16;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::n_align16;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::m0;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::k0;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::n0;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::m_loop;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::n_loop;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::k_loop;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::core_loop;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::core_idx;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::ping_flag;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::block_size;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::cube_matrix_size;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::aligned_a;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::aligned_b;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::swizzl_count;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::swizzl_direct;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::L1_PINGPONG_BUFFER_LEN;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::L0AB_PINGPONG_BUFFER_LEN;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::rank;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::rank_size;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::p_value;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::loop_num_per_comm;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::InitFlags;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::Endflags;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::MoveL0CToGM;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::dequant_granularity;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::workspace_info;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::withSerialMode;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::weight_nz;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::CalLoop;
+    using PpMatmul<RUN_TYPE, MmadDtype, OutDtype, TA, TB>::buffer_size;
+    
+private:
+    int32_t EP;
+    int32_t TP;
+    int32_t maxOutputSize;
+    __gm__ int32_t *num_local_tokens_per_expert;
+    __gm__ int32_t *num_global_tokens_per_local_expert;
+    __gm__ int32_t * global_tokens_per_expert_matrix;
+
+    __gm__ int32_t* gm_out_loop_per_expert;
+    __gm__ int32_t* gm_in_loop_per_expert;
+    __gm__ int32_t* gm_out_loop_per_EP;
+    __gm__ int32_t* gm_in_loop_per_EP;
+    __gm__ int32_t* gm_sum_num_local_tokens_per_expert;
+    __gm__ int32_t* gm_sum_num_global_tokens_per_local_expert;
+    __gm__ int32_t* gm_num_local_tokens_per_expert;
+    __gm__ int32_t* gm_num_global_tokens_per_local_expert;
+    __gm__ int32_t *gm_in_expert_comm_count_accum;
+    __gm__ int32_t *gm_out_expert_comm_count_accum;
+
+    int32_t expert_nums;
+    int32_t local_expert_nums;
+    int32_t is_moe_averaged;
+    int32_t is_alltoallvc;
+};
+#endif

@@ -1,0 +1,59 @@
+add_mlir_tensorrt_library(MLIRTensorRTPlanTransforms
+  AllocTensors.cpp
+  AssignMemorySpaces.cpp
+  Bufferize.cpp
+  Clustering.cpp
+  ConfirmArgumentDonation.cpp
+  CreateClosedRegions.cpp
+  CreateShapeFuncs.cpp
+  EliminateShapeOps.cpp
+  MaterializeExplicitTransfers.cpp
+  MaterializeShapeCalculations.cpp
+  MaterializeShapeCalculationsStablehlo.cpp
+  ModuleBufferization/BufferResultsToOutParams.cpp
+  ModuleBufferization/ModuleBufferization.cpp
+  ModuleBufferization/ModuleBufferizationAnalysis.cpp
+  ModuleBufferization/ModuleBufferizationUtils.cpp
+  ModuleBufferization/RemoveEquivalentBufferResults.cpp
+  OptimizeMemorySpaces.cpp
+  OutlineClusters.cpp
+  OutlineConstantFoldableSubgraphs.cpp
+  Passes.cpp
+  PopulateFunctionBoundsAttributes.cpp
+  PostClusteringValidation.cpp
+  PromoteHostTensorsToHostPinned.cpp
+  RefineTypes.cpp
+
+  DEPENDS
+  MLIRTensorRTPlanTransformsPassIncGen
+
+  LINK_LIBS PUBLIC
+
+  MLIRBufferizationDialect
+  MLIRBufferizationPipelines
+  MLIRBufferizationToMemRef
+  MLIRBufferizationTransforms
+  MLIRExecutorGenericClustering
+  MLIRFuncTransforms
+  MLIRIR
+  MLIRLinalgDialect
+  MLIRPass
+  MLIRSCFDialect
+  MLIRTensorDialect
+  MLIRTensorRTAnalysis
+  MLIRTensorRTBufferizationScopeInterface
+  MLIRTensorRTCUDADialect
+  MLIRTensorRTTensorRTDialect
+  MLIRTensorRTDuplicateFunctionElimination
+  MLIRTensorRTExecutorDialect
+  MLIRTensorRTLowerLinalgCopies
+  MLIRTensorRTMemRefCastElimination
+  MLIRTensorRTPlanAnalysis
+  MLIRTensorRTPlanDialect
+  MLIRTensorRTRegionUtils
+  MLIRTensorRTStableHloExtTransforms
+  MLIRTensorRTStablehloToTensorRT
+  MLIRTensorRTTensorRTRuntimeDialect
+  MLIRTransforms
+  StablehloOps
+)

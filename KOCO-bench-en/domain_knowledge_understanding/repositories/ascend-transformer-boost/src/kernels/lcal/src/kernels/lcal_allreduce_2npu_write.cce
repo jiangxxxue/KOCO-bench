@@ -1,0 +1,61 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include "collectives.cce"
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void LcalAllReduce2npuWrite(ALLREDUCE_ARGS_FUN_16P(T))
+{
+    DumpLcclLogInfo(dumpAddr, LogId::OVERALL, static_cast<Op>(op));
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, static_cast<Op>(op));
+    const int64_t dataOffsetNum = GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM;
+    __gm__ T* buff[8] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7
+    };
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t*)(0);
+    __ubuf__ T* inputUB[2] = {(__ubuf__ T*)(32), (__ubuf__ T*)(97312)};
+
+    const int64_t corePerRank = GetLcalBlockNum() / rankSize;
+    const int64_t coreSegmentedIdx = GetBlockIdx() % corePerRank;
+    const int64_t flagOffset1st = MEM_DMA_UNIT_INT_NUM * coreSegmentedIdx;
+    const int64_t flagOffset2nd = MEM_DMA_UNIT_INT_NUM * (GetLcalBlockNum() + coreSegmentedIdx);
+    const int64_t x = GetBlockIdx() / corePerRank;
+
+    const int64_t dataBlockAllNum = len * sizeof(T) / MEM_DMA_UNIT_BYTE;
+    const int64_t singleCoreDataBlockNum = dataBlockAllNum / corePerRank;
+    const int64_t singleCoreDataNum = singleCoreDataBlockNum * MEM_DMA_UNIT_BYTE / sizeof(T);
+    const int64_t buffOffsetNum = coreSegmentedIdx * singleCoreDataNum;
+
+    int64_t dataSizeRemain = singleCoreDataNum * sizeof(T);
+    if (coreSegmentedIdx == corePerRank - 1) {
+        dataSizeRemain = (len - singleCoreDataNum * coreSegmentedIdx) * sizeof(T);
+    }
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, static_cast<Op>(op));
+
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+    if (x != rank) {
+        __gm__ T *receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[x] + dataOffsetNum);
+        GM2GM(dataSizeRemain, inputUB[0], receiveBuff, buffOffsetNum, input, buffOffsetNum);
+        SetFlag(ctrlFlagsUB, (__gm__ int64_t*)buff[x] + flagOffset1st, magic);
+        SetFlag(ctrlFlagsUB, (__gm__ int64_t*)buff[rank] + flagOffset2nd, magic);
+        DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+        DumpLcclLogInfo(dumpAddr, LogId::OVERALL, static_cast<Op>(op));
+        return;
+    } else {
+        GM2GM(dataSizeRemain, inputUB[0], output, buffOffsetNum, input, buffOffsetNum);
+    }
+
+    CheckFlag(ctrlFlagsUB, (((__gm__ int64_t*)buff[rank]) + flagOffset1st), magic);
+    CheckFlag(ctrlFlagsUB, (((__gm__ int64_t*)buff[rank]) + flagOffset2nd), magic);
+
+    ProcessData<T>(dataSizeRemain, inputUB[0], buff[rank], dataOffsetNum, buffOffsetNum, output, buffOffsetNum, op);
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+    DumpLcclLogInfo(dumpAddr, LogId::OVERALL, static_cast<Op>(op));
+}

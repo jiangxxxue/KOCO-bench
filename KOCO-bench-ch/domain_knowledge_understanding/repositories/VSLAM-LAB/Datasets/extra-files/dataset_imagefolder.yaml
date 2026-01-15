@@ -1,0 +1,8 @@
+dataset_name: imagefolder
+
+resolution_scale: 0.1
+rgb_hz: 10.0
+dataset_folder_raw: "/path/to/image/folder"
+
+sequence_names:
+  - subfolder_1

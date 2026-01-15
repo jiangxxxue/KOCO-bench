@@ -1,0 +1,256 @@
+# Vslam-Lab Multiple Choice Problems
+
+## VSLAM-LAB - Problem 1 (Single Choice)
+When the EUROC dataset implementation performs stereo rectification in create_calibration_yaml(), why does it physically overwrite the original RGB images with rectified versions rather than storing rectified images separately?
+
+- (A) To reduce storage requirements by avoiding duplicate image storage, assuming baselines expect pre-rectified stereo pairs for epipolar geometry constraints
+- (B) To improve processing speed by eliminating runtime rectification overhead in baseline systems
+- (C) Because the original distorted images are no longer needed after calibration parameters are extracted
+- (D) To maintain compatibility with the TUM RGB-D dataset format which requires rectified images
+
+**Correct Answer: A**
+
+**Explanation:** (A) is correct. This design choice reflects a fundamental trade-off in stereo vision systems: pre-rectification simplifies baseline implementations by ensuring epipolar lines are horizontal, enabling efficient stereo matching. The code in dataset_euroc.py uses cv2.stereoRectify() to compute rectification transforms, then cv2.remap() to transform images, overwriting originals. This assumes baselines expect rectified input (common in SLAM systems like ORB-SLAM2/3). The interaction between Datasets/dataset_euroc.py (rectification) and Baselines/BaselineVSLAMLab.py (execution) shows this preprocessing contract. (B) is partially true but misses the epipolar geometry motivation. (C) is incorrect—originals could be valuable for research. (D) is incorrect—TUM and EUROC are different datasets with different conventions.
+
+---
+
+## VSLAM-LAB - Problem 2 (Multiple Choice)
+The framework supports multiple sensor fusion modalities (mono, rgbd, stereo, mono-vi, stereo-vi). Which architectural design patterns enable this multi-modal support across the baseline and dataset abstractions?
+
+- (A) The 'modes' attribute in both BaselineVSLAMLab and DatasetVSLAMLab classes defines supported modalities, enabling runtime validation of baseline-dataset compatibility
+- (B) Separate execute command builders (execute-mono, execute-rgbd, execute-stereo, execute-mono_vi) in pixi.toml allow modality-specific execution paths
+- (C) The calibration YAML schema flexibly includes Camera0, Camera1, IMU, Depth0, and Stereo sections based on modality requirements
+- (D) A unified trajectory format (ts, tx, ty, tz, qx, qy, qz, qw) abstracts away sensor differences at the evaluation stage
+- (E) Dynamic polymorphism through virtual functions in C++ baseline implementations
+- (F) The DatasetVSLAMLab.write_calibration_yaml() method accepts optional camera1, imu, rgbd, stereo parameters to compose modality-specific calibrations
+
+**Correct Answer: A, B, C, D, F**
+
+**Explanation:** (A), (B), (C), (D), and (F) are correct. This multi-modal architecture spans multiple files: (A) BaselineVSLAMLab.py and DatasetVSLAMLab.py define self.modes for validation; (B) pixi.toml defines modality-specific tasks; (C) dataset_calibration.py provides _get_camera_yaml_section(), _get_imu_yaml_section(), etc.; (D) metrics.py and evo_functions.py use a unified pose representation; (F) DatasetVSLAMLab.write_calibration_yaml() composes calibrations. This design enables sensor fusion research by decoupling sensor configuration from algorithm implementation. (E) is incorrect—Python baselines use duck typing, not C++ virtual functions.
+
+---
+
+## VSLAM-LAB - Problem 3 (Multiple Choice)
+The framework implements resource monitoring that tracks RAM, SWAP, and GPU memory increments during baseline execution. What computer vision and SLAM-specific challenges motivate this multi-tier memory monitoring approach?
+
+- (A) Deep learning-based SLAM systems (DROID-SLAM, DPVO) load large neural network weights into GPU memory, requiring GPU-specific monitoring
+- (B) Dense reconstruction methods accumulate point clouds or voxel grids in RAM, causing memory growth proportional to scene size
+- (C) Loop closure detection maintains a database of keyframe descriptors that grows with trajectory length
+- (D) Real-time constraints require monitoring to ensure frame processing stays within time budgets
+- (E) Bundle adjustment optimization creates large sparse matrices that can exceed available RAM
+- (F) Multi-threaded tracking and mapping threads compete for memory bandwidth
+
+**Correct Answer: A, B, C, E**
+
+**Explanation:** (A), (B), (C), and (E) are correct. The monitor_memory() method in BaselineVSLAMLab.py tracks ram_inc, swap_inc, and gpu_inc because: (A) baselines like droidslam, dpvo, mast3rslam use PyTorch models (pixi.toml shows pytorch-gpu dependencies); (B) systems like MonoGS perform Gaussian splatting reconstruction; (C) ORB-SLAM2/3 maintain DBoW2 databases; (E) systems like COLMAP/GLOMAP perform large-scale bundle adjustment. The code kills processes exceeding thresholds to prevent system crashes. Files: Baselines/BaselineVSLAMLab.py (monitoring), Baselines/baseline_droidslam.py, Baselines/baseline_monogs.py. (D) is incorrect—time budgets are handled by timeout_seconds, not memory monitoring. (F) is incorrect—memory bandwidth isn't monitored, only capacity.
+
+---
+
+## VSLAM-LAB - Problem 4 (Multiple Choice)
+The calibration YAML format includes both intrinsic parameters (fx, fy, cx, cy) and distortion coefficients (k1, k2, p1, p2, k3). How do these parameters interact with different stages of the visual SLAM pipeline?
+
+- (A) Intrinsics are used in the projection function to map 3D points to 2D image coordinates during feature tracking
+- (B) Distortion coefficients are applied during image rectification preprocessing to create undistorted images for feature detection
+- (C) The principal point (cx, cy) defines the image center for radial distortion correction
+- (D) Focal lengths (fx, fy) determine the field of view and are used in depth estimation for monocular systems
+- (E) Distortion parameters are used in bundle adjustment to refine camera poses and 3D structure jointly
+- (F) The k3 coefficient handles fisheye distortion for wide-angle cameras
+
+**Correct Answer: A, B, C, E**
+
+**Explanation:** (A), (B), (C), and (E) are correct. The calibration parameters serve multiple purposes: (A) The camera matrix K = [[fx, 0, cx], [0, fy, cy], [0, 0, 1]] projects 3D points in tracking (used by all baselines); (B) dataset_euroc.py shows cv2.initUndistortRectifyMap() using distortion coefficients for preprocessing; (C) (cx, cy) is the distortion center; (E) systems like COLMAP/ORB-SLAM2 can refine calibration in bundle adjustment. Files: Datasets/dataset_calibration.py (_get_camera_yaml_section), Datasets/dataset_euroc.py (rectification), Baselines/baseline_orbslam2.py. (D) is misleading—focal length affects FoV but monocular scale is unobservable without additional constraints. (F) is incorrect—k3 is the third radial distortion term for the Brown-Conrady model, not specifically for fisheye (which uses a different model).
+
+---
+
+## VSLAM-LAB - Problem 5 (Multiple Choice)
+The IMU data processing in dataset_euroc.py converts timestamps from nanoseconds to seconds and formats them with 9 decimal places. What sensor fusion and numerical considerations motivate this precision requirement?
+
+- (A) Visual-inertial fusion requires sub-millisecond timestamp synchronization between camera frames (typically 20-30 Hz) and IMU measurements (typically 200-400 Hz)
+- (B) IMU integration for pose prediction accumulates errors quadratically with time, requiring high timestamp precision to minimize integration drift
+- (C) Kalman filter updates in VIO systems use timestamp differences to compute state transition matrices, where precision affects covariance propagation
+- (D) Nine decimal places (nanosecond precision) matches the original EUROC dataset format for lossless conversion
+- (E) GPU floating-point operations require extended precision to avoid catastrophic cancellation in matrix operations
+- (F) The evo evaluation tool requires nanosecond precision for trajectory alignment
+
+**Correct Answer: A, B, C, D**
+
+**Explanation:** (A), (B), (C), and (D) are correct. The create_imu_csv() method in dataset_euroc.py converts nanoseconds to seconds with 9 decimals because: (A) VIO systems like ORB-SLAM3, OKVIS2 (supported baselines) need precise synchronization—camera at ~20Hz, IMU at ~200Hz means ~5ms between IMU samples; (B) IMU preintegration (used in VIO) compounds errors; (C) EKF/UKF state prediction uses Δt in exponential maps; (D) preserves original precision. Files: Datasets/dataset_euroc.py (IMU processing), Baselines/baseline_orbslam3.py, Baselines/baseline_okvis2.py (VIO systems). (E) is incorrect—GPU precision is separate from timestamp precision. (F) is incorrect—evo works with second-level precision.
+
+---
+
+## VSLAM-LAB - Problem 6 (Multiple Choice)
+The framework supports both traditional SLAM systems (ORB-SLAM2/3) and learning-based systems (DROID-SLAM, DPVO). What fundamental algorithmic differences between these paradigms are reflected in their dependency requirements in pixi.toml?
+
+- (A) Learning-based systems require PyTorch and CUDA for neural network inference during runtime tracking and mapping
+- (B) Traditional systems require Eigen and OpenCV for hand-crafted feature extraction and geometric optimization
+- (C) Learning-based systems require lietorch for differentiable Lie group operations on SE(3) poses
+- (D) Traditional systems require Pangolin for visualization of the optimization graph
+- (E) Learning-based systems require larger RAM allocations due to batch processing of frames
+- (F) Traditional systems require Ceres or g2o for nonlinear least squares optimization in bundle adjustment
+
+**Correct Answer: A, B, C, D**
+
+**Explanation:** (A), (B), (C), and (D) are correct. The pixi.toml dependencies reveal algorithmic differences: (A) droidslam-dev, dpvo-dev, mast3rslam-dev require pytorch-gpu, cuda-compiler for learned feature extraction and matching; (B) orbslam2-dev requires eigen, opencv for ORB features and geometric solvers; (C) droidslam, mast3rslam require lietorch for differentiable pose optimization; (D) orbslam2-dev, dpvo-dev require pangolin for visualization. Files: pixi.toml (dependencies), Baselines/baseline_droidslam.py (learning-based), Baselines/baseline_orbslam2.py (traditional). (E) is incorrect—batch processing isn't a distinguishing factor in SLAM (both process sequentially). (F) is partially true but not explicitly in dependencies—ORB-SLAM2 uses g2o internally.
+
+---
+
+## VSLAM-LAB - Problem 7 (Multiple Choice)
+The framework provides datasets from diverse environments (indoor, outdoor, underwater, aerial, medical). What domain-specific challenges do these varied environments pose for visual SLAM systems?
+
+- (A) Underwater environments (caves, reefslam) have non-uniform lighting, color attenuation, and particle scattering that degrade feature detection
+- (B) Aerial UAV datasets (euroc) involve rapid motion and rotation that challenge motion blur handling and IMU integration
+- (C) Medical endoscopy datasets (hamlyn) have specular reflections, deformable tissue, and limited field of view
+- (D) Indoor synthetic datasets (replica, nuim) provide perfect ground truth but lack realistic sensor noise and motion blur
+- (E) Outdoor vehicle datasets (kitti, rover) have dynamic objects and varying illumination across seasons
+- (F) All environments require identical camera calibration procedures
+
+**Correct Answer: A, B, C, D, E**
+
+**Explanation:** (A), (B), (C), (D), and (E) are correct. The diverse datasets test different failure modes: (A) Datasets/dataset_caves.py, dataset_reefslam.py address underwater challenges; (B) Datasets/dataset_euroc.py provides high-rate IMU for fast motion; (C) Datasets/dataset_hamlyn.py tests medical scenarios; (D) Datasets/dataset_replica.py, dataset_nuim.py are synthetic; (E) Datasets/dataset_kitti.py, dataset_rover.py test outdoor robustness. This diversity is intentional—SLAM systems must generalize across domains. Files: Datasets/ (various dataset implementations), README.md (dataset descriptions). (F) is incorrect—different environments require different calibration approaches (e.g., underwater requires refractive index correction).
+
+---
+
+## VSLAM-LAB - Problem 8 (Multiple Choice)
+The framework uses the evo tool's TUM trajectory format (timestamp tx ty tz qx qy qz qw) as the standard output format. What properties make this format suitable for SLAM evaluation?
+
+- (A) The quaternion representation (qx, qy, qz, qw) avoids gimbal lock and provides smooth interpolation for orientation
+- (B) Timestamps enable temporal alignment between estimated and ground truth trajectories with different sampling rates
+- (C) The format separates translation and rotation, enabling independent analysis of translational and rotational errors
+- (D) The format is human-readable and easily parseable by standard tools (pandas, numpy)
+- (E) Quaternions provide a minimal 3-parameter representation of rotation
+- (F) The format includes velocity and acceleration for dynamic analysis
+
+**Correct Answer: A, B, C, D**
+
+**Explanation:** (A), (B), (C), and (D) are correct. The TUM format used in evo_functions.py and metrics.py has these advantages: (A) quaternions avoid Euler angle singularities and enable SLERP interpolation; (B) timestamps allow evo_ape to associate poses across different sampling rates (--t_max_diff parameter); (C) separate tx,ty,tz and qx,qy,qz,qw enable computing translational ATE and rotational errors independently; (D) CSV format with space delimiter is easily processed (read_trajectory_csv, save_trajectory_csv). Files: Evaluate/evo_functions.py, Evaluate/metrics.py, utilities.py. (E) is incorrect—quaternions use 4 parameters (over-parameterized but avoid singularities). (F) is incorrect—the format only includes pose, not derivatives.
+
+---
+
+## VSLAM-LAB - Problem 9 (Multiple Choice)
+The framework's experiment log tracks both SUCCESS (boolean) and COMMENTS (string) fields separately. What failure modes in SLAM systems do these fields help diagnose?
+
+- (A) Memory threshold exceeded (tracked in COMMENTS with specific RAM/SWAP/GPU values)
+- (B) Process timeout indicating the system failed to complete within time limits
+- (C) Missing trajectory output file indicating the baseline crashed or failed to initialize
+- (D) Evaluation failure where the baseline succeeded but trajectory alignment failed
+- (E) Compilation errors in C++ baselines
+- (F) Network failures during dataset download
+
+**Correct Answer: A, B, C, D**
+
+**Explanation:** (A), (B), (C), and (D) are correct. The execute() method in BaselineVSLAMLab.py sets success_flag[0] = False and adds COMMENTS for: (A) memory threshold violations (monitor_memory); (B) timeout (subprocess.TimeoutExpired); (C) missing trajectory file check; (D) evaluation failures tracked separately in EVALUATION column. The vslamlab_run.py logs these to exp_log CSV. This diagnostic information helps researchers understand why experiments fail—critical for debugging SLAM systems. Files: Baselines/BaselineVSLAMLab.py (execution), vslamlab_run.py (logging), Evaluate/evaluate_functions.py (evaluation). (E) is incorrect—compilation happens during install, not execution. (F) is incorrect—download happens before experiments.
+
+---
+
+## VSLAM-LAB - Problem 10 (Multiple Choice)
+The framework's calibration YAML includes an IMU transform matrix (T_BS) representing the body-to-sensor transformation. How is this extrinsic calibration used in visual-inertial SLAM systems?
+
+- (A) To transform IMU measurements from the IMU frame to the camera frame for sensor fusion in the EKF/UKF state estimator
+- (B) To compensate for the spatial offset between IMU and camera when computing visual-inertial constraints
+- (C) To account for temporal offset between camera and IMU measurements
+- (D) To enable IMU preintegration between keyframes in the camera reference frame
+- (E) To correct for IMU bias drift over time
+- (F) To transform ground truth trajectories from the body frame to the camera frame for evaluation
+
+**Correct Answer: A, B, D, F**
+
+**Explanation:** (A), (B), (D), and (F) are correct. The T_BS transformation in dataset_euroc.py create_calibration_yaml() serves multiple purposes in VIO: (A) ORB-SLAM3, OKVIS2 fuse IMU in camera frame, requiring transformation; (B) the spatial offset (translation component of T_BS) affects the relationship between visual features and IMU measurements; (D) IMU preintegration (used in optimization-based VIO) integrates IMU in body frame then transforms to camera frame; (F) ground truth is often in body frame, requiring transformation for camera-frame trajectory comparison. Files: Datasets/dataset_euroc.py (calibration), Baselines/baseline_orbslam3.py, Baselines/baseline_okvis2.py (VIO systems). (C) is incorrect—temporal offset is handled separately (not in T_BS). (E) is incorrect—bias is estimated online, not corrected via extrinsics.
+
+---
+
+## VSLAM-LAB - Problem 11 (Multiple Choice)
+The framework supports Structure from Motion (SfM) systems like COLMAP and GLOMAP alongside SLAM systems. What fundamental algorithmic differences distinguish SfM from SLAM?
+
+- (A) SfM processes unordered image collections and solves for camera poses and 3D structure jointly in batch optimization
+- (B) SLAM processes sequential video streams and incrementally updates poses and maps in real-time or near-real-time
+- (C) SfM typically uses global bundle adjustment over all images while SLAM uses local bundle adjustment over recent keyframes
+- (D) SfM requires loop closure detection while SLAM does not
+- (E) SfM can leverage image retrieval and matching across the entire collection while SLAM primarily matches consecutive frames
+- (F) SfM systems always produce denser reconstructions than SLAM systems
+
+**Correct Answer: A, B, C, E**
+
+**Explanation:** (A), (B), (C), and (E) are correct. The distinction is evident in baseline implementations: (A) COLMAP/GLOMAP (Baselines/baseline_colmap.py, baseline_glomap.py) perform batch reconstruction; (B) DROID-SLAM, ORB-SLAM2 (baseline_droidslam.py, baseline_orbslam2.py) process sequential frames; (C) SfM optimizes all cameras jointly, SLAM uses sliding window optimization; (E) SfM uses vocabulary trees for wide-baseline matching, SLAM uses temporal proximity. The README distinguishes System types: 'SfM' vs 'VSLAM'. Files: Baselines/baseline_colmap.py (SfM), Baselines/baseline_orbslam2.py (SLAM), README.md (categorization). (D) is incorrect—SLAM also uses loop closure. (F) is incorrect—density depends on the specific method, not the paradigm.
+
+---
+
+## VSLAM-LAB - Problem 12 (Multiple Choice)
+The framework's RGB-D datasets include a depth_factor parameter in calibration. What role does this scaling factor play in depth sensor processing?
+
+- (A) Converting integer depth values from the sensor to metric depth in meters (e.g., depth_meters = depth_raw / depth_factor)
+- (B) Accounting for different depth encoding schemes across sensors (e.g., Kinect uses 5000, RealSense uses 1000)
+- (C) Compensating for depth measurement noise that increases quadratically with distance
+- (D) Enabling depth map alignment with RGB images through scaling
+- (E) Normalizing depth values for neural network input
+- (F) Correcting for systematic depth bias in structured light sensors
+
+**Correct Answer: A, B**
+
+**Explanation:** (A) and (B) are correct. The depth_factor in dataset_calibration.py _get_rgbd_yaml_section() converts raw depth values to meters: (A) depth sensors store depth as 16-bit integers to save bandwidth, requiring scaling to metric units; (B) different sensors use different scales (TUM RGB-D uses 5000, ETH uses 5000, as seen in dataset_rgbdtum.py and dataset_eth.py). This is crucial for RGB-D SLAM systems that need metric depth for 3D reconstruction. Files: Datasets/dataset_calibration.py (YAML generation), Datasets/dataset_rgbdtum.py, Datasets/dataset_eth.py (depth_factor values). (C) is incorrect—noise characteristics aren't corrected by a constant factor. (D) is incorrect—alignment uses extrinsic calibration, not depth scaling. (E) is incorrect—neural network normalization is separate. (F) is incorrect—systematic bias requires per-pixel correction, not a global factor.
+
+---
+
+## VSLAM-LAB - Problem 13 (Multiple Choice)
+The framework's experiment workflow tracks TIME, RAM, SWAP, and GPU metrics for each run. What insights do these performance metrics provide for SLAM system analysis?
+
+- (A) TIME reveals computational efficiency and real-time capability, critical for robotics applications requiring online operation
+- (B) RAM usage indicates map size growth and memory management efficiency, important for long-term autonomy
+- (C) GPU memory reveals the cost of neural network inference in learning-based systems
+- (D) SWAP usage indicates memory pressure that could cause system instability or performance degradation
+- (E) These metrics enable hardware requirement specification for deployment
+- (F) TIME directly correlates with trajectory accuracy
+
+**Correct Answer: A, B, C, D, E**
+
+**Explanation:** (A), (B), (C), (D), and (E) are correct. The vslamlab_run.py logs these metrics because: (A) TIME determines if systems meet real-time constraints (e.g., 30Hz for robotics); (B) RAM growth indicates map management efficiency—critical for long missions; (C) GPU memory reveals neural network costs in DROID-SLAM, DPVO; (D) SWAP indicates memory pressure that degrades performance; (E) metrics inform deployment decisions (e.g., embedded vs server). The monitor_memory() in BaselineVSLAMLab.py tracks incremental usage. Files: vslamlab_run.py (logging), Baselines/BaselineVSLAMLab.py (monitoring). (F) is incorrect—accuracy and speed are often inversely related (accuracy-speed trade-off), not directly correlated.
+
+---
+
+## VSLAM-LAB - Problem 14 (Multiple Choice)
+The framework provides both Python-based (DROID-SLAM, DPVO) and C++-based (ORB-SLAM2/3) baseline implementations. What architectural considerations influence the choice of implementation language for SLAM systems?
+
+- (A) C++ provides deterministic memory management and lower latency, critical for real-time performance in traditional geometric SLAM
+- (B) Python enables rapid prototyping and easy integration with deep learning frameworks (PyTorch), favoring learning-based approaches
+- (C) C++ allows fine-grained control over multi-threading and SIMD optimization for feature extraction and matching
+- (D) Python's GIL (Global Interpreter Lock) prevents true parallelism, making it unsuitable for SLAM
+- (E) C++ baselines can be deployed on embedded systems with limited Python support
+- (F) Python provides better numerical stability for optimization algorithms
+
+**Correct Answer: A, B, C, E**
+
+**Explanation:** (A), (B), (C), and (E) are correct. The language choice reflects different priorities: (A) ORB-SLAM2 (baseline_orbslam2.py shows C++ compilation) needs <10ms latency for real-time tracking; (B) DROID-SLAM (baseline_droidslam.py) uses PyTorch for learned features; (C) ORB-SLAM2 uses SSE/AVX for ORB extraction; (E) embedded deployment favors C++. The pixi.toml shows: C++ baselines need compilers, cmake; Python baselines need pytorch-gpu. Files: Baselines/baseline_orbslam2.py (C++), Baselines/baseline_droidslam.py (Python), pixi.toml (dependencies). (D) is incorrect—Python SLAM systems use C++ extensions or multiprocessing to bypass GIL. (F) is incorrect—numerical stability depends on algorithms, not language.
+
+---
+
+## VSLAM-LAB - Problem 15 (Multiple Choice)
+The framework supports datasets with different camera models (currently all Pinhole). What geometric properties would need to be handled differently if supporting fisheye or omnidirectional cameras?
+
+- (A) Projection and unprojection functions would need to account for non-linear distortion models (e.g., equidistant, stereographic)
+- (B) Feature detection would need to handle varying resolution across the image (higher at center for fisheye)
+- (C) Epipolar geometry for stereo matching would no longer follow straight lines, requiring curved epipolar curves
+- (D) The field of view could exceed 180 degrees, requiring special handling for features near the image boundary
+- (E) Bundle adjustment would need different parameterizations for camera intrinsics
+- (F) All SLAM algorithms would need to be completely rewritten
+
+**Correct Answer: A, B, C, D, E**
+
+**Explanation:** (A), (B), (C), (D), and (E) are correct. Supporting non-pinhole cameras requires: (A) different projection models (dataset_calibration.py would need new models beyond 'Pinhole'); (B) fisheye has non-uniform resolution; (C) epipolar geometry becomes non-linear (affecting stereo rectification in dataset_euroc.py); (D) wide FoV requires handling features that wrap around; (E) bundle adjustment parameterization changes (affecting systems like COLMAP). The README shows all current datasets use 'Pinhole' model. Files: Datasets/dataset_calibration.py (camera models), Datasets/dataset_euroc.py (rectification), README.md (camera model column). (F) is incorrect—many SLAM algorithms can be adapted to different camera models by changing the projection function, not requiring complete rewrites.
+
+---
+
+## VSLAM-LAB - Problem 16 (Multiple Choice)
+The framework's architecture separates dataset preprocessing (download, calibration, ground truth) from baseline execution. What software engineering and research benefits does this separation provide?
+
+- (A) Datasets can be preprocessed once and reused across multiple baseline evaluations, avoiding redundant computation
+- (B) Dataset implementations can be developed and tested independently of baseline implementations
+- (C) New baselines can be added without modifying dataset code, following the open-closed principle
+- (D) Preprocessing can be parallelized across multiple datasets while baselines run sequentially
+- (E) The separation enables dataset versioning independent of baseline versions
+- (F) Preprocessing eliminates all runtime computation in baselines
+
+**Correct Answer: A, B, C, D, E**
+
+**Explanation:** (A), (B), (C), (D), and (E) are correct. The architecture (DatasetVSLAMLab.py vs BaselineVSLAMLab.py) provides: (A) download_sequence() runs once, multiple baselines use the same preprocessed data; (B) dataset_euroc.py can be tested without any baseline; (C) adding baseline_newslam.py doesn't require dataset changes; (D) datasets can be downloaded in parallel before sequential baseline execution; (E) dataset versions (e.g., EUROC with TUM ground truth) are independent of baseline versions. This follows separation of concerns and dependency inversion principles. Files: Datasets/DatasetVSLAMLab.py (preprocessing), Baselines/BaselineVSLAMLab.py (execution), vslamlab_run.py (orchestration). (F) is incorrect—baselines still perform feature extraction, tracking, mapping, etc.
+
+---
+

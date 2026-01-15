@@ -1,0 +1,2 @@
+CaseNum|CaseName|OpName|OpParam|InNum|InDType|InFormat|InShape|OutNum|OutDType|OutFormat|OutShape|DataGenType|DataGenRange|InTensorFile|OutTensorFile|TestType|TestLevel|FromModel|SocVersion|ExpectedError
+1|deepseek_case |GatingOperation|{"topkExpertNum":1,"cumSumNum":256,"deviceExpert":[]}|2|int32;int32|nd;nd|24576;24576|3|int32;int32;int32|nd;nd;nd|24576;256;24576|customize;customize|0,0;0,0|||||deepseek|Ascend910B|NO_ERROR

@@ -1,0 +1,62 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include <cstdint>
+#include "collectives.cce"
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void LcalAllGather(ALLREDUCE_ARGS_FUN_16P(T))
+{
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, Op::COPYONLY);
+    const int64_t dataOffsetNum = GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM;
+    const int64_t flagOffset1st = MEM_DMA_UNIT_INT_NUM * GetBlockIdx();
+    const int64_t flagOffset2nd = MEM_DMA_UNIT_INT_NUM * GetLcalBlockNum() + flagOffset1st;
+    const int64_t corePerRank = GetLcalBlockNum() / rankSize;
+    const int64_t coreSegmentedIdx = GetBlockIdx() % corePerRank;
+    const int64_t x = GetBlockIdx() / corePerRank;
+    __gm__ T* buff[8] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7
+    };
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t*)(0);
+    __ubuf__ T* inputUB[2] = {(__ubuf__ T*)(64), (__ubuf__ T*)(97312)};
+
+    int64_t dataNumRemain = len / GetLcalBlockNum();
+    int64_t buffOffsetNum = rank * len + GetBlockIdx() * dataNumRemain;
+    if (GetBlockIdx() == GetLcalBlockNum() - 1) {
+        dataNumRemain = len - dataNumRemain * GetBlockIdx();
+    }
+
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, Op::COPYONLY);
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, Op::COPYONLY);
+
+    __gm__ T *receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[rank] + dataOffsetNum);
+    __gm__ T *sendBuff = input;
+    int64_t sendBuffOffsetNum = buffOffsetNum - rank * len;
+    GM2GM(dataNumRemain * sizeof(T), inputUB[0], receiveBuff, buffOffsetNum, sendBuff, sendBuffOffsetNum);
+
+    __gm__ int64_t* ctrlFlagsGM = (__gm__ int64_t*) buff[rank] + flagOffset1st;
+    SetFlag(ctrlFlagsUB, ctrlFlagsGM, magic);
+
+    for (int64_t i = 0; i < GetLcalBlockNum(); i++) {
+        __gm__ int64_t* ctrlFlagsGMTemp = (__gm__ int64_t*)buff[x] + i * MEM_DMA_UNIT_INT_NUM;
+        CheckFlag((__ubuf__ int64_t*)ctrlFlagsUB, ctrlFlagsGMTemp, (int64_t)magic);
+    }
+    dataNumRemain = len / corePerRank;
+    buffOffsetNum = x * len + coreSegmentedIdx * dataNumRemain;
+    if (coreSegmentedIdx == corePerRank - 1) {
+        dataNumRemain = len - dataNumRemain * coreSegmentedIdx;
+    }
+
+    sendBuff = (__gm__ T*)((__gm__ int64_t*)buff[x] + dataOffsetNum);
+    AscendC::SetFlag<AscendC::HardEvent::S_MTE2>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::S_MTE2>(EVENT_ID0);
+    GM2GM(dataNumRemain * sizeof(T), inputUB[0], (__gm__ T*)output, buffOffsetNum, sendBuff, buffOffsetNum);
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, Op::COPYONLY);
+}

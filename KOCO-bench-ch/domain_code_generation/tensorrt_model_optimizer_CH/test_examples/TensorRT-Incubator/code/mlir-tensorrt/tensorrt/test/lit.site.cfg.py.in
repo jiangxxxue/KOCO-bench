@@ -1,0 +1,33 @@
+@LIT_SITE_CFG_IN_HEADER@
+
+# test_exec_root: The root path where tests should be run.
+config.test_exec_root = "@CMAKE_CURRENT_BINARY_DIR@"
+
+config.llvm_tools_dir = lit_config.substitute("@LLVM_TOOLS_DIR@")
+config.mlir_obj_dir = "@MLIR_BINARY_DIR@"
+config.tensorrt_dialect_tools_dir = "@LLVM_RUNTIME_OUTPUT_INTDIR@"
+config.tensorrt_dialect_lib_dir = "@MLIR_TENSORRT_DIALECT_LIB_DIR@"
+config.tensorrt_dialect_obj_root = "@MLIR_TENSORRT_DIALECT_BINARY_DIR@"
+config.llvm_shlib_ext = "@SHLIBEXT@"
+config.enable_asan = @ENABLE_ASAN@
+config.tensorrt_lib_dir = "@MLIR_TRT_TENSORRT_LIB_DIR@"
+config.project_obj_root = "@CMAKE_BINARY_DIR@"
+
+config.host_os = "@HOST_OS@"
+config.host_cc = "@HOST_CC@"
+config.host_cxx = "@HOST_CXX@"
+config.host_arch = "@HOST_ARCH@"
+config.python_executable = "@Python3_EXECUTABLE@"
+
+config.gpu_tools_package_path = os.path.join(
+    "@MLIR_TENSORRT_DIALECT_SOURCE_DIR@",
+    "../integrations/python/mlir_tensorrt_tools"
+)
+
+@MLIR_TRT_COMMON_LIT_CONFIG@
+
+import lit.llvm
+lit.llvm.initialize(lit_config, config)
+
+# Let the main config do the real work.
+lit_config.load_config(config, "@MLIR_TENSORRT_DIALECT_SOURCE_DIR@/test/lit.cfg.py")

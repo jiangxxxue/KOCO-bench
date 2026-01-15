@@ -1,0 +1,7 @@
+{
+  "model": "qwen/qwen2.5-coder-7b-instruct",
+  "total": 107,
+  "correct": 20,
+  "incorrect": 87,
+  "accuracy_percent": 18.69
+}

@@ -1,0 +1,106 @@
+{
+  "doc-941587f61e1fdba86d099c4711e97c06": {
+    "status": "processed",
+    "chunks_count": 2,
+    "chunks_list": [
+      "chunk-26ea0e49900b956ea175f23e1b02efb1",
+      "chunk-7828323771fbf854b2477d46f3c22483"
+    ],
+    "content_summary": "### 一、高铁运维基本概念\n\n$\\ast \\ast _ { 1 }$ . 什么是高铁运维？\\*\\*\n\n高铁运维（High-Speed Railway Operation and Maintenance）是指对高速铁路系统（包括线路、车辆、信号、供电、通信等）在运营期间进行的日常检查、定期维护、故障处理和安全保障工作，确保列车安全、准点、高效运行。\n\n$* * 2 .$ . 高铁运维的主要内容包括：\\*\\*\n\n- 轨道线路巡检与维护  \n- 动车组（如复兴号、和谐号）检修与保养  \n- 接触网与...",
+    "content_length": 2585,
+    "created_at": "2025-08-08T14:53:04.438152+00:00",
+    "updated_at": "2025-08-08T22:59:16+00:00",
+    "file_path": "knowladge.docx",
+    "track_id": "insert_20250808_225304_db724cb9",
+    "metadata": {
+      "processing_start_time": 1754664784,
+      "processing_end_time": 1754665156
+    },
+    "multimodal_processed": true
+  },
+  "doc-a3a789134d6393861e4802b7f53e2ba9": {
+    "status": "processed",
+    "chunks_count": 3,
+    "chunks_list": [
+      "chunk-3262ccaa5621719ca077da79b0af3515",
+      "chunk-27a5b8b32239658c88716fc3a0eadca0",
+      "chunk-81a0a79766374c7cf69b7631f8fb71fd"
+    ],
+    "content_summary": "### 七、知识库更新建议\n\n- 每月更新一次运行图调整信息- 实时接入12306官方公告（如临时停运、新线开通）- 定期导入运维故障案例库（脱敏后用于训练）- 建立FAQ动态学习机制，根据用户提问优化回答\n\n如需，我可进一步提供：\n\n- 知识图谱结构设计（实体、关系、属性）- 智能客服对话流程设计（意图识别 $^ +$ 多轮对话）- API接口对接建议（如12306、运维管理系统）- 多语言支持方案（中英文）\n\n### 八、动车组关键系统与常见故障\n\n#### 1. 牵引系统\n\n- $^ { ...",
+    "content_length": 3467,
+    "created_at": "2025-08-08T15:04:30.904602+00:00",
+    "updated_at": "2025-08-08T23:12:28+00:00",
+    "file_path": "knowladge2.docx",
+    "track_id": "insert_20250808_230430_ea703572",
+    "metadata": {
+      "processing_start_time": 1754665470,
+      "processing_end_time": 1754665948
+    },
+    "multimodal_processed": true
+  },
+  "doc-af75f2917532b3683abaee3f8cb6bbf4": {
+    "status": "processed",
+    "chunks_count": 3,
+    "chunks_list": [
+      "chunk-0e317cca4782425b15ed639a67ab7db8",
+      "chunk-9bba3ab210493e6caf27e2317e6ee828",
+      "chunk-9446bbdc50368a013850361d89808e15"
+    ],
+    "content_summary": "| 用户提问关键词 | 对应意图 | 应答方向 |  \n|--- ----|--------|--------|  \n| 晚点、几点到、延误 | 查询列车状态 | 调用实时数据接口返回信息 |  \n| 退票、改签、手续费 | 办理票务业务 | 提供规则 $^ +$ 引导自助操作 |  \n| 故障、修、坏了 | 技术问题咨询 | 解释原因 $^ +$ 安抚 $^ +$ 处理进展 |  \n| 安全、危险、起火 | 应急咨询 | 强调已处理 $^ +$ 安全保障措施 |  \n| 怎么办、怎么办理 | ...",
+    "content_length": 3753,
+    "created_at": "2025-08-08T15:14:03.281857+00:00",
+    "updated_at": "2025-08-08T23:19:53+00:00",
+    "file_path": "knowladge3.docx",
+    "track_id": "insert_20250808_231403_d2a1b70e",
+    "metadata": {
+      "processing_start_time": 1754666043,
+      "processing_end_time": 1754666393
+    },
+    "multimodal_processed": true
+  },
+  "doc-c8809a0c51a8689f53adeec209f4d480": {
+    "status": "processed",
+    "chunks_count": 2,
+    "chunks_list": [
+      "chunk-60001152e9398589768175ace4b39c9a",
+      "chunk-573014779a14a4c3c5fcd83b75774217"
+    ],
+    "content_summary": "### 十九、特殊人群服务问题\n\n#### 1. $* * \\prime \\prime$ 老年人不会用手机购票怎么办？”\\*\\* \n\n$> ^ { * * }$ 答 $^ { * * }$ ：我们提供多项适老化服务：$>$ - 车站设有“爱心窗口”优先办理人工售票；  \n$> \\cdot$ - 可凭身份证直接进站乘车（已实现电子客票）；  \n$> \\cdot$ - 拨打12306可转人工客服协助订票；  \n$>$ - 子女可通过12306账户“帮他人购票”功能代操作。\n\n#### 2. \\*\\*...",
+    "content_length": 3237,
+    "created_at": "2025-08-08T15:21:07.773934+00:00",
+    "updated_at": "2025-08-08T23:25:13+00:00",
+    "file_path": "knowladge4.docx",
+    "track_id": "insert_20250808_232107_2efdceef",
+    "metadata": {
+      "processing_start_time": 1754666467,
+      "processing_end_time": 1754666713
+    },
+    "multimodal_processed": true
+  },
+  "doc-213cff8aed3d4bcf71a8e449414ff1e8": {
+    "status": "processed",
+    "chunks_count": 9,
+    "chunks_list": [
+      "chunk-3f8036ca34f48c5adf6126d9cabaa415",
+      "chunk-016be310d0c69e3c6d6eca09ff77c539",
+      "chunk-2be4c7bdb9a1ab1e4a17d14426a606fd",
+      "chunk-1e0a895677c3411a348fcfbaa816a38f",
+      "chunk-1815c1d8e3e1c3c721ae730cab0a9c3d",
+      "chunk-343b2155226d01a3879a10c450c383c5",
+      "chunk-89052acd4ef499209e00408d94859d18",
+      "chunk-903147ff7b6fe8693c6550a70f3696f2",
+      "chunk-94d5be83c9bdae47bb081f81d5c5ce5b"
+    ],
+    "content_summary": "3.2.2 多通道语义图像\n\n在目标检测算法 FFTNet[26]中，便通过灰度语义图像构建了高斯椭圆组成的Heatmap 来指示像素属于目标中心点的概率，以及该目标的回归尺度。灰度语义图像的意义是指示某种类别的目标在图像区域的“存在性”，即图像上某区域该类别目标存在的可能性。受此思想启发，对于拥有 item_class_num 个部件类别、图像长宽分别为 width 和height 的样本集，可构建长宽同样为 width 和 height，且具有 item_class_num 个通道的灰度语义...",
+    "content_length": 1011,
+    "created_at": "2025-08-13T14:06:59.140263+00:00",
+    "updated_at": "2025-08-13T22:38:41+00:00",
+    "file_path": "test2.pdf",
+    "track_id": "insert_20250813_220659_5f313c64",
+    "metadata": {
+      "processing_start_time": 1755094019,
+      "processing_end_time": 1755094134
+    },
+    "multimodal_processed": true
+  }
+}

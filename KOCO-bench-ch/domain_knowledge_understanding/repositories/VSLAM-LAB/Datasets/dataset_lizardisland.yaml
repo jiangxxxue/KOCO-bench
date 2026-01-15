@@ -1,0 +1,9 @@
+dataset_folder_raw: /home/beverley/Repos/VSLAM-LAB-Benchmark/LIZARDISLAND/
+dataset_name: lizardisland
+resolution_scale: 1.0
+rgb_hz: 10.0
+sequence_names:
+  - LIRS_FEB1
+  - LIRS_FEB2
+  - LIRS_MAR1
+  - LIRS_MAR2

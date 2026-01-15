@@ -1,0 +1,7 @@
+{
+  "model": "google/gemini-2.5-pro",
+  "total": 107,
+  "correct": 41,
+  "incorrect": 66,
+  "accuracy_percent": 38.32
+}

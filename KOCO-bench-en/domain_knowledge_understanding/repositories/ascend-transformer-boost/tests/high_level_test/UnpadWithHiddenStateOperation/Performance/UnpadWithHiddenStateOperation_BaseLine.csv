@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|UnpadWithHiddenStateOperation1|219.05|219.05
+2|UnpadWithHiddenStateOperation2|258.97|258.97
+3|UnpadWithHiddenStateOperation3|262.57|262.57
+4|UnpadWithHiddenStateOperation4|264.185|264.185

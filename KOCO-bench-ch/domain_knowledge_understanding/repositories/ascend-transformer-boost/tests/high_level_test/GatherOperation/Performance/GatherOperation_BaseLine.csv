@@ -1,0 +1,4 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|GatherOperation1|356.41|356.41
+2|GatherOperation2|235.93|235.93
+3|GatherOperation3|243.9|243.9

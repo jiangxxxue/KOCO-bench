@@ -1,0 +1,343 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#ifndef __COC_ADD_BIAS_RUNNER__
+#define __COC_ADD_BIAS_RUNNER__
+
+#ifdef __DAV_C220_VEC__
+
+#include <type_traits>
+#include "coc_internal.cce"
+
+enum class BiasMode { ADD = 0, MOVE, ATOMIC_ADD };
+
+template <typename OutputDtype, BiasMode MODE = BiasMode::ADD>
+class BaseSerialBiasAdder {
+public:
+    __aicore__ explicit BaseSerialBiasAdder() = default;
+
+    inline __aicore__ void SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_FUN())
+    {
+        this->gm_out = reinterpret_cast<__gm__ OutputDtype *>(gm_out);
+        this->gm_bias = reinterpret_cast<__gm__ OutputDtype *>(gm_bias);
+
+        this->batch_size = batch_size;
+        this->m = m;
+        this->n = n;
+
+        int32_t align_core_num = get_block_num() * get_subblockdim();
+        int32_t align_core_idx = get_block_idx() * get_subblockdim() + get_subblockid();
+
+        if constexpr (MODE == BiasMode::MOVE || MODE == BiasMode::ATOMIC_ADD) {
+            max_len = Block32B<OutputDtype>::AlignDown(MAX_UB_BUFF / sizeof(OutputDtype));
+        } else if constexpr (MODE == BiasMode::ADD) {
+            max_len = Block32B<OutputDtype>::AlignDown(MAX_UB_BUFF / (sizeof(OutputDtype) * 3));
+        }
+
+        int32_t n_round = Block32B<OutputDtype>::AlignUp(n);
+        m_per_loop = (n_round <= max_len) ? (max_len / n_round) : 1;
+        n_per_loop = (n_round <= max_len) ? n : max_len;
+
+        int32_t m_per_core_base = m / align_core_num;
+        int32_t m_remainder = m % align_core_num;
+        int32_t m_offset_base = align_core_idx * m_per_core_base;
+        if (align_core_idx < m_remainder) {
+            m_this_core = m_per_core_base + 1;
+            m_offset_this_core = m_offset_base + align_core_idx;
+        } else {
+            m_this_core = m_per_core_base;
+            m_offset_this_core = m_offset_base + m_remainder;
+        }
+    }
+
+    inline __aicore__ void Run()
+    {
+        if constexpr (MODE == BiasMode::ADD) {
+            AddBias();
+        } else if constexpr (MODE == BiasMode::MOVE) {
+            MoveBias();
+        } else if constexpr (MODE == BiasMode::ATOMIC_ADD) {
+            SetAtomicAdd<OutputDtype>();
+            PipeBarrier<PIPE_ALL>();
+            MoveBias();
+            SetAtomicNone();
+            PipeBarrier<PIPE_ALL>();
+        }
+    }
+
+    inline __aicore__ void Barrier()
+    {
+        FFTSCrossCoreSync<PIPE_MTE3>(0, AIV_FINISH_ADD_BIAS_FLAG_ID);
+        WaitEvent(AIV_FINISH_ADD_BIAS_FLAG_ID);
+    }
+
+private:
+    inline __aicore__ void AddBias()
+    {
+        if constexpr (MODE != BiasMode::ADD) {
+            return;
+        }
+
+        auto ub_bias = reinterpret_cast<__ubuf__ OutputDtype *>((uintptr_t)0);
+        auto ub_out1 = reinterpret_cast<__ubuf__ OutputDtype *>((uintptr_t)(max_len * sizeof(OutputDtype)));
+        auto ub_out2 = reinterpret_cast<__ubuf__ OutputDtype *>((uintptr_t)(max_len * sizeof(OutputDtype) * 2));
+        bool ping = true;
+
+        for (int32_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
+            for (int32_t n_complete = 0, n_this_loop = n_per_loop; n_complete < n; n_complete += n_this_loop) {
+                n_this_loop = (n_complete + n_this_loop > n) ? (n - n_complete) : n_this_loop;
+
+                // MTE2: ub_bias <- gm_bias
+                CopyGmToUbufAlign(ub_bias, gm_bias + n_complete, 1, n_this_loop, 0);
+
+                SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
+                WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
+
+                BroadcastBiasforbias(ub_bias, n_this_loop);
+
+                PipeBarrier<PIPE_V>();
+
+                SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);
+                SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID2);
+
+                ProcessMLoop(n_complete, n_this_loop, ub_out1, ub_out2, ping, ub_bias);
+
+                WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);
+                WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID2);
+
+                SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+                WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+
+                ping = !ping;
+            }
+        }
+    }
+
+    inline __aicore__ void BroadcastBiasforbias(__ubuf__ OutputDtype *ub_bias, int32_t n_this_loop)
+    {
+        for (int32_t row_idx = 1; row_idx < m_per_loop; ++row_idx) {
+            CopyUB2UB(ub_bias + row_idx * Block32B<OutputDtype>::AlignUp(n), ub_bias, 0, 1,
+                      Block32B<OutputDtype>::Count(n_this_loop), 0, 0);
+        }
+    }
+
+    inline __aicore__ void ProcessMLoop(int32_t n_complete, int32_t n_this_loop, __ubuf__ OutputDtype *ub_out1,
+                                        __ubuf__ OutputDtype *ub_out2, bool ping, __ubuf__ OutputDtype *ub_bias)
+    {
+        for (int32_t m_complete = 0, m_this_loop = m_per_loop; m_complete < m_this_core; m_complete += m_this_loop) {
+            m_this_loop = (m_complete + m_this_loop > m_this_core) ? (m_this_core - m_complete) : m_this_loop;
+
+            auto ub_out = ping ? ub_out1 : ub_out2;
+            auto event_id = ping ? EVENT_ID1 : EVENT_ID2;
+            int32_t out_offset = (m_offset_this_core + m_complete) * n + n_complete;
+
+            WaitFlag<HardEvent::MTE3_MTE2>(event_id);
+
+            // MTE2: ub_out <- gm_out
+            CopyGmToUbufAlign(ub_out, gm_out + out_offset, m_this_loop, n_this_loop, n - n_this_loop);
+
+            SetFlag<HardEvent::MTE2_V>(event_id);
+            WaitFlag<HardEvent::MTE2_V>(event_id);
+
+            // V: ub_out <- ub_out + ub_bias
+            AddBiasToOutput(ub_out, ub_bias, m_this_loop, n_this_loop);
+
+            SetFlag<HardEvent::V_MTE3>(event_id);
+            WaitFlag<HardEvent::V_MTE3>(event_id);
+
+            // MTE3: gm_out <- ub_out
+            CopyUbufToGmAlign(gm_out + out_offset, ub_out, m_this_loop, n_this_loop, n - n_this_loop);
+
+            SetFlag<HardEvent::MTE3_MTE2>(event_id);
+        }
+    }
+
+    inline __aicore__ void AddBiasToOutput(__ubuf__ OutputDtype *ub_out, __ubuf__ OutputDtype *ub_bias,
+                                           int32_t m_this_loop, int32_t n_this_loop)
+    {
+        int32_t n_blocks = m_this_loop * Block32B<OutputDtype>::Count(n_this_loop);
+        int32_t repeat_times = DivCeil(n_blocks, VEC_BLOCK_PER_REPEAT);
+        uint8_t repeat = UINT8_MAX;
+        for (int32_t repeat_complete = 0; repeat_complete < repeat_times; repeat_complete += repeat) {
+            repeat = (repeat_complete + repeat > repeat_times) ? (repeat_times - repeat_complete) : repeat;
+
+            int32_t vadd_offset = repeat_complete * Block256B<OutputDtype>::size;
+            Vadd(ub_out + vadd_offset, ub_out + vadd_offset, ub_bias + vadd_offset, repeat, 1, 1, 1, 8, 8, 8);
+        }
+    }
+
+    inline __aicore__ void MoveBias()
+    {
+        if constexpr (MODE != BiasMode::MOVE && MODE != BiasMode::ATOMIC_ADD) {
+            return;
+        }
+
+        auto ub_base = reinterpret_cast<__ubuf__ OutputDtype *>((uintptr_t)0);
+
+        for (int32_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
+            ProcessBias(ub_base);
+        }
+    }
+
+    inline __aicore__ void ProcessBias(__ubuf__ OutputDtype *ub_base)
+    {
+        int32_t n_this_loop = n_per_loop;
+        for (int32_t n_complete = 0; n_complete < n; n_complete += n_this_loop) {
+            if (n_complete + n_this_loop > n) {
+                n_this_loop = n - n_complete;
+            }
+
+            // MTE2: ub_base <- gm_bias
+            CopyGmToUbufAlign(ub_base, gm_bias + n_complete, 1, n_this_loop, 0);
+
+            SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
+            WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
+
+            BroadcastBias(ub_base, n_this_loop);
+
+            // MTE3: gm_out <- ub_base
+            CopyBiasToOutput(n_complete, n_this_loop, ub_base);
+        }
+    }
+
+    inline __aicore__ void BroadcastBias(__ubuf__ OutputDtype *ub_base, int32_t n_this_loop)
+    {
+        SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
+        WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
+
+        for (int32_t row_idx = 1; row_idx < m_per_loop; ++row_idx) {
+            CopyUB2UB(ub_base + row_idx * Block32B<OutputDtype>::AlignUp(n), ub_base, 0, 1,
+                      Block32B<OutputDtype>::Count(n_this_loop), 0, 0);
+        }
+    }
+
+    inline __aicore__ void CopyBiasToOutput(int32_t n_complete, int32_t n_this_loop, __ubuf__ OutputDtype *ub_base)
+    {
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+
+        int32_t m_this_loop = m_per_loop;
+        for (int32_t m_complete = 0; m_complete < m_this_core; m_complete += m_this_loop) {
+            if (m_complete + m_this_loop > m_this_core) {
+                m_this_loop = m_this_core - m_complete;
+            }
+
+            CopyUbufToGmAlign(gm_out + (m_offset_this_core + m_complete) * n + n_complete, ub_base, m_this_loop,
+                              n_this_loop, n - n_this_loop);
+        }
+    }
+
+    __gm__ OutputDtype *gm_out;
+    __gm__ OutputDtype *gm_bias;
+
+    int32_t batch_size;
+    int32_t m;
+    int32_t n;
+
+    int32_t m_this_core;
+    int32_t m_offset_this_core;
+
+    int32_t m_per_loop;
+    int32_t n_per_loop;
+
+    int32_t max_len;
+    int32_t repeat_per_loop;
+};
+
+template <typename OutputDtype>
+class PureMatmulBiasAdder {
+    static constexpr auto MODE = std::is_same<OutputDtype, half>::value ? BiasMode::ADD : BiasMode::ATOMIC_ADD;
+
+public:
+    __aicore__ explicit PureMatmulBiasAdder() = default;
+
+    inline void __aicore__ SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_FUN())
+    {
+        base_adder.SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_CALL());
+    }
+
+    inline void __aicore__ Run()
+    {
+        base_adder.Run();
+        base_adder.Barrier();
+    }
+
+private:
+    BaseSerialBiasAdder<OutputDtype, MODE> base_adder;
+};
+
+template <typename OutputDtype>
+class MatmulAllReduceBiasAdder {
+public:
+    __aicore__ explicit MatmulAllReduceBiasAdder() = default;
+
+    inline void __aicore__ SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_FUN())
+    {
+        base_adder.SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_CALL());
+    }
+
+    inline void __aicore__ Run()
+    {
+        base_adder.Run();
+        base_adder.Barrier();
+    }
+
+private:
+    BaseSerialBiasAdder<OutputDtype, BiasMode::MOVE> base_adder;
+};
+
+template <typename OutputDtype>
+class MatmulReduceScatterBiasAdder {
+    static constexpr auto MODE = std::is_same<OutputDtype, half>::value ? BiasMode::ADD : BiasMode::ATOMIC_ADD;
+
+public:
+    __aicore__ explicit MatmulReduceScatterBiasAdder() = default;
+
+    inline void __aicore__ SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_FUN())
+    {
+        m = m / rank_size;
+        base_adder.SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_CALL());
+    }
+
+    inline void __aicore__ Run()
+    {
+        base_adder.Run();
+        base_adder.Barrier();
+    }
+
+private:
+    BaseSerialBiasAdder<OutputDtype, MODE> base_adder;
+};
+
+template <typename OutputDtype>
+class AllGatherMatmulBiasAdder {
+    static constexpr auto MODE = std::is_same<OutputDtype, half>::value ? BiasMode::ADD : BiasMode::ATOMIC_ADD;
+
+public:
+    __aicore__ explicit AllGatherMatmulBiasAdder() = default;
+
+    inline void __aicore__ SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_FUN())
+    {
+        m = m * rank_size;
+        base_adder.SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_CALL());
+    }
+
+    inline void __aicore__ Run()
+    {
+        base_adder.Run();
+        base_adder.Barrier();
+    }
+
+private:
+    BaseSerialBiasAdder<OutputDtype, MODE> base_adder;
+};
+
+#endif
+
+#endif

@@ -1,0 +1,24 @@
+# base
+accelerate
+cryptography
+hydra-core
+matplotlib
+PyYAML
+pybind11==2.13.6
+scikit-build
+scikit-build-core
+sentencepiece
+tensorboard
+transformers
+ray
+pybase64
+orjson
+
+# test
+coverage
+pytest
+pytest_asyncio
+pytest-cov
+pytest_mock
+pytest-random-order
+wandb

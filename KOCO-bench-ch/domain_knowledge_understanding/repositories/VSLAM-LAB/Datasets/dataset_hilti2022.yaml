@@ -1,0 +1,13 @@
+dataset_name: hilti2022
+
+rgb_hz: 40.0
+url_download_root: "https://tp-public-facing.s3.eu-north-1.amazonaws.com/Challenges/2022"
+camera: cam0 # Cameras from cam0 to cam4
+
+sequence_names:
+  - exp04_construction_upper_level
+  - exp05_construction_upper_level_2
+  - exp06_construction_upper_level_3
+  - exp14_basement_2
+  - exp16_attic_to_upper_gallery_2
+  - exp18_corridor_lower_gallery_2

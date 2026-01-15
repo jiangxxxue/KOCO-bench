@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|TransdataOperation1|142.91|142.91
+2|TransdataOperation2|148.465|148.465
+3|TransdataOperation3|143.75|143.75
+4|TransdataOperation4|149.395|149.395

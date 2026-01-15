@@ -1,0 +1,4 @@
+{
+    "framework_name": "open-r1",
+    "framework_description": "open-r1 is an open-source initiative led by Hugging Face that aims to fully reproduce and reconstruct the data and training pipeline of the DeepSeek-R1 reasoning model. It provides end-to-end tooling covering data distillation, supervised fine-tuning (SFT), and reinforcement learning (e.g., GRPO), along with evaluation and synthetic data generation utilities. The project is designed to enable transparent understanding, reproducibility, and extension of DeepSeek-R1–style reasoning capabilities, offering a practical and open foundation for large-scale reasoning model research and development."
+}

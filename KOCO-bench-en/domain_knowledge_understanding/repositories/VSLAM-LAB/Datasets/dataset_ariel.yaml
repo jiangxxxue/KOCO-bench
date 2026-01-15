@@ -1,0 +1,79 @@
+dataset_name : ariel 
+
+rgb_hz: 20.0
+url_download_root: ""
+image_topic: "/alphasense_driver_ros"
+
+sequence_names:
+  - Traj_3_id1-cam0
+  - Traj_3_id1-cam1
+  - Traj_3_id1-cam3
+  - Traj_3_id1-cam4
+  - Traj_4_id2-cam0
+  - Traj_4_id2-cam1
+  - Traj_4_id2-cam2
+  - Traj_4_id2-cam3
+  - Traj_7_id3-cam0
+  - Traj_7_id3-cam1
+  - Traj_7_id3-cam2
+  - Traj_7_id3-cam3
+  - Traj_1_id4-cam0
+  - Traj_1_id4-cam1
+  - Traj_1_id4-cam2
+  - Traj_1_id4-cam3
+  - Traj_5_id5-cam0
+  - Traj_5_id5-cam1
+  - Traj_5_id5-cam2
+  - Traj_5_id5-cam3
+  - Traj_8_id6-cam0
+  - Traj_8_id6-cam1
+  - Traj_8_id6-cam2
+  - Traj_8_id6-cam3
+
+gt_files:
+  Traj_3_id1: qualisys_ariel_odom_traj_3_id1.tum
+  Traj_4_id2: qualisys_ariel_odom_traj_4_id2.tum
+  Traj_7_id3: qualisys_ariel_odom_traj_7_id3.tum
+  Traj_1_id4: qualisys_ariel_odom_traj_1_id4.tum
+  Traj_5_id5: qualisys_ariel_odom_traj_5_id5.tum
+  Traj_8_id6: qualisys_ariel_odom_traj_8_id6.tum
+
+rosbag_names:
+  Traj_3_id1: [ariel_2023-12-20-15-03-50_0, ariel_2023-12-20-15-04-45_1, ariel_2023-12-20-15-05-40_2,
+               ariel_2023-12-20-15-06-35_3, ariel_2023-12-20-15-07-30_4,ariel_2023-12-20-15-08-25_5,
+               ariel_2023-12-20-15-09-19_6]
+  Traj_4_id2: [ariel_2023-12-20-15-16-08_0, ariel_2023-12-20-15-17-03_1, ariel_2023-12-20-15-17-57_2,
+               ariel_2023-12-20-15-18-52_3, ariel_2023-12-20-15-19-47_4, ariel_2023-12-20-15-20-42_5,
+               ariel_2023-12-20-15-21-37_6]
+  Traj_7_id3: [ariel_2023-12-21-14-15-15_0, ariel_2023-12-21-14-16-10_1, ariel_2023-12-21-14-17-04_2,
+               ariel_2023-12-21-14-17-59_3, ariel_2023-12-21-14-18-54_4, ariel_2023-12-21-14-19-49_5]
+  Traj_1_id4: [ariel_2023-12-20-14-01-21_0, ariel_2023-12-20-14-02-16_1, ariel_2023-12-20-14-03-11_2,
+               ariel_2023-12-20-14-04-06_3, ariel_2023-12-20-14-05-01_4, ariel_2023-12-20-14-05-55_5,
+               ariel_2023-12-20-14-06-50_6, ariel_2023-12-20-14-07-45_7]
+  Traj_5_id5: [ariel_2023-12-20-15-25-31_0, ariel_2023-12-20-15-26-26_1, ariel_2023-12-20-15-27-20_2,
+               ariel_2023-12-20-15-28-15_3, ariel_2023-12-20-15-29-10_4, ariel_2023-12-20-15-30-05_5,
+               ariel_2023-12-20-15-31-00_6, ariel_2023-12-20-15-31-55_7]
+  Traj_8_id6: [ariel_2023-12-21-14-24-42_0, ariel_2023-12-21-14-25-37_1, ariel_2023-12-21-14-26-32_2,
+               ariel_2023-12-21-14-27-27_3, ariel_2023-12-21-14-28-22_4, ariel_2023-12-21-14-29-17_5]
+
+calibration:
+  cam0:
+    air: [ 346.92745081, 347.04373497, 358.37292926, 267.94968016, -0.03341922, -0.01006715,  0.00676135, -0.00243292]
+    underwater: [ 460.11634467, 460.43729775, 357.88255738, 266.43728860, 0.04816514, 0.17073600, -0.30080163, 0.47220233 ]
+  cam1:
+    air: [ 344.61935945, 344.45854054, 358.62094146, 262.09455985, -0.03341503, -0.01244705,  0.01001862, -0.00342918 ]
+    underwater: [ 457.13982694, 457.16320520, 357.01476656, 261.11784543, 0.04670953, 0.15933606, -0.25487088, 0.42289826 ]
+  cam3:
+    air: [ 346.20892829, 346.18904461, 359.87614798, 273.72504356, -0.0393803,   0.00005495, -0.00164393, 0.00028319 ]
+    underwater: [ 460.91032265, 461.15647443, 358.47163221, 276.93799054, 0.04046943, 0.15624583, -0.23531594, 0.36219850 ]
+  cam4:
+    air: [ 347.48459257, 347.43696754, 359.08372883, 266.28266531, -0.03971346,  0.00188588, -0.0031316, 0.00060708]
+    underwater: [ 463.02422600, 462.73289780, 359.96970694, 266.23918132, 0.04299616, 0.16266484, -0.27085893, 0.41342990 ]
+
+calibration_configurations:
+  Traj_3_id1: underwater
+  Traj_4_id2: underwater
+  Traj_7_id3: underwater
+  Traj_1_id4: underwater
+  Traj_5_id5: underwater
+  Traj_8_id6: underwater

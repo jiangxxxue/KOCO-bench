@@ -1,0 +1,150 @@
+CaseNum|CaseName        |OpName             |OpParam          |InNum|InDType        |InFormat|InShape             |OutNum|OutDType|OutFormat|OutShape|DataGenType|DataGenRange |InTensorFile|OutTensorFile|TestType   |TestLevel|FromModel|SocVersion           |ExpectedError
+1|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+2|GroupTopkCase2|GroupTopkOperation|{"groupNum":1024,"k":1}|2|float16;int32|nd;nd|10,1024;1024|1|float16|nd|10,1024|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+3|GroupTopkCase2|GroupTopkOperation|{"groupNum":1,"k":1}|2|float16;int32|nd;nd|10,1024;1024|1|float16|nd|10,1024|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+4|GroupTopkCase4|GroupTopkOperation|{"groupNum":1,"k":1}|2|float16;int32|nd;nd|10,1;1024|1|float16|nd|10,1|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+5|GroupTopkCase5|GroupTopkOperation|{"groupNum":128,"k":1}|2|float16;int32|nd;nd|10,128;1024|1|float16|nd|10,128|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+6|GroupTopkCase6|GroupTopkOperation|{"groupNum":128,"k":128}|2|float16;int32|nd;nd|10,128;1024|1|float16|nd|10,128|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+7|GroupTopkCase7|GroupTopkOperation|{"groupNum":1,"k":1}|2|float16;int32|nd;nd|10,128;1024|1|float16|nd|10,128|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+8|GroupTopkCase8|GroupTopkOperation|{"groupNum":8,"k":5}|2|float16;int32|nd;nd|10,128;1024|1|float16|nd|10,128|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+9|GroupTopkCase9|GroupTopkOperation|{"groupNum":431,"k":1}|2|float16;int32|nd;nd|10,431;1024|1|float16|nd|10,431|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+10|GroupTopkCase10|GroupTopkOperation|{"groupNum":431,"k":431}|2|float16;int32|nd;nd|10,431;1024|1|float16|nd|10,431|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+11|GroupTopkCase11|GroupTopkOperation|{"groupNum":1,"k":1}|2|float16;int32|nd;nd|10,431;1024|1|float16|nd|10,431|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+12|GroupTopkCase12|GroupTopkOperation|{"groupNum":512,"k":512}|2|float16;int32|nd;nd|10,512;1024|1|float16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+13|GroupTopkCase13|GroupTopkOperation|{"groupNum":512,"k":1}|2|float16;int32|nd;nd|10,512;1024|1|float16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+14|GroupTopkCase14|GroupTopkOperation|{"groupNum":512,"k":3}|2|float16;int32|nd;nd|10,512;1024|1|float16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+15|GroupTopkCase15|GroupTopkOperation|{"groupNum":128,"k":128}|2|float16;int32|nd;nd|10,512;1024|1|float16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+16|GroupTopkCase16|GroupTopkOperation|{"groupNum":128,"k":1}|2|float16;int32|nd;nd|10,512;1024|1|float16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+17|GroupTopkCase17|GroupTopkOperation|{"groupNum":128,"k":93}|2|float16;int32|nd;nd|10,512;1024|1|float16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+18|GroupTopkCase18|GroupTopkOperation|{"groupNum":51,"k":51}|2|float16;int32|nd;nd|10,51;1024|1|float16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+19|GroupTopkCase19|GroupTopkOperation|{"groupNum":51,"k":1}|2|float16;int32|nd;nd|10,51;1024|1|float16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+20|GroupTopkCase20|GroupTopkOperation|{"groupNum":51,"k":11}|2|float16;int32|nd;nd|10,51;1024|1|float16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+21|GroupTopkCase21|GroupTopkOperation|{"groupNum":17,"k":17}|2|float16;int32|nd;nd|10,51;1024|1|float16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+22|GroupTopkCase22|GroupTopkOperation|{"groupNum":17,"k":1}|2|float16;int32|nd;nd|10,51;1024|1|float16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+23|GroupTopkCase23|GroupTopkOperation|{"groupNum":17,"k":9}|2|float16;int32|nd;nd|10,51;1024|1|float16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+24|GroupTopkCase24|GroupTopkOperation|{"groupNum":3,"k":3}|2|float16;int32|nd;nd|10,51;1024|1|float16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+25|GroupTopkCase25|GroupTopkOperation|{"groupNum":3,"k":1}|2|float16;int32|nd;nd|10,51;1024|1|float16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+26|GroupTopkCase26|GroupTopkOperation|{"groupNum":3,"k":2}|2|float16;int32|nd;nd|10,51;1024|1|float16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+27|GroupTopkErrorCase1|GroupTopkOperation|{"groupNum":8,"k":9}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+28|GroupTopkErrorCase2|GroupTopkOperation|{"groupNum":7,"k":2}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_PARAM
+29|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+30|GroupTopkCase2|GroupTopkOperation|{"groupNum":8,"k":3}|2|float;int32|nd;nd|10,160;1024|1|float|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+31|GroupTopkCase3|GroupTopkOperation|{"groupNum":8,"k":3}|2|int8;int32|nd;nd|10,160;1024|1|int8|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+32|GroupTopkCase4|GroupTopkOperation|{"groupNum":8,"k":3}|2|int32;int32|nd;nd|10,160;1024|1|int32|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+33|GroupTopkCase5|GroupTopkOperation|{"groupNum":8,"k":3}|2|uint8;int32|nd;nd|10,160;1024|1|uint8|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+34|GroupTopkCase5|GroupTopkOperation|{"groupNum":8,"k":3}|2|int16;int32|nd;nd|10,160;1024|1|int16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+35|GroupTopkCase5|GroupTopkOperation|{"groupNum":8,"k":3}|2|bool;int32|nd;nd|10,160;1024|1|bool|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+36|GroupTopkCase5|GroupTopkOperation|{"groupNum":8,"k":3}|2|complex64;int32|nd;nd|10,160;1024|1|complex64|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+37|GroupTopkCase5|GroupTopkOperation|{"groupNum":8,"k":3}|2|complex128;int32|nd;nd|10,160;1024|1|complex128|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+38|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;float|nd;nd|10,160;1024|1|float16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+39|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;float16|nd;nd|10,160;1024|1|float16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+40|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;bf16|nd;nd|10,160;1024|1|float16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+41|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;int8|nd;nd|10,160;1024|1|float16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+43|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;uint8|nd;nd|10,160;1024|1|float16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+44|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;int16|nd;nd|10,160;1024|1|float16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+45|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;bool|nd;nd|10,160;1024|1|float16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+46|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;complex64|nd;nd|10,160;1024|1|float16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+47|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;complex128|nd;nd|10,160;1024|1|float16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+48|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;int32|nhwc;nhwc|10,160;1024|1|float16|nhwc|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+49|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;int32|nc1hwc0;nc1hwc0|10,160;1024|1|float16|nhwc|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+50|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;int32|fractal_nz;fractal_nz|10,160;1024|1|float16|nhwc|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+51|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;int32|nd;nd|10,9;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_PARAM
+52|GroupTopkCase1|GroupTopkOperation|{"k":3}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+53|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":7}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+54|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":8}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+55|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":1}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+56|GroupTopkCase1|GroupTopkOperation|{"groupNum":160,"k":1}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+57|GroupTopkCase1|GroupTopkOperation|{"groupNum":161,"k":1}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_PARAM
+58|GroupTopkCase1|GroupTopkOperation|{"groupNum":10,"k":11}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+59|GroupTopkCase1|GroupTopkOperation|{"groupNum":1,"k":1}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+60|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|float16;int32|nd;nd|10,160;1025|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_DIM
+61|GroupTopkCase1|GroupTopkOperation|{"groupNum":1,"k":1}|2|float16;int32|nd;nd|10,1025;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_DIM
+62|GroupTopkCase1|GroupTopkOperation|{"groupNum":1,"k":1}|2|float16;int32|nd;nd|10,1;1024|1|float16|nd|10,1|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+63|GroupTopkCase1|GroupTopkOperation|{"groupNum":-2,"k":1}|2|float16;int32|nd;nd|10,1;1024|1|float16|nd|10,1|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+64|GroupTopkCase1|GroupTopkOperation|{"groupNum":1}|2|float16;int32|nd;nd|10,1;1024|1|float16|nd|10,1|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+65|GroupTopkCase1|GroupTopkOperation|{"groupNum":1,"k":1}|2|float16;int32|nd;nd|10,1025;1024|1|float16|nd|10,1025|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_DIM
+101|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+102|GroupTopkCase2|GroupTopkOperation|{"groupNum":1024,"k":1}|2|bf16;int32|nd;nd|10,1024;1024|1|bf16|nd|10,1024|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+103|GroupTopkCase2|GroupTopkOperation|{"groupNum":1,"k":1}|2|bf16;int32|nd;nd|10,1024;1024|1|bf16|nd|10,1024|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+104|GroupTopkCase4|GroupTopkOperation|{"groupNum":1,"k":1}|2|bf16;int32|nd;nd|10,1;1024|1|bf16|nd|10,1|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+105|GroupTopkCase5|GroupTopkOperation|{"groupNum":128,"k":1}|2|bf16;int32|nd;nd|10,128;1024|1|bf16|nd|10,128|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+106|GroupTopkCase6|GroupTopkOperation|{"groupNum":128,"k":128}|2|bf16;int32|nd;nd|10,128;1024|1|bf16|nd|10,128|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+107|GroupTopkCase7|GroupTopkOperation|{"groupNum":1,"k":1}|2|bf16;int32|nd;nd|10,128;1024|1|bf16|nd|10,128|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+108|GroupTopkCase8|GroupTopkOperation|{"groupNum":8,"k":5}|2|bf16;int32|nd;nd|10,128;1024|1|bf16|nd|10,128|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+109|GroupTopkCase9|GroupTopkOperation|{"groupNum":431,"k":1}|2|bf16;int32|nd;nd|10,431;1024|1|bf16|nd|10,431|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1010|GroupTopkCase10|GroupTopkOperation|{"groupNum":431,"k":431}|2|bf16;int32|nd;nd|10,431;1024|1|bf16|nd|10,431|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1011|GroupTopkCase11|GroupTopkOperation|{"groupNum":1,"k":1}|2|bf16;int32|nd;nd|10,431;1024|1|bf16|nd|10,431|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1012|GroupTopkCase12|GroupTopkOperation|{"groupNum":512,"k":512}|2|bf16;int32|nd;nd|10,512;1024|1|bf16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1013|GroupTopkCase13|GroupTopkOperation|{"groupNum":512,"k":1}|2|bf16;int32|nd;nd|10,512;1024|1|bf16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1014|GroupTopkCase14|GroupTopkOperation|{"groupNum":512,"k":3}|2|bf16;int32|nd;nd|10,512;1024|1|bf16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1015|GroupTopkCase15|GroupTopkOperation|{"groupNum":128,"k":128}|2|bf16;int32|nd;nd|10,512;1024|1|bf16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1016|GroupTopkCase16|GroupTopkOperation|{"groupNum":128,"k":1}|2|bf16;int32|nd;nd|10,512;1024|1|bf16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1017|GroupTopkCase17|GroupTopkOperation|{"groupNum":128,"k":93}|2|bf16;int32|nd;nd|10,512;1024|1|bf16|nd|10,512|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1018|GroupTopkCase18|GroupTopkOperation|{"groupNum":51,"k":51}|2|bf16;int32|nd;nd|10,51;1024|1|bf16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1019|GroupTopkCase19|GroupTopkOperation|{"groupNum":51,"k":1}|2|bf16;int32|nd;nd|10,51;1024|1|bf16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1020|GroupTopkCase20|GroupTopkOperation|{"groupNum":51,"k":11}|2|bf16;int32|nd;nd|10,51;1024|1|bf16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1021|GroupTopkCase21|GroupTopkOperation|{"groupNum":17,"k":17}|2|bf16;int32|nd;nd|10,51;1024|1|bf16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1022|GroupTopkCase22|GroupTopkOperation|{"groupNum":17,"k":1}|2|bf16;int32|nd;nd|10,51;1024|1|bf16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1023|GroupTopkCase23|GroupTopkOperation|{"groupNum":17,"k":9}|2|bf16;int32|nd;nd|10,51;1024|1|bf16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1024|GroupTopkCase24|GroupTopkOperation|{"groupNum":3,"k":3}|2|bf16;int32|nd;nd|10,51;1024|1|bf16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1025|GroupTopkCase25|GroupTopkOperation|{"groupNum":3,"k":1}|2|bf16;int32|nd;nd|10,51;1024|1|bf16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1026|GroupTopkCase26|GroupTopkOperation|{"groupNum":3,"k":2}|2|bf16;int32|nd;nd|10,51;1024|1|bf16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1027|GroupTopkErrorCase1|GroupTopkOperation|{"groupNum":8,"k":9}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+1028|GroupTopkErrorCase2|GroupTopkOperation|{"groupNum":7,"k":2}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_PARAM
+1029|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1030|GroupTopkCase2|GroupTopkOperation|{"groupNum":8,"k":3}|2|float;int32|nd;nd|10,160;1024|1|float|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1031|GroupTopkCase3|GroupTopkOperation|{"groupNum":8,"k":3}|2|int8;int32|nd;nd|10,160;1024|1|int8|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1032|GroupTopkCase4|GroupTopkOperation|{"groupNum":8,"k":3}|2|int32;int32|nd;nd|10,160;1024|1|int32|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1033|GroupTopkCase5|GroupTopkOperation|{"groupNum":8,"k":3}|2|uint8;int32|nd;nd|10,160;1024|1|uint8|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1034|GroupTopkCase5|GroupTopkOperation|{"groupNum":8,"k":3}|2|int16;int32|nd;nd|10,160;1024|1|int16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1035|GroupTopkCase5|GroupTopkOperation|{"groupNum":8,"k":3}|2|bool;int32|nd;nd|10,160;1024|1|bool|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1036|GroupTopkCase5|GroupTopkOperation|{"groupNum":8,"k":3}|2|complex64;int32|nd;nd|10,160;1024|1|complex64|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1037|GroupTopkCase5|GroupTopkOperation|{"groupNum":8,"k":3}|2|complex128;int32|nd;nd|10,160;1024|1|complex128|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1038|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;float|nd;nd|10,160;1024|1|bf16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1039|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;bf16|nd;nd|10,160;1024|1|bf16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1040|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;bf16|nd;nd|10,160;1024|1|bf16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1041|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;int8|nd;nd|10,160;1024|1|bf16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1043|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;uint8|nd;nd|10,160;1024|1|bf16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1044|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;int16|nd;nd|10,160;1024|1|bf16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1045|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;bool|nd;nd|10,160;1024|1|bf16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1046|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;complex64|nd;nd|10,160;1024|1|bf16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1047|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;complex128|nd;nd|10,160;1024|1|bf16|nd|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1048|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;int32|nhwc;nhwc|10,160;1024|1|bf16|nhwc|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1049|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;int32|nc1hwc0;nc1hwc0|10,160;1024|1|bf16|nhwc|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1050|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;int32|fractal_nz;fractal_nz|10,160;1024|1|bf16|nhwc|10,160|random;random|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_INI_MATCH
+1051|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;int32|nd;nd|10,9;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_PARAM
+1052|GroupTopkCase1|GroupTopkOperation|{"k":3}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+1053|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":7}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1054|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":8}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1055|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":1}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1056|GroupTopkCase1|GroupTopkOperation|{"groupNum":160,"k":1}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1057|GroupTopkCase1|GroupTopkOperation|{"groupNum":161,"k":1}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_PARAM
+1058|GroupTopkCase1|GroupTopkOperation|{"groupNum":10,"k":11}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+1059|GroupTopkCase1|GroupTopkOperation|{"groupNum":1,"k":1}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1060|GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3}|2|bf16;int32|nd;nd|10,160;1025|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_DIM
+1061|GroupTopkCase1|GroupTopkOperation|{"groupNum":1,"k":1}|2|bf16;int32|nd;nd|10,1025;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_DIM
+1062|GroupTopkCase1|GroupTopkOperation|{"groupNum":1,"k":1}|2|bf16;int32|nd;nd|10,1;1024|1|bf16|nd|10,1|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+1063|GroupTopkCase1|GroupTopkOperation|{"groupNum":-2,"k":1}|2|float16;int32|nd;nd|10,1;1024|1|float16|nd|10,1|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+1064|GroupTopkCase1|GroupTopkOperation|{"groupNum":1}|2|float16;int32|nd;nd|10,1;1024|1|float16|nd|10,1|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+1065|GroupTopkCase1|GroupTopkOperation|{"groupNum":1,"k":1}|2|bf16;int32|nd;nd|10,1025;1024|1|bf16|nd|10,1025|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_TENSOR_DIM
+129|rsv|GroupTopkOperation|{"groupNum":8,"k":3,"rsv":[1]}|0||||0||||||||||||C:ERROR_INVALID_PARAM
+655|GroupTopkCase1|GroupTopkOperation|{"k":1}|2|float16;int32|nd;nd|10,1;1024|1|float16|nd|10,1|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+131 |GroupTopkMultiBase0|GroupTopkOperation|{"groupNum":8,"k":3,"groupMultiFlag":1,"n":2}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+132 |GroupTopkMultiBase1|GroupTopkOperation|{"groupNum":8,"k":3,"groupMultiFlag":1,"n":2}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+133 |GroupTopkMultiBase2|GroupTopkOperation|{"groupNum":8,"k":3,"groupMultiFlag":1,"n":1}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+134 |GroupTopkMultiBase3|GroupTopkOperation|{"groupNum":8,"k":3,"groupMultiFlag":0,"n":21}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+135 |GroupTopkMultiWrongN0|GroupTopkOperation|{"groupNum":8,"k":3,"groupMultiFlag":1,"n":0}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+136 |GroupTopkMultiWrongN1|GroupTopkOperation|{"groupNum":8,"k":3,"groupMultiFlag":1,"n":21}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|I:ERROR_INVALID_PARAM
+137 |GroupTopkMultiWrongFlag0|GroupTopkOperation|{"groupNum":8,"k":3,"groupMultiFlag":-1,"n":2}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+138 |GroupTopkMultiWrongFlag1|GroupTopkOperation|{"groupNum":8,"k":3,"groupMultiFlag":2,"n":2}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|C:ERROR_INVALID_PARAM
+139 |GroupTopkMultiWrongDevice|GroupTopkOperation|{"groupNum":8,"k":3,"groupMultiFlag":1,"n":2}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend310P|C:ERROR_INVALID_PARAM
+140 |GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":7,"groupMultiFlag":1,"n":2}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+141 |GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":7,"groupMultiFlag":0,"n":1}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+142 |GroupTopkCase1|GroupTopkOperation|{"groupNum":1,"k":1,"groupMultiFlag":0,"n":1}|2|float16;int32|nd;nd|10,160;1024|1|float16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+143 |GroupTopkCase1|GroupTopkOperation|{"groupNum":8,"k":3,"groupMultiFlag":1,"n":3}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+144 |GroupTopkCase5|GroupTopkOperation|{"groupNum":8,"k":1,"groupMultiFlag":0,"n":1}|2|float16;int32|nd;nd|10,128;1024|1|float16|nd|10,128|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+145 |GroupTopkCase18|GroupTopkOperation|{"k":1,"groupMultiFlag":1,"n":4}|2|float16;int32|nd;nd|10,51;1024|1|float16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+146 |GroupTopkCase18|GroupTopkOperation|{"k":1,"groupMultiFlag":0,"n":1}|2|bf16;int32|nd;nd|10,51;1024|1|bf16|nd|10,51|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+147 |GroupTopkCase4|GroupTopkOperation|{"groupNum":1,"k":1,"groupMultiFlag":0,"n":1}|2|float16;int32|nd;nd|10,1;1024|1|float16|nd|10,1|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+148 |GroupTopkCase18|GroupTopkOperation|{"groupNum":8,"k":7,"groupMultiFlag":1,"n":2}|2|bf16;int32|nd;nd|10,160;1024|1|bf16|nd|10,160|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR
+149 |GroupTopkCase18|GroupTopkOperation|{"groupNum":1,"k":1,"groupMultiFlag":1,"n":3}|2|float16;int32|nd;nd|10,128;1024|1|float16|nd|10,128|customize;customize|0,0;0,0||||||Ascend910B|NO_ERROR

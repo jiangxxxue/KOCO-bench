@@ -1,0 +1,8 @@
+cd SCPTS_PACK_DIR
+0
+[ -d "/home/script_test_test" ] || mkdir -p /home/script_test_test
+0
+bash SCPTS_PACK_NAME --tar xf -C /home/script_test_test
+0
+[ ! -d "/home/script_test_test" ] || rm -rf /home/script_test_test
+0

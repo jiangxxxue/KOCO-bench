@@ -1,0 +1,7 @@
+{
+  "model": "deepseek/deepseek-chat-v3.1",
+  "total": 107,
+  "correct": 46,
+  "incorrect": 61,
+  "accuracy_percent": 42.99
+}

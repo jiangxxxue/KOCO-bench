@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|NonzeroOperation1|152.95|152.95
+2|NonzeroOperation2|150.91|150.91
+3|NonzeroOperation3|154.35|154.35
+4|NonzeroOperation4|153.62|153.62

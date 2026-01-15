@@ -1,0 +1,211 @@
+# Cosmos-Rl 选择题
+
+## cosmos-rl - 问题 1 (多选题)
+在GRPO损失计算中，GSPO变体在处理重要性比率方面与标准GRPO有何不同，对梯度流有什么影响？
+
+- (A) GSPO通过对每个序列的token级KL散度求平均来计算序列级重要性比率
+- (B) GSPO使用expand操作将序列级比率广播回token级，同时保持梯度连接
+- (C) GSPO对负优势应用三路裁剪（loss1, loss2, loss3），而标准GRPO使用两路裁剪
+- (D) GSPO通过将KL惩罚纳入重要性比率计算来消除对参考模型的需求
+- (E) GSPO在计算重要性比率之前将负近似KL限制在10.0以保证数值稳定性
+
+**正确答案：A, B, E**
+
+**解析：** 这测试对`cosmos_rl/policy/trainer/grpo_trainer.py`中`compute_loss`函数的深入理解。(A)正确 - GSPO计算`negative_approx_kl_seq[i] = seq_tokens.sum() / seq_length`。(B)正确 - 代码使用`.expand(seq_length)`来保持梯度流。(C)错误 - GSPO使用两路裁剪（`torch.min(loss1, loss2)`），而标准GRPO使用三路。(D)错误 - 两种变体都可以使用参考模型KL。(E)正确 - 在GSPO中应用`torch.clamp(negative_approx_kl_seq, max=10.0)`。
+
+---
+
+## cosmos-rl - 问题 2 (多选题)
+在Cosmos-RL的弹性扩展实现中，哪些机制使得动态副本集成不会中断正在进行的训练？
+
+- (A) 控制器发送BuildMesh命令以在新副本加入时重建NCCL进程组
+- (B) 已初始化的副本根据是推演还是策略工作器，向新副本广播或单播权重
+- (C) 新副本通过共享文件系统检查点自动继承训练状态，无需显式同步
+- (D) 心跳机制检测失败的副本并将其从NCCL网格中移除以防止阻塞
+- (E) 当新副本加入时，所有现有副本必须暂停训练并进入屏障同步
+
+**正确答案：A, B, D**
+
+**解析：** 这测试对弹性扩展的理解，来自`docs/elastic/overview.rst`、`cosmos_rl/dispatcher/controller.py`（BuildMesh逻辑）和`cosmos_rl/comm/base.py`（心跳）。(A)正确 - BuildMesh命令重建NCCL组。(B)正确 - 根据文档，策略使用单播，推演使用广播。(C)错误 - 需要显式权重同步。(D)正确 - 心跳超时触发副本移除。(E)错误 - 设计特别避免阻塞现有副本。
+
+---
+
+## cosmos-rl - 问题 3 (多选题)
+Cosmos-RL的DataPacker抽象如何使跨不同模型架构和模态的模型无关RL训练成为可能？
+
+- (A) 它为Dataset→Rollout和Rollout→Policy定义了单独的转换管道，允许每个阶段使用特定格式的要求
+- (B) 它为仅解码器LLM（Llama、Qwen）和视觉语言模型（Qwen2.5-VL）提供预构建的打包器作为参考实现
+- (C) 它要求所有模型使用标准化的内部表示，消除了对模型特定逻辑的需求
+- (D) 它通过分词器使用模型特定的聊天模板处理对话到提示的转换
+- (E) 它计算最大序列长度以进行动态批处理，以优化不同序列长度分布的内存使用
+
+**正确答案：A, B, D, E**
+
+**解析：** 这测试对DataPacker设计的理解，来自`docs/quickstart/dataflow.rst`、`cosmos_rl/dispatcher/data/packer/base.py`以及特定打包器如`decoder_only_llm_packer.py`和`qwen2_5_vlm_packer.py`。(A)正确 - `get_rollout_input`和`get_policy_input`处理不同阶段。(B)正确 - 这些打包器如文档所述存在。(C)错误 - 设计明确允许模型特定逻辑。(D)正确 - 聊天模板在打包器中应用。(E)正确 - `policy_compute_max_len`是接口的一部分。
+
+---
+
+## cosmos-rl - 问题 4 (多选题)
+当启用流水线并行（pp > 1）时，Cosmos-RL约束dp_replicate必须等于1的架构原因是什么？
+
+- (A) 流水线并行需要跨阶段的确定性微批次调度，这与数据并行复制的独立梯度计算冲突
+- (B) 框架仅支持FSDP（dp_shard）与流水线并行，不支持DDP（dp_replicate），以避免复杂的梯度同步模式
+- (C) NCCL进程组不能同时跨越流水线阶段和数据并行副本
+- (D) 当启用数据并行复制时，内存约束阻止存储多个流水线阶段激活
+- (E) ParallelDims中的验证逻辑明确强制执行此约束以维护支持的配置空间
+
+**正确答案：B, E**
+
+**解析：** 这测试对并行约束的理解，来自`cosmos_rl/utils/parallelism.py`。`_validate`方法明确检查：`if pp > 1 and dp_replicate > 1: raise ValueError('dp_replicate must be 1 when pp > 1, since we only support FSDP with pipeline parallelism.')`。(B)正确 - 这是声明的原因。(E)正确 - 验证强制执行它。(A)是一个合理的技术原因但不是声明的原因。(C)错误 - NCCL可以处理这个。(D)错误 - 内存不是主要约束。
+
+---
+
+## cosmos-rl - 问题 5 (多选题)
+Cosmos-RL基于Redis的消息系统如何实现控制器和分布式工作器之间的高效协调？
+
+- (A) Redis Streams提供有序、持久的消息队列，确保即使工作器暂时断开连接也能可靠地传递命令
+- (B) 框架使用多个Redis客户端和备用IP来提供容错，如果一个连接失败
+- (C) Redis pub/sub用于同时向所有策略副本广播推演结果
+- (D) 控制器将命令发布到副本特定的流，实现有针对性的单播通信
+- (E) Redis事务确保当多个工作器尝试获取相同推演批次时的原子更新
+
+**正确答案：A, B, D**
+
+**解析：** 这测试对Redis使用的理解，来自`cosmos_rl/utils/redis_stream.py`和`cosmos_rl/dispatcher/controller.py`。(A)正确 - Redis Streams用于可靠的消息传递。(B)正确 - `RedisStreamHandler`初始化多个客户端以实现容错。(C)错误 - 推演发送到控制器，不广播到所有策略。(D)正确 - 命令发布到特定副本流。(E)错误 - 代码不为此目的使用Redis事务。
+
+---
+
+## cosmos-rl - 问题 6 (多选题)
+当提供rollout_per_token_logps时，Cosmos-RL实现行为重要性加权的关键考虑因素是什么？
+
+- (A) 框架将行为KL散度计算为旧策略和推演策略对数概率之间的差异
+- (B) 行为重要性权重使用behav_imp_weight_cap进行限制，以防止极端权重值破坏训练稳定性
+- (C) 超过重要性权重上限的样本从训练批次中完全丢弃
+- (D) 每token损失乘以行为重要性权重以校正分布不匹配
+- (E) 行为重要性加权仅在使用离策略算法（如AIPO）时应用
+
+**正确答案：A, B, D**
+
+**解析：** 这测试对行为重要性加权的理解，来自`cosmos_rl/policy/trainer/grpo_trainer.py`中的`compute_loss`函数。(A)正确 - `behav_kl = old_per_token_logps - rollout_per_token_logps`。(B)正确 - 代码检查`behav_imp_weight <= config.train.train_policy.behav_imp_weight_cap`。(C)错误 - 权重设置为0.0，不丢弃。(D)正确 - `per_token_loss = per_token_loss * behav_imp_weight`。(E)错误 - 当提供rollout_per_token_logps时应用，无论算法如何。
+
+---
+
+## cosmos-rl - 问题 7 (多选题)
+在Cosmos-RL的容错实现中，哪些机制协同工作以在副本失败时维持训练进度？
+
+- (A) 心跳监控检测在超时窗口内停止发送定期状态更新的失败副本
+- (B) NCCL超时检测识别在集合操作期间挂起的副本
+- (C) 控制器在移除失败副本之前自动检查点模型状态以实现恢复
+- (D) 失败的副本被手动注销，并为剩余的活动副本重建NCCL网格
+- (E) 系统自动在可用GPU上生成替换副本以维持原始副本计数
+
+**正确答案：A, B, D**
+
+**解析：** 这测试对容错的理解，来自`docs/elastic/overview.rst`、`cosmos_rl/dispatcher/controller.py`（post_ncclerror）和`cosmos_rl/comm/base.py`（心跳）。(A)正确 - 带COSMOS_HEARTBEAT_TIMEOUT的心跳机制。(B)正确 - 文档中提到NCCL超时。(C)错误 - 检查点与故障处理分离。(D)正确 - `post_ncclerror`手动注销并触发BuildMesh。(E)错误 - 系统不自动生成替换。
+
+---
+
+## cosmos-rl - 问题 8 (多选题)
+Cosmos-RL的序列打包优化如何提高可变长度序列的训练效率？
+
+- (A) 它将多个短序列连接成单个打包序列以减少填充开销
+- (B) 它使用cu_seqlens（累积序列长度）来跟踪打包序列之间的边界以进行正确的注意力掩码
+- (C) 它通过确保批次中的所有序列具有相同长度来消除对注意力掩码的需求
+- (D) 它通过减少每个批次中的填充token数量来实现更高效的内存使用
+- (E) 它需要可以处理具有可变长度注意力的打包序列的专门内核
+
+**正确答案：A, B, D, E**
+
+**解析：** 这测试对序列打包的理解，来自`cosmos_rl/utils/sequence_packing.py`及其在`grpo_trainer.py`中的使用。代码包括`pack_sequences_for_inputs`、`pack_sequences_for_logprobs`等函数，并使用`cu_seqlens`张量来跟踪序列边界。(A)正确 - 打包连接序列。(B)正确 - cu_seqlens在整个过程中使用。(C)错误 - 打包专门处理可变长度。(D)正确 - 减少填充是主要好处。(E)正确 - flash attention和其他内核支持打包序列。
+
+---
+
+## cosmos-rl - 问题 9 (多选题)
+Cosmos-RL决定使用单控制器架构而不是分布式控制器设计的架构影响是什么？
+
+- (A) 控制器成为潜在的单点故障，但通过使其轻量级和无状态来缓解这一点
+- (B) 所有协调逻辑都集中化，简化了协议并消除了对复杂共识算法的需求
+- (C) 控制器必须处理策略和推演工作器之间的所有数据传输，造成潜在瓶颈
+- (D) 副本注册和状态管理得到简化，因为所有状态都在一个位置维护
+- (E) 由于控制器通信延迟，该架构无法扩展到单个数据中心之外
+
+**正确答案：A, B, D**
+
+**解析：** 这测试对单控制器设计的理解，来自`docs/async/overview.rst`和`cosmos_rl/dispatcher/controller.py`。文档指出：'单控制器架构 - 协调所有工作器，消除重量级编排层'。(A)正确 - 它是SPOF但轻量级。(B)正确 - 集中协调简化了协议。(C)错误 - 数据传输是工作器之间的P2P，不通过控制器。(D)正确 - `PolicyStatusManager`和`RolloutStatusManager`集中状态。(E)错误 - 设计可以跨数据中心扩展。
+
+---
+
+## cosmos-rl - 问题 10 (多选题)
+在Cosmos-RL的FP8量化实现中，哪些关键设计选择平衡了训练精度与计算效率？
+
+- (A) 框架支持FP8计算的dynamic_scaling和delayed_scaling配方
+- (B) 推荐使用行级量化而不是张量级量化以获得更好的精度保持
+- (C) FP8量化统一应用于所有模型参数，包括嵌入和层归一化
+- (D) 推演工作器在权重同步期间动态量化从策略工作器接收的权重
+- (E) 框架需要专门的FP8功能硬件（H100）才能启用量化
+
+**正确答案：A, B, D**
+
+**解析：** 这测试对FP8的理解，来自`docs/quantization/fp8.rst`和`cosmos_rl/policy/config/__init__.py`（FP8Config）。(A)正确 - 两种配方都受支持。(B)正确 - 文档指出'推荐使用rowwise以获得更好的精度'。(C)错误 - 不是所有参数都被量化。(D)正确 - 文档提到推演在权重同步期间动态量化。(E)错误 - 虽然H100是最优的，但不是严格要求的。
+
+---
+
+## cosmos-rl - 问题 11 (单选题)
+在Cosmos-RL中实现LoRA（低秩适应）时，为什么框架必须在同步到推演工作器之前合并LoRA权重？
+
+- (A) 因为推理引擎（vLLM、TensorRT-LLM）不支持LoRA适配器格式，需要完全合并的权重
+- (B) 因为合并减少了需要通过网络传输的参数总数
+- (C) 因为LoRA适配器在权重同步期间无法量化为FP8格式
+- (D) 因为推演工作器使用与LoRA不兼容的不同模型架构
+
+**正确答案：A**
+
+**解析：** 这测试对LoRA集成的理解，来自`cosmos_rl/policy/trainer/grpo_trainer.py`，其中在权重同步之前调用`merge_lora_weights_`。代码显示：`if self.config.policy.lora is not None: merge_lora_weights_(self.model)`在向推演发送权重之前。像vLLM和TensorRT-LLM这样的推理引擎针对标准模型格式进行了优化，不原生支持LoRA适配器，需要合并的权重。(B)错误 - 合并不减少参数。(C)错误 - 量化是正交的。(D)错误 - 使用相同的架构。
+
+---
+
+## cosmos-rl - 问题 12 (多选题)
+Cosmos-RL的Atom抽象如何实现灵活的分布式训练配置？
+
+- (A) 每个Atom代表一个单独的GPU进程，在多维并行网格中有其位置
+- (B) Atom存储其在所有并行维度（pp、dp_shard、cp、tp）上的等级，遵循MESH_NAMES顺序
+- (C) Atom抽象允许控制器确定哪些工作器负责特定操作，如推演获取
+- (D) Atom随着训练工作负载的变化而动态创建和销毁，以优化资源利用
+- (E) 每个Atom维护自己独立的模型权重副本，无需同步
+
+**正确答案：A, B, C**
+
+**解析：** 这测试对Atom抽象的理解，来自`cosmos_rl/dispatcher/replica.py`。(A)正确 - Atom代表单个GPU进程。(B)正确 - Atom为每个维度存储等级。(C)正确 - 代码检查atom等级以确定责任（例如，'pp_rank is 0, cp_rank is 0, tp_rank is 0'用于推演获取）。(D)错误 - Atom在副本初始化时创建，不是动态的。(E)错误 - Atom同步权重。
+
+---
+
+## cosmos-rl - 问题 13 (多选题)
+为Cosmos-RL的分布式训练实现高性能NCCL通信的关键挑战是什么，框架如何解决它们？
+
+- (A) NCCL操作可能无限期挂起，因此框架实现了具有默认值的可配置超时
+- (B) 创建NCCL通信器需要从rank 0广播到所有参与者的唯一ID
+- (C) NCCL不支持异构GPU类型，要求所有工作器使用相同的硬件
+- (D) 框架使用分组NCCL操作来批处理多个发送/接收并提高效率
+- (E) 由于弹性扩展，每当参与工作器集合发生变化时，必须重新创建NCCL通信器
+
+**正确答案：A, B, D, E**
+
+**解析：** 这测试对NCCL使用的理解，来自`cosmos_rl/utils/pynccl.py`和`cosmos_rl/policy/trainer/grpo_trainer.py`。(A)正确 - `_get_timeout_ms`提供可配置的超时。(B)正确 - rank 0上的`create_nccl_uid`，然后广播。(C)错误 - NCCL支持异构GPU。(D)正确 - `nccl_group_start/end`批处理操作。(E)正确 - 当副本更改时，BuildMesh命令重新创建通信器。
+
+---
+
+## cosmos-rl - 问题 14 (多选题)
+在Cosmos-RL的奖励计算管道中，哪些机制确保奖励正确归因于生成的完成？
+
+- (A) 每个推演有效载荷包括一个prompt_idx，将完成链接回数据集中的源提示
+- (B) 框架支持本地参考答案（来自数据集）和远程参考答案（来自有效载荷）用于奖励计算
+- (C) 过滤奖励与训练奖励分开计算，以实现动态采样而不影响学习信号
+- (D) 奖励总是在推演生成期间同步计算以确保一致性
+- (E) RolloutGroup抽象封装提示、完成和参考答案以进行批量奖励计算
+
+**正确答案：A, B, C, E**
+
+**解析：** 这测试对奖励计算的理解，来自`cosmos_rl/reward/reward_calculator.py`和`cosmos_rl/dispatcher/data/schema.py`。(A)正确 - prompt_idx跟踪源。(B)正确 - 代码检查`payload.reference_answer if not self.config.train.local_dataset else self.query_reference_answer(payload.prompt_idx)`。(C)正确 - filter_reward与reward分离。(D)错误 - 奖励由RewardDispatcher异步计算。(E)正确 - RolloutGroup封装此数据。
+
+---
+

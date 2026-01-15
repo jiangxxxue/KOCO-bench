@@ -1,0 +1,37 @@
+# Development directories
+tool_descriptions/
+tool_examples/
+
+# wip directory
+wip/
+
+# Exclude specific comparison outputs
+wip/tool-comparison-2/comparison/
+
+# Environment and system files
+.env
+.venv/
+.python-version
+.DS_Store
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+smolclaude/__pycache__/
+smolclaude/tools/__pycache__/
+
+# Distribution / packaging
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+wip/tool-comparison-2/outputs/

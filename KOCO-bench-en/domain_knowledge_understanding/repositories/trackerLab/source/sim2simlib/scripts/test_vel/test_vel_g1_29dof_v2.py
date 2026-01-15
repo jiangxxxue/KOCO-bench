@@ -1,0 +1,118 @@
+import numpy as np
+from sim2simlib.model.config import Sim2Sim_Config, Observations_Config, Actions_Config, Motor_Config
+from sim2simlib.model.sim2sim_base import Sim2SimBaseModel
+from sim2simlib.model.actuator_motor import DCMotor, PIDMotor
+from sim2simlib.utils.config import load_from_py, load_from_yaml
+from sim2simlib import SIM2SIMLIB_ASSETS_DIR
+
+ckpt_dir = ""
+
+env_cfg = load_from_yaml(f"{ckpt_dir}/params/env.yaml")
+
+config = Sim2Sim_Config(
+    robot_name='g1_29dof',
+    simulation_dt=0.005,
+    slowdown_factor=1.0,
+    control_decimation=4,
+    xml_path=f"{SIM2SIMLIB_ASSETS_DIR}/unitree_g1/mjcf/scene_29dof.xml",
+    policy_path=f"{ckpt_dir}/exported/policy.pt",
+    policy_joint_names=['left_hip_pitch_joint', 'right_hip_pitch_joint', 'waist_yaw_joint', 'left_hip_roll_joint', 'right_hip_roll_joint', 'waist_roll_joint', 'left_hip_yaw_joint', 'right_hip_yaw_joint', 'waist_pitch_joint', 'left_knee_joint', 'right_knee_joint', 'left_shoulder_pitch_joint', 'right_shoulder_pitch_joint', 'left_ankle_pitch_joint', 'right_ankle_pitch_joint', 'left_shoulder_roll_joint', 'right_shoulder_roll_joint', 'left_ankle_roll_joint', 'right_ankle_roll_joint', 'left_shoulder_yaw_joint', 'right_shoulder_yaw_joint', 'left_elbow_joint', 'right_elbow_joint', 'left_wrist_roll_joint', 'right_wrist_roll_joint', 'left_wrist_pitch_joint', 'right_wrist_pitch_joint', 'left_wrist_yaw_joint', 'right_wrist_yaw_joint'],
+    observation_cfg=Observations_Config(
+        base_observations_terms=['base_ang_vel', 
+                             'gravity_orientation', 
+                             'cmd', 
+                             'joint_pos', 
+                             'joint_vel',
+                             'last_action'],
+        using_base_obs_history=False,
+        base_obs_his_length=1,
+        scale={
+                'base_ang_vel': 0.2,
+                'cmd': 1.0,
+                'gravity_orientation': 1.0,
+                'joint_pos': 1.0,
+                'joint_vel': 0.05,
+                'last_action': 1.0
+            },
+        ),
+    cmd=[0,0,0],
+    action_cfg=Actions_Config(
+        action_clip=(-100.0, 100.0),
+        scale=0.25
+    ),
+    motor_cfg=Motor_Config(
+        motor_type=PIDMotor,
+        effort_limit={
+            # "legs"
+            ".*_hip_pitch_.*": 88, 
+            ".*_hip_yaw_.*": 88, 
+            "waist_yaw_joint": 88,
+            ".*_hip_roll_.*": 139,
+            ".*_knee_.*": 139,
+            # "arms"
+            ".*_shoulder_.*": 25,
+            ".*_elbow_.*": 25,
+            ".*_wrist_roll.*": 25,
+            ".*_ankle_.*": 25,
+            "waist_roll_joint": 25,
+            "waist_pitch_joint": 25,
+            # "feet"
+            ".*_wrist_pitch.*": 5,
+            ".*_wrist_yaw.*": 5
+        },
+        stiffness={
+            # "legs"
+            ".*_hip_pitch_.*": 100.0,
+            ".*_hip_yaw_.*": 100.0, 
+            "waist_yaw_joint": 200.0,
+            ".*_hip_roll_.*": 100.0,
+            ".*_knee_.*": 150.0,
+            # "arms"
+            ".*_shoulder_.*": 40.0,
+            ".*_elbow_.*": 40.0,
+            ".*_wrist_roll.*": 40.0,
+            ".*_ankle_.*": 40.0,
+            "waist_roll_joint": 40.0,
+            "waist_pitch_joint": 40.0,
+            # "feet"
+            ".*_wrist_pitch.*": 40.0,
+            ".*_wrist_yaw.*": 40.0,
+        },
+        damping={
+            # "legs"
+            ".*_hip_pitch_.*": 2.0,
+            ".*_hip_yaw_.*": 2.0,
+            "waist_yaw_joint": 5.0,
+            ".*_hip_roll_.*": 2.0,
+            ".*_knee_.*": 4.0,
+            # "arms"
+            ".*_shoulder_.*": 10.0,
+            ".*_elbow_.*": 10.0,
+            ".*_wrist_roll.*": 10.0,
+            ".*_ankle_.*": 2.0,
+            "waist_roll_joint": 5.0,
+            "waist_pitch_joint": 5.0,
+            # "feet"
+            ".*_wrist_pitch.*": 10.0,
+            ".*_wrist_yaw.*": 10.0,
+        },
+    ),
+
+    default_pos=np.array([0.0, 0.0, 0.8], dtype=np.float32),
+    default_angles={
+            "left_hip_pitch_joint": -0.1,
+            "right_hip_pitch_joint": -0.1,
+            ".*_knee_joint": 0.3,
+            ".*_ankle_pitch_joint": -0.2,
+            ".*_shoulder_pitch_joint": 0.3,
+            "left_shoulder_roll_joint": 0.25,
+            "right_shoulder_roll_joint": -0.25,
+            ".*_elbow_joint": 0.97,
+            "left_wrist_roll_joint": 0.15,
+            "right_wrist_roll_joint": -0.15,
+        },
+)
+
+mujoco_model = Sim2SimBaseModel(config)
+
+mujoco_model.view_run()

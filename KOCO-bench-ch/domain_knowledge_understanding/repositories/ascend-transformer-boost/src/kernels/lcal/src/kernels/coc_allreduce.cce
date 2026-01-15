@@ -1,0 +1,729 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#ifdef __DAV_C220_VEC__
+#include "coc_internal.cce"
+#include "coc_comm_base.cce"
+#include "kernel_operator.h"
+using namespace AscendC;
+
+template <TEMPLATE_ARGS_FUN()>
+class AllReduce : public CocCommBase<T> {
+public:
+    __aicore__ explicit AllReduce(){};
+
+    FORCE_INLINE_AICORE void SetArgs(COC_ARGS_FUN(T))
+    {
+        CocCommBase<T>::SetArgsForReduce(COC_ARGS_CALL());
+        preprocessor.SetArgs(PP_MATMUL_AIV_PADDING_ARGS_CALL());
+        postprocessor.SetArgs(PP_MATMUL_AIV_POST_ARGS_CALL());
+        if constexpr (HAVE_BIAS) {
+            add_bias_runner.SetArgs(PP_MATMUL_AIV_ADD_BIAS_ARGS_CALL());
+        }
+        need_dequant = workspace_info.gm_accum;
+        if (need_dequant) {
+            if (withSerialMode) {
+                serial_dequant_runner.SetArgs(reinterpret_cast<__gm__ bfloat16_t *>(buff[rank]), workspace_info,
+                                              reinterpret_cast<__gm__ int64_t *>(gm_dequant_scale),
+                                              reinterpret_cast<__gm__ int32_t *>(gm_dequant_offset),
+                                              dequant_granularity, batch_size, m, n);
+            } else {
+                fused_dequant_runner.SetArgs(reinterpret_cast<__gm__ bfloat16_t *>(buff[rank]), workspace_info,
+                                             reinterpret_cast<__gm__ int64_t *>(gm_dequant_scale),
+                                             reinterpret_cast<__gm__ int32_t *>(gm_dequant_offset), dequant_granularity,
+                                             batch_size, m, n, m0, n0, m_loop, n_loop, core_loop, swizzl_direct,
+                                             swizzl_count, p_value, rank_size);
+            }
+        }
+        if (dequant_granularity == QuantGranularity::PER_TOKEN) {
+            fused_pertoken_dequant_runner.SetArgs(reinterpret_cast<__gm__ T *>(buff[rank]),
+                        reinterpret_cast<__gm__ float32_t *>(gm_quant_scale), m, n,
+                        m0, n0, m_loop, n_loop, core_loop, swizzl_direct, swizzl_count, p_value, rank_size);
+            serial_pertoken_dequant_runner.SetArgs(reinterpret_cast<__gm__ T *>(gm_out), reinterpret_cast<__gm__ float32_t*>(gm_quant_scale), m, n, m0, n0);
+        }
+        total_core_idx = aiv_idx * core_num + core_idx;
+        cal_count = DivCeil(core_loop, loop_num_per_comm);
+    }
+
+    FORCE_INLINE_AICORE int32_t GetCoreGroup() {
+        if (total_core_idx < core_count) {
+            return 0;
+        }
+        if (total_core_idx < core_count + SIO_TOTAL_CORE_NUM) {
+            return 1;
+        }
+        return -1;
+    }
+
+    FORCE_INLINE_AICORE void InitFlags() {
+        if constexpr (HAVE_BIAS) {
+            SetAtomicAdd<T>();
+            PipeBarrier<PIPE_ALL>();
+        }
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);  // MTE2等MTE3
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);  // MTE2等MTE3
+    }
+
+    FORCE_INLINE_AICORE void EndFlagsAndBias() {
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);  // MTE2等MTE3
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);  // MTE2等MTE3
+
+        if constexpr (HAVE_BIAS) {
+            SetFlag<HardEvent::MTE3_S>(EVENT_ID0);  // Scalar等MTE3
+            WaitFlag<HardEvent::MTE3_S>(EVENT_ID0);
+            SetAtomicNone();
+            PipeBarrier<PIPE_ALL>();
+        }
+    }
+
+    FORCE_INLINE_AICORE void StartBeforeFisrtStep(uint64_t flag_idx) {
+        SetAndWaitAivSync(flag_idx, is_91093 ? BLOCK_COUNT_4 : MAX_BLOCK_COUNT);
+        SetAtomicAdd<T>();
+        PipeBarrier<PIPE_ALL>();
+    }
+
+    FORCE_INLINE_AICORE void EndFirstStep(uint64_t flag_idx) {
+        SetFlag<HardEvent::MTE3_S>(EVENT_ID0); // Scalar等MTE3
+        WaitFlag<HardEvent::MTE3_S>(EVENT_ID0);
+        SetAtomicNone();
+        PipeBarrier<PIPE_ALL>();
+        SetAndWaitAivSync(flag_idx, is_91093 ? BLOCK_COUNT_4 : MAX_BLOCK_COUNT);
+    }
+
+    // input是peermem属于每个rank的部分的首地址
+    FORCE_INLINE_AICORE void SecondStepParallel(int32_t data_size_remain, __gm__ T* input, int32_t gm_out_offset) {
+        if (data_size_remain <= 0) {
+            return;
+        }
+        InitFlags();
+        int32_t ping_pong_move_count = DivCeil(data_size_remain, max_ub_ping_pong_size);
+
+        for (int32_t move_idx = 0; move_idx < ping_pong_move_count; ++move_idx){
+            int32_t actual_move_size = (move_idx == ping_pong_move_count - 1) ?
+                data_size_remain - move_idx * max_ub_ping_pong_size : max_ub_ping_pong_size;
+            auto event_id = (move_idx & 1) ? EVENT_ID0 : EVENT_ID1;
+            auto ub_buff_st = (move_idx & 1) ? output_UB_T[0] : output_UB_T[1];
+            WaitFlag<HardEvent::MTE3_MTE2>(event_id);
+            CopyGmToUbuf(ub_buff_st, input + move_idx * max_ub_ping_pong_size, 1,
+                         actual_move_size * sizeof(T) / 32, 0, 0);
+            SetFlag<HardEvent::MTE2_MTE3>(event_id);
+            WaitFlag<HardEvent::MTE2_MTE3>(event_id);
+            int32_t move_num_offset = gm_out_offset + move_idx * max_ub_ping_pong_size;
+            CopyUbToGmTransLayout(ub_buff_st, actual_move_size, move_num_offset);
+            SetFlag<HardEvent::MTE3_MTE2>(event_id);
+        }
+        EndFlagsAndBias();
+    }
+
+    FORCE_INLINE_AICORE void SecondStepParallelWithSplit(int32_t data_size_remain, int32_t cal_idx,
+                                                                             int32_t flag_idx, int32_t data_loop_idx) {
+        if (data_size_remain <= 0) {
+            return;
+        }
+        InitFlags();
+        int32_t rank_per_core = rank_size / comm_npu_split;
+        int32_t core_rank_offset = (core_idx / comm_data_split) * rank_per_core;
+        for (int32_t index = 0; index < rank_per_core; index++) {
+            int32_t rank_idx_rot = (index + core_idx) % rank_per_core;
+            int32_t real_core_idx = core_rank_offset + rank_idx_rot;
+            int32_t before_other_rank_offset = data_loop_idx * comm_data_split * len_per_loop;
+            int32_t other_rank_offset = before_other_rank_offset + real_core_idx * m_per_rank * n0 + core_idx % comm_data_split * len_per_loop;
+            int32_t other_rank_buff_offset = flag_idx * gm_c_pingpong_size + other_rank_offset;
+            int32_t ping_pong_move_count = DivCeil(data_size_remain, max_ub_ping_pong_size);
+
+            for (int32_t move_idx = 0; move_idx < ping_pong_move_count; ++move_idx){
+                int32_t actual_move_size = (move_idx == ping_pong_move_count - 1) ?
+                    data_size_remain - move_idx * max_ub_ping_pong_size : max_ub_ping_pong_size;
+                auto event_id = (move_idx & 1) ? EVENT_ID0 : EVENT_ID1;
+                auto ub_buff_st = (move_idx & 1) ? output_UB_T[0] : output_UB_T[1];
+                WaitFlag<HardEvent::MTE3_MTE2>(event_id);
+                CopyGmToUbuf(ub_buff_st, buff[real_core_idx] + other_rank_buff_offset + move_idx * max_ub_ping_pong_size, 1,
+                            actual_move_size * sizeof(T) / 32, 0, 0);
+                SetFlag<HardEvent::MTE2_MTE3>(event_id);
+                WaitFlag<HardEvent::MTE2_MTE3>(event_id);
+                int64_t move_num_offset = other_rank_offset + move_idx * max_ub_ping_pong_size;
+                CopyUbToGmTransLayout(ub_buff_st, actual_move_size, move_num_offset + cal_idx * gm_c_pingpong_size);
+                SetFlag<HardEvent::MTE3_MTE2>(event_id);
+            }
+        }
+        EndFlagsAndBias();
+    }
+
+    FORCE_INLINE_AICORE void FirstStepDivCore(int32_t data_len, int32_t offset) {
+        // 4或8卡确定性，用tree
+        if (is_deterministic && rank_size >= 4 && rank_size <= 8) {
+            return FirstStepInPeerMemTree(data_len, offset);
+        }
+        // 否则，用线性累加
+        return FirstStepInPeerMemSeq(data_len, offset);
+    }
+
+    FORCE_INLINE_AICORE void SecondStepSerial(int32_t data_size_remain, __gm__ T *input,
+                                                                           __gm__ T *output)
+    {
+        if (data_size_remain <= 0) {
+            return;
+        }
+        InitFlags();
+
+        int32_t offset = 0;
+        for (int32_t move_idx = 0; data_size_remain >= max_ub_ping_pong_size; ++move_idx) {
+            auto event_id = (move_idx & 1) ? EVENT_ID0 : EVENT_ID1;
+            auto ub = (move_idx & 1) ? output_UB_T[0] : output_UB_T[1];
+            WaitFlag<HardEvent::MTE3_MTE2>(event_id);
+            CopyGmToUbuf(ub, input + offset, 1, max_ub_ping_pong_size * sizeof(T) / 32, 0, 0);
+            SetFlag<HardEvent::MTE2_MTE3>(event_id);  // MTE3等MTE2
+            WaitFlag<HardEvent::MTE2_MTE3>(event_id);
+            CopyUbufToGm(output + offset, ub, 1, max_ub_ping_pong_size * sizeof(T) / 32, 0, 0);
+            SetFlag<HardEvent::MTE3_MTE2>(event_id);  // MTE2等MTE3
+            data_size_remain -= max_ub_ping_pong_size;
+            offset += max_ub_ping_pong_size;
+        }
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0); // MTE2等MTE3
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID1); // MTE2等MTE3
+
+        if (data_size_remain >= 0) {
+            CopyGmToUbuf(output_UB_T[0], input + offset, 1, (data_size_remain * sizeof(T) + 31) / 32, 0, 0);
+            SetFlag<HardEvent::MTE2_MTE3>(EVENT_ID0);  // MTE3等MTE2
+            WaitFlag<HardEvent::MTE2_MTE3>(EVENT_ID0);
+            if (ALIGN) {
+                CopyUbufToGm(output + offset, output_UB_T[0], 1, data_size_remain * sizeof(T) / 32, 0, 0);
+            } else {
+                CopyUbufToGmAlignB16(output + offset, output_UB_T[0], 1, data_size_remain * sizeof(T), 0, 0);
+            }
+        }
+
+        if constexpr (HAVE_BIAS) {
+            SetFlag<HardEvent::MTE3_S>(EVENT_ID0); // Scalar等MTE3
+            WaitFlag<HardEvent::MTE3_S>(EVENT_ID0);
+            SetAtomicNone();
+            PipeBarrier<PIPE_ALL>();
+        }
+    }
+
+    FORCE_INLINE_AICORE void ParallelWithSplit() {
+        ResetIpcFlags(3);
+        PipeBarrier<PIPE_ALL>();
+
+        for (int32_t cal_idx = 0; cal_idx < cal_count; ++cal_idx) {
+            uint64_t flag_idx = cal_idx % MAX_BLOCK_COUNT;
+            int32_t actual_loop_num = (cal_idx == cal_count - 1) ? core_loop - cal_idx * loop_num_per_comm :
+                                                        loop_num_per_comm;
+            int32_t m_total = actual_loop_num * m0;
+            m_per_rank = DivCeil(m_total, rank_size);       // pvalue * corenum / ranksize * m0
+            m_in_rank = (rank * m_per_rank >= m_total) ? 0 :
+                            ((rank + 1) * m_per_rank > m_total ? m_total - rank * m_per_rank : m_per_rank);
+            // wait aic
+            WaitEvent(flag_idx);
+
+            if (need_dequant) {
+                SetAndWaitAivSync(flag_idx);
+                fused_dequant_runner.RunDequantAllReduce(cal_idx);
+            }
+
+            if (dequant_granularity == QuantGranularity::PER_TOKEN) {
+                SetAndWaitAivSync(flag_idx);
+                //fused_pertoken_dequant_runner.Run(cal_idx);
+                fused_pertoken_dequant_runner.RunDequantAllReduce(cal_idx);
+            }
+            // aiv之间同步
+            SetAndWaitAivSync(flag_idx);
+
+            // 卡内matmul结果准备就绪
+            CrossRankSyncV1(FLAG_ZERO_IDX, cal_idx + 1);
+
+            StartBeforeFisrtStep(flag_idx);
+
+            int32_t rank_total = m_in_rank * n0;
+            int32_t rank_offset = rank * m_per_rank * n0;
+
+            int32_t rank_buff_offset = flag_idx * m0 * n0 * loop_num_per_comm + rank_offset;
+
+            int32_t len_per_core = rank_total / comm_data_split;
+            int32_t data_split_num = DivCeil(len_per_core, len_per_loop);
+
+            SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+            SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);
+            for (int loop_index = 0; loop_index < data_split_num; loop_index++) {
+                if (aiv_idx == 0 && core_idx < comm_data_split * comm_npu_split) {
+                    int32_t before_core_offset = len_per_loop * comm_data_split * loop_index;
+                    int32_t loop_total = rank_total - before_core_offset;
+                    int32_t real_core_offset = core_idx % comm_data_split * len_per_loop;
+
+                    int32_t m_in_core = (real_core_offset >= loop_total) ? 0 :
+                                        ((real_core_offset + len_per_loop) > loop_total ?
+                                        loop_total - real_core_offset : len_per_loop);
+
+                    FirstStepDivCore(m_in_core, rank_buff_offset + before_core_offset + real_core_offset);
+                }
+            }
+            WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+            WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);
+            EndFirstStep(flag_idx);
+
+            CrossRankSyncV1(FLAG_ONE_IDX, cal_idx + 1);
+            SetAndWaitAivSync(flag_idx);
+
+            for (int loop_index = 0; loop_index < data_split_num; loop_index++) {
+                if (aiv_idx == 0 && core_idx < comm_data_split * comm_npu_split) {
+                    int32_t before_core_offset = len_per_loop * comm_data_split * loop_index;
+                    int32_t loop_total = rank_total - before_core_offset;
+                    int32_t real_core_offset = core_idx % comm_data_split * len_per_loop;
+
+                    int32_t m_in_core = (real_core_offset >= loop_total) ? 0 :
+                                        ((real_core_offset + len_per_loop) > loop_total ?
+                                        loop_total - real_core_offset : len_per_loop);
+
+                    SecondStepParallelWithSplit(m_in_core, cal_idx, flag_idx, loop_index);
+                }
+            }
+            SetAndWaitAivSync(flag_idx);
+
+            CrossRankSyncV2(FLAG_TWO_IDX, cal_idx + 1);
+
+            // aiv之间同步
+            SetAndWaitAivSync(flag_idx);
+
+            // 发送aic同步
+            SetAicSync(flag_idx);
+        }
+        ResetIpcFlags(3);
+
+        if (aiv_idx == 0 && core_idx < rank_size) {
+            CheckBuffFlag(ctrl_flags_UB, (__gm__ int32_t *)buff[other_rank] + flag_offset + FLAG_ZERO_IDX, 0);
+        }
+    }
+
+
+    FORCE_INLINE_AICORE void DataCopySioRs(int32_t cal_idx_sio, int32_t len_per_rank) {
+        int32_t flag_idx_sio = cal_idx_sio % BLOCK_COUNT_4;
+        int32_t len_per_core = len_per_rank / SIO_TOTAL_CORE_NUM;
+        int32_t sio_core_idx = total_core_idx - core_count;
+        int32_t core_offset = sio_core_idx * len_per_core;
+        int32_t sio_peer_rank = rank ^ 1;
+        // sio-0搬0 2 4 6，sio-1搬1 3 5 7
+        for(int32_t src_rank = rank % 2; src_rank < rank_size; src_rank += 2) {
+            int32_t peer_offset = flag_idx_sio * gm_c_pingpong_size + src_rank * len_per_rank + core_offset;
+            FirstStepInPeerMem(len_per_core, buff[sio_peer_rank] + peer_offset, buff[rank] + peer_offset);
+        }
+    }
+
+    FORCE_INLINE_AICORE void DataCopySioAg(int32_t cal_idx_sio, int32_t len_per_rank) {
+        int32_t flag_idx_sio = cal_idx_sio % BLOCK_COUNT_4;
+        int32_t len_per_core = len_per_rank / SIO_TOTAL_CORE_NUM;
+        int32_t sio_core_idx = total_core_idx - core_count;
+        int32_t core_offset = sio_core_idx * len_per_core;
+        int32_t sio_peer_rank = rank ^ 1;
+        // 1从0卡搬0 2 4 6， 0从1卡搬1 3 5 7
+        for(int32_t src_rank = sio_peer_rank % 2; src_rank < rank_size; src_rank += 2) {
+            int32_t peer_offset = flag_idx_sio * gm_c_pingpong_size + src_rank * len_per_rank;
+            int32_t dst_offset = cal_idx_sio * gm_c_pingpong_size + src_rank * len_per_rank + core_offset;
+            SecondStepParallel(len_per_core, buff[sio_peer_rank] + peer_offset + core_offset, dst_offset);
+        }
+        // copy自己卡
+        int32_t local_offset = flag_idx_sio * gm_c_pingpong_size + rank * len_per_rank + core_offset;
+        int32_t dst_offset = cal_idx_sio * gm_c_pingpong_size + rank * len_per_rank + core_offset;
+        SecondStepParallel(len_per_core, buff[rank] + local_offset, dst_offset);
+    }
+
+    FORCE_INLINE_AICORE void ParallelSio() {
+        ResetIpcFlags(3);
+        PipeBarrier<PIPE_ALL>();
+        int32_t last_loop_num = core_loop - (cal_count - 1) * loop_num_per_comm;
+        int32_t core_group = GetCoreGroup();
+        for (int32_t cal_idx = 0; cal_idx < cal_count + 2; ++cal_idx) {
+            int32_t hccs_idx = cal_idx - 1; // sio-rs -> hccs -> sio-ag
+            int32_t sio2_idx = cal_idx - 2; // sio-ag
+            int32_t flag_idx_sio1 = cal_idx % BLOCK_COUNT_4;
+            int32_t flag_idx_hccs = hccs_idx % BLOCK_COUNT_4;
+            int32_t flag_idx_sio2 = sio2_idx % BLOCK_COUNT_4;
+            int32_t loop_num_hccs = hccs_idx == cal_count - 1 ? last_loop_num : loop_num_per_comm;
+            // wait aic
+            if (cal_idx < cal_count){
+                WaitEvent(flag_idx_sio1);
+            }
+
+            if (need_dequant) {
+                fused_dequant_runner.RunDequantAllReduce(cal_idx);
+            }
+
+            // aiv之间同步
+            SetAndWaitAivSync(flag_idx_sio1, BLOCK_COUNT_4);
+
+            // 卡内matmul结果准备就绪
+            CrossRankSyncV1(FLAG_ZERO_IDX, cal_idx + 1);
+
+            StartBeforeFisrtStep(flag_idx_sio1);
+
+            if (core_group == 0 && cal_idx >= 1 && cal_idx < cal_count + 1) {   // step 2-1 hccs rs
+                int32_t size_per_rank = loop_num_hccs * m0 * n0 / rank_size;
+                int32_t rank_offset = rank * size_per_rank;
+                int32_t rank_buff_offset = flag_idx_hccs * gm_c_pingpong_size + rank_offset;
+                int32_t size_per_core = size_per_rank / (comm_data_split);
+
+                int32_t data_split_num = DivCeil(size_per_core, len_per_loop);
+
+                SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+                SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);
+                for (int loop_index = 0; loop_index < data_split_num; loop_index++) {
+                    int32_t before_core_offset = len_per_loop * comm_data_split * loop_index;
+                    int32_t loop_total = size_per_rank - before_core_offset;
+                    int32_t real_core_offset = core_idx % comm_data_split * len_per_loop;
+
+                    int32_t m_in_core = (real_core_offset >= loop_total) ? 0 :
+                                        ((real_core_offset + len_per_loop) > loop_total ?
+                                        loop_total - real_core_offset : len_per_loop);
+
+                    FirstStepDivCore(m_in_core, rank_buff_offset + before_core_offset + real_core_offset);
+                }
+                WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+                WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);
+            }
+            if (core_group == 1 && cal_idx < cal_count) {      // step 1 sio reducescatter
+                int32_t loop_num_sio1 = cal_idx == cal_count - 1 ? last_loop_num : loop_num_per_comm;
+                int32_t size_per_rank = loop_num_sio1 * m0 * n0 / rank_size;
+                DataCopySioRs(cal_idx, size_per_rank);
+            }
+
+            EndFirstStep(flag_idx_sio1);
+
+            CrossRankSyncV1(FLAG_ONE_IDX, cal_idx + 1);
+            SetAndWaitAivSync(flag_idx_sio1, BLOCK_COUNT_4);
+            if (core_group == 0 && cal_idx >= 1 && cal_idx < cal_count + 1) {   // step2-2 hccs ag
+                int32_t size_per_rank = loop_num_hccs * m0 * n0 / rank_size;
+                int32_t pipe_offset = flag_idx_hccs * gm_c_pingpong_size + other_rank * size_per_rank;
+                int32_t dst_offset = hccs_idx * gm_c_pingpong_size + other_rank * size_per_rank;
+                if ((other_rank % 2) == (rank % 2) && other_rank != rank) {
+                    FirstStepInPeerMemTransLayout(size_per_rank, buff[other_rank] + pipe_offset, buff[rank] + pipe_offset, dst_offset);
+                }
+            }
+            if (core_group == 1 && cal_idx >= 2) {      // step3: sio-ag
+                int32_t loop_num_sio2 = sio2_idx == cal_count - 1 ? last_loop_num : loop_num_per_comm;
+                int32_t size_per_rank = loop_num_sio2 * m0 * n0 / rank_size;
+                DataCopySioAg(sio2_idx, size_per_rank);
+            }
+            SetAndWaitAivSync(flag_idx_sio1, BLOCK_COUNT_4);
+            CrossRankSyncV2(FLAG_TWO_IDX, cal_idx + 1);
+
+            // aiv之间同步
+            SetAndWaitAivSync(flag_idx_sio1, BLOCK_COUNT_4);
+
+            // 发送aic同步
+            if (cal_idx >= 2)
+                SetAicSync(flag_idx_sio2);
+        }
+        ResetIpcFlags(3);
+
+        if (aiv_idx == 0 && core_idx < rank_size) {
+            CheckBuffFlag(ctrl_flags_UB, (__gm__ int32_t *)buff[other_rank] + flag_offset + FLAG_ZERO_IDX, 0);
+        }
+    }
+
+
+    FORCE_INLINE_AICORE void Serial() {
+        SetBuffFlag(ctrl_flags_UB, (__gm__ int32_t *)buff[rank] + flag_offset + MAX_FLAG_COUNT + FLAG_ONE_IDX, tag);
+        // aic/aiv之间同步
+        WaitEvent(AIV_WAIT_AIC_FINISH_MATMUL_FLAG_ID);
+
+        FFTSCrossCoreSync<PIPE_MTE3>(0, AIV_FINISH_ALIGN_FLAG_ID);
+        WaitEvent(AIV_FINISH_ALIGN_FLAG_ID);
+
+        if (need_dequant) {
+            serial_dequant_runner.Run();
+        }
+        if (aiv_idx == 1 && core_idx < rank_size) {
+            int32_t data_size = batch_size * m * n;
+            int32_t data_size_per_rank = (data_size + BLOCK_SIZE_16 * rank_size - 1) / (BLOCK_SIZE_16 * rank_size) * BLOCK_SIZE_16;
+            if (other_rank == rank){
+                SetBuffFlag(ctrl_flags_UB, (__gm__ int32_t *)buff[rank] + flag_offset + MAX_FLAG_COUNT + FLAG_ZERO_IDX, tag);
+            }else {
+                CheckBuffFlag(ctrl_flags_UB, (__gm__ int32_t *)buff[other_rank] + flag_offset + MAX_FLAG_COUNT + FLAG_ZERO_IDX, tag);
+                PipeBarrier<PIPE_ALL>();
+                int32_t rank_buff_offset = rank * data_size_per_rank;
+                FirstStepInPeerMem(data_size_per_rank, buff[other_rank] + rank_buff_offset, buff[rank] + rank_buff_offset, true);
+                SetBuffFlagByAdd(ctrl_flags_UB, (__gm__ int32_t *)buff[rank] + flag_offset + MAX_FLAG_COUNT + FLAG_ONE_IDX, tag);
+            }
+            CheckBuffFlag(ctrl_flags_UB, (__gm__ int32_t *)buff[other_rank] + flag_offset + MAX_FLAG_COUNT + FLAG_ONE_IDX, tag * rank_size);
+            PipeBarrier<PIPE_ALL>();
+            int32_t data_size_in_other_rank = data_size_per_rank;
+            if (other_rank * data_size_in_other_rank >= data_size){
+                data_size_in_other_rank = 0;
+            } else if ((other_rank + 1) * data_size_in_other_rank > data_size){
+                data_size_in_other_rank = data_size - other_rank * data_size_per_rank;
+            }
+            int32_t other_rank_buff_offset = other_rank * data_size_per_rank;
+            SecondStepSerial(data_size_in_other_rank, buff[other_rank] + other_rank_buff_offset, gm_out + other_rank_buff_offset);
+        }
+    }
+
+    FORCE_INLINE_AICORE void SerialWithSplit() {
+        SetBuffFlag(ctrl_flags_UB, (__gm__ int32_t *)buff[rank] + flag_offset + MAX_FLAG_COUNT + FLAG_ONE_IDX, tag);
+        // aic/aiv之间同步
+        WaitEvent(AIV_WAIT_AIC_FINISH_MATMUL_FLAG_ID);
+
+        FFTSCrossCoreSync<PIPE_MTE3>(0, AIV_FINISH_ALIGN_FLAG_ID);
+        WaitEvent(AIV_FINISH_ALIGN_FLAG_ID);
+
+        if (need_dequant) {
+            serial_dequant_runner.Run();
+        }
+
+        int32_t data_size = batch_size * m * n;
+        int32_t data_size_per_rank = (data_size + BLOCK_SIZE_16 * rank_size - 1) / (BLOCK_SIZE_16 * rank_size) * BLOCK_SIZE_16;
+
+        int32_t use_core_count = comm_npu_split * comm_data_split;
+        int32_t rank_buff_offset = rank * data_size_per_rank;
+
+        int32_t len_per_core = data_size_per_rank / comm_data_split;
+        int32_t data_split_num = DivCeil(len_per_core, len_per_loop);
+
+        SetAndWaitAivSync(0);
+        CrossRankSyncV3(MAX_FLAG_COUNT + FLAG_ZERO_IDX, tag);
+        StartBeforeFisrtStep(0);
+
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);
+        for (int loop_index = 0; loop_index < data_split_num; loop_index++) {
+            if (aiv_idx == 0 && core_idx < comm_data_split * comm_npu_split) {
+                int32_t before_core_offset = len_per_loop * comm_data_split * loop_index;
+                int32_t loop_total = data_size_per_rank - before_core_offset;
+                int32_t real_core_offset = core_idx % comm_data_split * len_per_loop;
+
+                int32_t m_in_core = (real_core_offset >= loop_total) ? 0 :
+                                    ((real_core_offset + len_per_loop) > loop_total ?
+                                    loop_total - real_core_offset : len_per_loop);
+
+                FirstStepDivCore(m_in_core, rank_buff_offset + before_core_offset + real_core_offset);
+            }
+        }
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);
+
+        EndFirstStep(0);
+
+        CrossRankSyncV4(MAX_FLAG_COUNT + FLAG_ONE_IDX, tag);
+        SetAndWaitAivSync(0);
+
+        if (aiv_idx == 0 && core_idx < rank_size) {
+            PipeBarrier<PIPE_ALL>();
+            int32_t data_size_in_other_rank = data_size_per_rank;
+            if (other_rank * data_size_in_other_rank >= data_size){
+                data_size_in_other_rank = 0;
+            } else if ((other_rank + 1) * data_size_in_other_rank > data_size){
+                data_size_in_other_rank = data_size - other_rank * data_size_per_rank;
+            }
+            int32_t other_rank_buff_offset = other_rank * data_size_per_rank;
+            SecondStepSerial(data_size_in_other_rank, buff[other_rank] + other_rank_buff_offset, gm_out + other_rank_buff_offset);
+        }
+    }
+
+    FORCE_INLINE_AICORE void Run()
+    {
+        // Padding
+        preprocessor.Run();
+        
+        if constexpr (HAVE_BIAS) {
+            add_bias_runner.Run();
+        }
+
+        if (withSerialMode) {
+            if (is_deterministic) {
+                SerialWithSplit();
+            } else {
+                Serial();
+            }
+        } else {
+            ParallelWithSplit();
+        }
+
+
+
+        PipeBarrier<PIPE_ALL>();
+        postprocessor.Run();
+        PipeBarrier<PIPE_ALL>();
+
+        if (withSerialMode && dequant_granularity == QuantGranularity::PER_TOKEN) {
+            serial_pertoken_dequant_runner.Run();
+        }
+        
+    }
+
+public:
+    using CocCommBase<T>::SetAicSync;
+    using CocCommBase<T>::SetAndWaitAivSync;
+    using CocCommBase<T>::SetBuffFlag;
+    using CocCommBase<T>::SetBuffFlagByAdd;
+    using CocCommBase<T>::CheckBuffFlag;
+    using CocCommBase<T>::FillZero;
+    using CocCommBase<T>::FirstStepInPeerMem;
+    using CocCommBase<T>::FirstStepInPeerMemSeq;
+    using CocCommBase<T>::FirstStepInPeerMemTree;
+    using CocCommBase<T>::FirstStepInPeerMemTransLayout;
+    using CocCommBase<T>::CopyUbToGmTransLayout;
+    using CocCommBase<T>::ResetIpcFlags;
+    using CocCommBase<T>::CrossRankSyncV1;
+    using CocCommBase<T>::CrossRankSyncV2;
+    using CocCommBase<T>::CrossRankSyncV3;
+    using CocCommBase<T>::CrossRankSyncV4;
+    using CocCommBase<T>::buff;
+    using CocCommBase<T>::gm_out;
+    using CocCommBase<T>::ctrl_flags_UB;
+    using CocCommBase<T>::output_UB_T;
+    using CocCommBase<T>::batch_size;
+    using CocCommBase<T>::m;
+    using CocCommBase<T>::k;
+    using CocCommBase<T>::n;
+    using CocCommBase<T>::m0;
+    using CocCommBase<T>::k0;
+    using CocCommBase<T>::n0;
+    using CocCommBase<T>::m_loop;
+    using CocCommBase<T>::n_loop;
+    using CocCommBase<T>::k_loop;
+    using CocCommBase<T>::core_loop;
+    using CocCommBase<T>::core_idx;
+    using CocCommBase<T>::core_num;
+    using CocCommBase<T>::rank;
+    using CocCommBase<T>::rank_size;
+    using CocCommBase<T>::tiling_key;
+    using CocCommBase<T>::swizzl_count;
+    using CocCommBase<T>::swizzl_direct;
+    using CocCommBase<T>::trans_a;
+    using CocCommBase<T>::trans_b;
+    using CocCommBase<T>::is_int8;
+    using CocCommBase<T>::is_91093;
+    using CocCommBase<T>::p_value;
+    using CocCommBase<T>::aiv_idx;
+    using CocCommBase<T>::other_rank;
+    using CocCommBase<T>::max_ub_single_dma_size;
+    using CocCommBase<T>::max_ub_ping_pong_size;
+    using CocCommBase<T>::withSerialMode;
+    using CocCommBase<T>::tag;
+    using CocCommBase<T>::loop_num_per_comm;    // p_value * core_num
+    using CocCommBase<T>::gm_c_pingpong_size;
+    using CocCommBase<T>::dequant_granularity;
+    using CocCommBase<T>::dequant_group_size;
+    using CocCommBase<T>::quant_granularity;
+    using CocCommBase<T>::quant_group_size;
+    using CocCommBase<T>::workspace_info;
+    using CocCommBase<T>::comm_npu_split;
+    using CocCommBase<T>::comm_data_split;
+    using CocCommBase<T>::len_per_loop;
+    using CocCommBase<T>::core_count;
+    using CocCommBase<T>::weight_nz;
+    using CocCommBase<T>::is_deterministic;
+    using CocCommBase<T>::local_expert_nums;
+    using CocCommBase<T>::is_moe;
+    using CocCommBase<T>::is_moe_averaged;
+    using CocCommBase<T>::is_alltoallvc;
+    using CocCommBase<T>::EP;
+    using CocCommBase<T>::TP;
+    using CocCommBase<T>::flag_offset;
+    int32_t cal_count;
+    int32_t m_per_rank;
+    int32_t m_in_rank;
+    int32_t total_core_idx;
+    Preprocessor<T> preprocessor;
+    Postprocessor<T, T> postprocessor;
+    MatmulAllReduceBiasAdder<T> add_bias_runner;
+    SerialDequantRunner serial_dequant_runner;
+    FusedDequantRunner fused_dequant_runner;
+    //AllReduceFusedPerTokenDequantRunner<T> fused_pertoken_dequant_runner;
+    FusedPerTokenDequantRunner<T> fused_pertoken_dequant_runner;
+    SerialPerTokenDequantRunner<T> serial_pertoken_dequant_runner;
+    bool need_dequant;
+};
+
+constexpr int32_t NO_BIAS_MASK1 = 0b000000 | 0b100000 | 0b010000 | 0b110000 | 0b001000 | 0b101000 | 0b011000 |
+                                  0b111000 | 0b000100 | 0b100100 | 0b010100 | 0b110100 | 0b001100 | 0b101100 |
+                                  0b011100 | 0b111100;
+constexpr int32_t BIAS_MASK1 = 0b000010 | 0b100010 | 0b010010 | 0b110010 | 0b001010 | 0b101010 | 0b011010 | 0b111010 |
+                               0b000110 | 0b100110 | 0b010110 | 0b110110 | 0b001110 | 0b101110 | 0b011110 | 0b111110;
+
+template<typename T>
+FORCE_INLINE_AICORE void RunAllReduceAlign16(int32_t tiling_key, COC_ARGS_FUN(T)) {
+    // 16 align
+    AllReduce<true, false, false, T> allreduce_align_16_without_bias;
+    AllReduce<true, false, true, T> allreduce_align_16_with_bias;
+    switch (tiling_key) {
+        case 0b000000 : case 0b100000 : case 0b010000 : case 0b110000 :
+        case 0b001000 : case 0b101000 : case 0b011000 : case 0b111000 :
+        case 0b000100 : case 0b100100 : case 0b010100 : case 0b110100 :
+        case 0b001100 : case 0b101100 : case 0b011100 : case 0b111100 :
+            allreduce_align_16_without_bias.SetArgs(COC_ARGS_CALL());
+            allreduce_align_16_without_bias.Run();
+            break;
+        case 0b000010 : case 0b100010 : case 0b010010 : case 0b110010 :
+        case 0b001010 : case 0b101010 : case 0b011010 : case 0b111010 :
+        case 0b000110 : case 0b100110 : case 0b010110 : case 0b110110 :
+        case 0b001110 : case 0b101110 : case 0b011110 : case 0b111110 :
+            allreduce_align_16_with_bias.SetArgs(COC_ARGS_CALL());
+            allreduce_align_16_with_bias.Run();
+            break;
+        default :
+            break;
+    }
+}
+
+template<typename T>
+FORCE_INLINE_AICORE void RunAllReduceUnAlign16(int32_t tiling_key, COC_ARGS_FUN(T)) {
+    // 16 unalign
+    AllReduce<false, false, false, T> allreduce_unalign_16_without_bias;
+    AllReduce<false, false, true, T> allreduce_unalign_16_with_bias;
+    switch (tiling_key) {
+        case 0b000000 : case 0b100000 : case 0b010000 : case 0b110000 :
+        case 0b001000 : case 0b101000 : case 0b011000 : case 0b111000 :
+        case 0b000100 : case 0b100100 : case 0b010100 : case 0b110100 :
+        case 0b001100 : case 0b101100 : case 0b011100 : case 0b111100 :
+            allreduce_unalign_16_without_bias.SetArgs(COC_ARGS_CALL());
+            allreduce_unalign_16_without_bias.Run();
+            break;
+        case 0b000010 : case 0b100010 : case 0b010010 : case 0b110010 :
+        case 0b001010 : case 0b101010 : case 0b011010 : case 0b111010 :
+        case 0b000110 : case 0b100110 : case 0b010110 : case 0b110110 :
+        case 0b001110 : case 0b101110 : case 0b011110 : case 0b111110 :
+            allreduce_unalign_16_with_bias.SetArgs(COC_ARGS_CALL());
+            allreduce_unalign_16_with_bias.Run();
+            break;
+        default :
+            break;
+    }
+}
+
+template <typename T>
+inline __aicore__ void CocMatmulAllReduceAiv(COC_ARGS_FUN(T))
+{
+    // 16 align
+    AllReduce<true, false, false, T> allreduce_align_16_without_bias;
+    AllReduce<true, false, true, T> allreduce_align_16_with_bias;
+    // 16 unalign
+    AllReduce<false, false, false, T> allreduce_unalign_16_without_bias;
+    AllReduce<false, false, true, T> allreduce_unalign_16_with_bias;
+
+    SetAtomicNone();
+    SetMaskNormImpl();
+    SetSyncBaseAddr((uint64_t)ffts_addr);
+    SetVectorMask<int32_t>((uint64_t)-1, (uint64_t)-1);
+
+    auto para = reinterpret_cast<__gm__ Lcal::CoCKernelParam *>(para_gm);
+    auto cocTilingData = &para->cocTilingData;
+    int64_t batch_size = cocTilingData->batchSize;
+    int32_t m = cocTilingData->m;
+    int32_t n = cocTilingData->n;
+    int32_t tiling_key = cocTilingData->tilingKey;
+    int32_t rank_size = cocTilingData->rankSize;
+    int32_t withSerialMode = cocTilingData->withSerialMode;
+    // swizzl = 0 transa = 0 transb = 0 splitk = 0 bias = 0 int8 = 0
+    if ((withSerialMode == 0 && n % BLOCK_SIZE_16 == 0) || (withSerialMode && (batch_size * m * n) % (rank_size * BLOCK_SIZE_16) == 0)){
+        RunAllReduceAlign16(tiling_key, COC_ARGS_CALL());
+    } else {
+        RunAllReduceUnAlign16(tiling_key, COC_ARGS_CALL());
+    }
+    PipeBarrier<PIPE_ALL>();
+}
+#endif

@@ -1,0 +1,8 @@
+dataset_name: eth
+rgb_hz: 2.0
+url_download_root: "https://huggingface.co/datasets/wildflow/sweet-corals"
+resolution_size: [640, 480]
+
+sequence_names:
+  - indonesia_tabuhan
+  

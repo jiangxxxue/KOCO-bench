@@ -1,0 +1,4 @@
+{
+  "framework_name": "verl",
+  "framework_description": "verl (Volcano Engine Reinforcement Learning) is a flexible, efficient and production-ready RL training library for large language models (LLMs). It supports various RL algorithms like PPO and GRPO, integrates with mainstream frameworks including FSDP, Megatron-LM, vLLM, and SGLang, features state-of-the-art throughput performance and flexible device mapping capabilities, and scales to hundreds of GPUs and hundreds of billion parameter models."
+}

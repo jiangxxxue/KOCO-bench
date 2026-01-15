@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|ConcatOperation1|142.385|142.385
+2|ConcatOperation2|142.3|142.3
+3|ConcatOperation3|145.205|145.205
+4|ConcatOperation4|147.255|147.255

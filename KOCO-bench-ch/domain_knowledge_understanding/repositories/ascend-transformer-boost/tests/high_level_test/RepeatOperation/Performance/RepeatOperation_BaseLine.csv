@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|RepeatOperation1|145.48|145.48
+2|RepeatOperation2|156.995|156.995
+3|RepeatOperation3|289.34|289.34
+4|RepeatOperation4|333.995|333.995

@@ -1,0 +1,81 @@
+name: Deploy Github Pages
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ffrog/triton:b5cc222d-py3.9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      # TODO(FFFrog): This is a workaround for actions/checkout@v4
+      - name: setup safety
+        run: |
+          git config --global --add safe.directory ${GITHUB_WORKSPACE}
+
+      - name: setup pages
+        uses: actions/configure-pages@v5
+
+      - name: build triton
+        run: |
+          export TRITON_PLUGIN_DIRS=${GITHUB_WORKSPACE}/ascend
+          export LLVM_SYSPATH=/usr/local/llvm
+
+          export TRITON_BUILD_WITH_CLANG_LLD=True
+          export TRITON_BUILD_WITH_CCACHE=True
+          export TRITON_APPEND_CMAKE_ARGS="-DTRITON_BUILD_UT=OFF"
+          export TRITON_BUILD_PROTON=OFF
+
+          python setup.py develop
+
+      - name: setup dependencies for docs
+        run: |
+          pip3 install -r docs/requirements.txt
+
+      - name: build docs
+        run: |
+          export PATH=`python3 -c "import sysconfig; print(sysconfig.get_path('scripts'))"`:${PATH}
+
+          make -C docs/ clean
+          make -C docs/ html
+
+      - name: upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy:
+    needs: build
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: deploy to gitHub pages
+        id: deployment
+        uses: actions/deploy-pages@v4

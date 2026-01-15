@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|GenAttentionMaskOperation1|73.605|73.605
+2|GenAttentionMaskOperation2|73.185|73.185
+3|GenAttentionMaskOperation3|72.59|72.59
+4|GenAttentionMaskOperation4|73.365|73.365

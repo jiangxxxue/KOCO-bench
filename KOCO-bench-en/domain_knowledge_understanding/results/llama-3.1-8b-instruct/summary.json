@@ -1,0 +1,7 @@
+{
+  "model": "meta-llama/llama-3.1-8b-instruct",
+  "total": 107,
+  "correct": 23,
+  "incorrect": 84,
+  "accuracy_percent": 21.5
+}

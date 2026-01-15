@@ -1,0 +1,6 @@
+dataset_name: dataset_name_template
+
+rgb_hz: 30.0
+url_download_root: ""
+
+sequence_names:

@@ -1,0 +1,185 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include <cstdint>
+#include "collectives.cce"
+
+template<typename T>
+inline __aicore__ void GM2GMB8(int64_t dataSizeRemain, __ubuf__ T *inputUB, __gm__ T *receiveBuff, int64_t revBuffOffsetNum,
+                             __gm__ T *sendBuff, int64_t sendBuffOffsetNum)
+{
+    int64_t times = 0;
+    AscendC::PipeBarrier<PIPE_ALL>();
+    while (dataSizeRemain >= UB_SINGLE_DMA_SIZE_MAX) {
+        AscendC::PipeBarrier<PIPE_ALL>();
+        CpGM2UBAlignB16(inputUB, (__gm__ T*)sendBuff + sendBuffOffsetNum + UB_SINGLE_DMA_SIZE_MAX / sizeof(T) * times,
+                UB_SINGLE_DMA_SIZE_MAX);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        AscendC::PipeBarrier<PIPE_ALL>();
+        CpUB2GMAlignB16(
+            (__gm__ T*)receiveBuff + revBuffOffsetNum + UB_SINGLE_DMA_SIZE_MAX / sizeof(T) * times,
+            inputUB, UB_SINGLE_DMA_SIZE_MAX);
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+        AscendC::PipeBarrier<PIPE_ALL>();
+        times += 1;
+        dataSizeRemain -= UB_SINGLE_DMA_SIZE_MAX;
+    }
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+    AscendC::PipeBarrier<PIPE_ALL>();
+    CpGM2UBAlignB16(inputUB, (__gm__ T*)sendBuff + sendBuffOffsetNum + times * UB_SINGLE_DMA_SIZE_MAX / sizeof(T),
+            dataSizeRemain);
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    AscendC::PipeBarrier<PIPE_ALL>();
+    CpUB2GMAlignB16(
+        (__gm__ T*)receiveBuff + revBuffOffsetNum + times * UB_SINGLE_DMA_SIZE_MAX / sizeof(T),
+        inputUB, dataSizeRemain);
+    AscendC::PipeBarrier<PIPE_ALL>();
+}
+
+
+extern "C" __global__ __aicore__ void LcalBroadcastWrite(ALLREDUCE_ARGS_FUN(char))
+{
+    const int64_t corePerRank = GetLcalBlockNum() / rankSize;
+    const int64_t coreSegmentedIdx = GetBlockIdx() % corePerRank;
+    const int64_t x = GetBlockIdx() / corePerRank;
+    if (x >= rankSize) {
+        return;
+    }
+    if (rank != root && x != rank) {
+        return;
+    }
+    if (rank == root && x == root) {
+        return;
+    }
+
+    __gm__ char* buff[8] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7
+    };
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t*)(0);
+    __ubuf__ char* inputUB = (__ubuf__ char*)(64);
+
+    const int64_t singleCoreDataSize = len / corePerRank;
+    int64_t dataNumRemain = singleCoreDataSize;
+    int64_t buffOffsetNum = coreSegmentedIdx * singleCoreDataSize;
+    if (coreSegmentedIdx == corePerRank - 1) {
+        dataNumRemain = len - buffOffsetNum;
+    }
+    if (rank == root) {
+        __gm__ char *receiveBuff = (__gm__ char*)((__gm__ int64_t*)buff[x] + GetLcalBlockNum() * MEM_DMA_UNIT_INT_NUM);
+        GM2GMB8<char>(dataNumRemain, inputUB, receiveBuff, buffOffsetNum, input, buffOffsetNum);
+        SetFlag(ctrlFlagsUB, (__gm__ int64_t *)buff[x] + GetBlockIdx() * MEM_DMA_UNIT_INT_NUM, magic);
+        CheckFlag(ctrlFlagsUB, ((__gm__ int64_t*)buff[rank] + (GetBlockIdx() + GetLcalBlockNum()) * MEM_DMA_UNIT_INT_NUM), magic);
+    } else {
+        CheckFlag(ctrlFlagsUB, ((__gm__ int64_t*)buff[rank] + GetBlockIdx() * MEM_DMA_UNIT_INT_NUM), magic);
+        __gm__ char *sendBuff = (__gm__ char*)((__gm__ int64_t*)buff[x] + GetLcalBlockNum() * MEM_DMA_UNIT_INT_NUM);
+        __gm__ char *receiveBuff = (__gm__ char*)output;
+        GM2GMB8<char>(dataNumRemain, inputUB, receiveBuff, buffOffsetNum, sendBuff, buffOffsetNum);
+        SetFlag(ctrlFlagsUB, (__gm__ int64_t *)buff[root] + (GetBlockIdx() + GetLcalBlockNum()) * MEM_DMA_UNIT_INT_NUM, magic);
+    }
+}
+
+__attribute__((always_inline)) inline __aicore__ void LcalBroadcast2npuBigDataWriteOrigin(ALLREDUCE_ARGS_FUN(char))
+{
+    uint32_t blockSize = UB_SINGLE_DMA_SIZE_MAX;
+    int64_t magicInner = magic << SYNC_FLAG_BIT_NUM;
+    __gm__ char* buff[8] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7
+    };
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t * )(0);
+    __ubuf__ char* inputUB = (__ubuf__ char*)(64);
+    len = CeilDiv(len, 2) * 2;
+    const int64_t groupSize = rankSize - 1;
+    const int64_t groupDataSize = blockSize * groupSize;
+    const int64_t groupNum = CeilDiv(len, groupDataSize);
+    const int64_t blockTotalNum = CeilDiv(len, blockSize);
+    const int64_t lastBlockNum = CeilDiv(len - (groupNum - 1) * groupDataSize, blockSize);
+    if (GetBlockIdx() == rank || GetBlockIdx() >= rankSize) {
+        return;
+    }
+    int64_t inputIndex = GetBlockIdx();
+    if (GetBlockIdx() == root) {
+        if (rank > root) {
+            inputIndex = rank - 1;
+        } else {
+            inputIndex = rank;
+        }
+    } else if (GetBlockIdx() > root) {
+        inputIndex = GetBlockIdx() - 1;
+    }
+    int64_t blockDataOffset;
+    int64_t remain;
+    if (rank == root) {
+        for (int64_t currentCount = inputIndex; currentCount < blockTotalNum; currentCount += groupSize) {
+            blockDataOffset = currentCount * blockSize;
+            remain = (currentCount == blockTotalNum - 1) ? (len - (blockTotalNum - 1) * blockSize) : blockSize;
+            CopyInput2BuffBroadCast(inputUB, buff[GetBlockIdx()], (__gm__ char*)input, remain, blockDataOffset);
+            SetFlag(ctrlFlagsUB, (__gm__ int64_t * )buff[GetBlockIdx()] + root * MEM_DMA_UNIT_INT_NUM, magicInner + currentCount);
+        }
+    } else {
+        for (int64_t currentCount = inputIndex; currentCount < blockTotalNum; currentCount += groupSize) {
+            blockDataOffset = currentCount * blockSize;
+            remain = (currentCount == blockTotalNum - 1) ? (len - (blockTotalNum - 1) * blockSize) : blockSize;
+            CheckFlagGE(ctrlFlagsUB, ((__gm__ int64_t * )buff[rank] + root * MEM_DMA_UNIT_INT_NUM), magicInner + currentCount);
+            AscendC::PipeBarrier<PIPE_ALL>();
+
+            if (remain > 0) {
+                CpGM2UB(inputUB, (__gm__ char*)((__gm__ int64_t * )buff[rank] + GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM) + blockDataOffset, remain);
+                AscendC::PipeBarrier<PIPE_ALL>();
+                CpUB2GM((__gm__ char*)output + blockDataOffset, inputUB, remain);
+            }
+        }
+    }
+    SetFlag(ctrlFlagsUB, (__gm__ int64_t * )buff[GetBlockIdx()] + (GetLcalBlockNum() + root) * MEM_DMA_UNIT_INT_NUM, magic);
+    CheckFlag(ctrlFlagsUB, ((__gm__ int64_t * )buff[rank] + (GetLcalBlockNum() + root) * MEM_DMA_UNIT_INT_NUM), magic);
+}
+
+__attribute__((always_inline)) inline __aicore__ void LcalBroadcast2npuBigDataWrite(ALLREDUCE_ARGS_FUN(char))
+{
+    magic = magic << SYNC_FLAG_BIT_NUM;
+    __gm__ char* buff[8] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7
+    };
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t*)(0);
+
+    const int64_t dataOffsetNum = GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM;
+    const int64_t postSyncFlagIdx = MEM_DMA_UNIT_INT_NUM + (GetLcalBlockNum() + GetBlockIdx()) * MEM_DMA_UNIT_INT_NUM;
+    const int64_t loopNum = CeilDiv(len, IPC_BUFF_MAX_SIZE);
+
+    for (int64_t i = 0; i < loopNum; i++) {
+        int64_t processedNum = i * IPC_BUFF_MAX_SIZE;
+        int64_t remainNum = (len - processedNum < IPC_BUFF_MAX_SIZE) ? len - processedNum : IPC_BUFF_MAX_SIZE;
+        if (i > 0) {
+            SyncWithinNPUNew(ctrlFlagsUB, (__gm__ int64_t *)((__gm__ char *)buff[rank] + IPC_BUFF_MAX_SIZE) + dataOffsetNum + MEM_DMA_UNIT_INT_NUM, magic + i);
+
+            __gm__ int64_t* ctrlFlagsGM =  (__gm__ int64_t *)((__gm__ char *)buff[rank] + IPC_BUFF_MAX_SIZE) + dataOffsetNum + postSyncFlagIdx;
+            SetFlag((__ubuf__ int64_t*)ctrlFlagsUB, ctrlFlagsGM, (int64_t)magic + i);
+
+            for (int64_t targetNPU = 0; targetNPU < rankSize; targetNPU++) {
+                if (targetNPU == rank) {
+                    continue;
+                }
+                __gm__ int64_t* ctrlFlagsGMX =  (__gm__ int64_t *)((__gm__ char *)buff[targetNPU] + IPC_BUFF_MAX_SIZE) + dataOffsetNum + postSyncFlagIdx;
+                CheckFlagNew(ctrlFlagsUB, ctrlFlagsGMX, (int64_t)magic + i);
+            }
+        }
+        LcalBroadcast2npuBigDataWriteOrigin(
+                            input + processedNum, output + processedNum, rank, rankSize, remainNum, magic + i, 0, root,
+                            localRankSize, loopTime, sendCountMatrix, dumpAddr,
+                            buff0, buff1, buff2, buff3, buff4, buff5, buff6, buff7);
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
+}

@@ -1,0 +1,197 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include "collectives.cce"
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void Utils(__ubuf__ T * ub, __gm__ T * gm, T value)
+{
+    AscendC::PipeBarrier<PIPE_ALL>();
+    *ub = value;
+    AscendC::PipeBarrier<PIPE_ALL>();
+    CpUB2GM(gm, ub, sizeof(T));
+    AscendC::PipeBarrier<PIPE_ALL>();
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void SumByPairs(
+    __ubuf__ int64_t *ctrlFlagsUB, __gm__ T* buff[8], int64_t x, int64_t blockNumPerGroup, int64_t corePerRank,
+    int64_t coreSegmentedIdx, int64_t magic, int64_t deterministicOffNum, int64_t thisNPUProcessDataNum,
+    int64_t thisNPUCoreGroupAvgDMADataNum, int64_t dataOffsetNum, int64_t dataSizeRemain, __ubuf__ T *inputUB[2],
+    int op, int rank, int rankSize) {
+    int64_t target = 0;
+    __gm__ int64_t *ctrlFlagsGM;
+    __gm__ int64_t *ctrlFlagsGMTemp;
+    __gm__ int64_t *ctrlFlagsGMTemp1;
+    int64_t buffOffsetNum;
+
+    if (x == 0) {
+        return;
+    }
+
+    int64_t multiple = GetDeterministicRankOffset(x);
+    if ((x & 1) == 1) {
+        target = x - multiple;
+        ctrlFlagsGMTemp = (__gm__ int64_t*)buff[rank] + (blockNumPerGroup + target * corePerRank + coreSegmentedIdx) * MEM_DMA_UNIT_INT_NUM;
+        CheckFlag(ctrlFlagsUB, ctrlFlagsGMTemp, magic);
+
+        buffOffsetNum = deterministicOffNum + x * thisNPUProcessDataNum + coreSegmentedIdx * thisNPUCoreGroupAvgDMADataNum;
+        __gm__ T *processOutput = (__gm__ T*)((__gm__ int64_t *)buff[rank] + dataOffsetNum);
+        int64_t outputOffsetNum = deterministicOffNum + target * thisNPUProcessDataNum + coreSegmentedIdx * thisNPUCoreGroupAvgDMADataNum;
+        ProcessData(dataSizeRemain, inputUB[0], buff[rank], dataOffsetNum, buffOffsetNum,
+                    processOutput, outputOffsetNum, op);
+        ctrlFlagsGM = (__gm__ int64_t*)buff[rank] + (GetLcalBlockNum() + GetBlockIdx()) * MEM_DMA_UNIT_INT_NUM;
+        SetFlag(ctrlFlagsUB, ctrlFlagsGM, magic + multiple);
+    } else {
+        target = x - multiple;
+        ctrlFlagsGMTemp = (__gm__ int64_t*)buff[rank] + (GetLcalBlockNum() + blockNumPerGroup + (target + multiple / 2) * corePerRank + coreSegmentedIdx) * MEM_DMA_UNIT_INT_NUM;
+        CheckFlag(ctrlFlagsUB, ctrlFlagsGMTemp, magic + multiple / 2);
+
+        int64_t multipleTemp = multiple;
+        while (x + multipleTemp / 2 >= rankSize) {
+            multipleTemp /= 2;
+        }
+        if (multipleTemp > 1) {
+            ctrlFlagsGMTemp1 = (__gm__ int64_t*)buff[rank] + (GetLcalBlockNum() + blockNumPerGroup + (x + multipleTemp / 2) * corePerRank + coreSegmentedIdx) * MEM_DMA_UNIT_INT_NUM;
+            CheckFlag(ctrlFlagsUB, ctrlFlagsGMTemp1, magic + multipleTemp / 2);
+        }
+
+        buffOffsetNum = deterministicOffNum + x * thisNPUProcessDataNum + coreSegmentedIdx * thisNPUCoreGroupAvgDMADataNum;
+        __gm__ T *processOutput = (__gm__ T*)((__gm__ int64_t *)buff[rank] + dataOffsetNum);
+        int64_t outputOffsetNum = deterministicOffNum + target * thisNPUProcessDataNum + coreSegmentedIdx * thisNPUCoreGroupAvgDMADataNum;
+        ProcessData(dataSizeRemain, inputUB[0], buff[rank], dataOffsetNum, buffOffsetNum,
+                    processOutput, outputOffsetNum, op);
+        ctrlFlagsGM = (__gm__ int64_t*)buff[rank] + (GetLcalBlockNum() + GetBlockIdx()) * MEM_DMA_UNIT_INT_NUM;
+        SetFlag(ctrlFlagsUB, ctrlFlagsGM, magic + multiple);
+    }
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void LcalAllReduceDeterministic(ALLREDUCE_ARGS_FUN_16P(T))
+{
+    DumpLcclLogInfo(dumpAddr, LogId::OVERALL, static_cast<Op>(op));
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, static_cast<Op>(op));
+    magic <<= 10;
+    const int64_t dataOffsetNum = GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM;
+    int64_t flagOffset1st = MEM_DMA_UNIT_INT_NUM * GetBlockIdx();
+    constexpr int32_t maxBuffSize = 16;
+    __gm__ T* buff[maxBuffSize] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7,
+        buff8, buff9, buff10, buff11,
+        buff12, buff13, buff14, buff15
+    };
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t*)(0);
+    __ubuf__ int64_t* ctrlFlagsUB1 = (__ubuf__ int64_t*)(32);
+    __ubuf__ int64_t* ctrlFlagsUB2 = (__ubuf__ int64_t*)(64);
+    __ubuf__ T* inputUB[2] = {(__ubuf__ T*)(96), (__ubuf__ T*)(97440)};
+
+    int64_t blockNumPerGroup = GetLcalBlockNum() >> 1;
+    int64_t corePerRank = blockNumPerGroup / rankSize;
+    int64_t coreSegmentedIdx = GetBlockIdx() % corePerRank;
+
+    int64_t x = GetBlockIdx() / corePerRank;
+    if (GetBlockIdx() >= blockNumPerGroup) {
+        x = (GetBlockIdx() - blockNumPerGroup) / corePerRank;
+        flagOffset1st = (GetBlockIdx() - blockNumPerGroup) * MEM_DMA_UNIT_INT_NUM;
+    }
+    int64_t flagOffset2nd = GetLcalBlockNum() * MEM_DMA_UNIT_INT_NUM + flagOffset1st;
+
+    const int64_t singleNPUProcessDataNum = len / rankSize;
+    int64_t thisNPUProcessDataNum = singleNPUProcessDataNum;
+    if (rank == rankSize - 1) {
+        thisNPUProcessDataNum = len - rank * singleNPUProcessDataNum;
+    }
+
+    int64_t xNPUProcessDataNum = singleNPUProcessDataNum;
+    if (x == rankSize - 1) {
+        xNPUProcessDataNum = len - x * singleNPUProcessDataNum;
+    }
+
+    const int64_t xNPUCoreGroupAvgDMADataNum = xNPUProcessDataNum / corePerRank;
+    const int64_t thisNPUCoreGroupAvgDMADataNum = thisNPUProcessDataNum / corePerRank;
+
+    int64_t dataSizeRemain = xNPUCoreGroupAvgDMADataNum * sizeof(T);
+    if (coreSegmentedIdx == corePerRank - 1) {
+        dataSizeRemain = (xNPUProcessDataNum - coreSegmentedIdx * xNPUCoreGroupAvgDMADataNum) * sizeof(T);
+    }
+
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, static_cast<Op>(op));
+
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+    int64_t buffOffsetNum = x * singleNPUProcessDataNum + coreSegmentedIdx * xNPUCoreGroupAvgDMADataNum;
+    int64_t deterministicOffNum = len;
+
+    if (GetBlockIdx() < blockNumPerGroup) {
+        __gm__ T *receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[rank] + dataOffsetNum);
+        GM2GM(dataSizeRemain, inputUB[0], receiveBuff, buffOffsetNum, input, buffOffsetNum);
+        __gm__ int64_t* ctrlFlagsGM = (__gm__ int64_t*)buff[rank] + flagOffset1st;
+        SetFlag(ctrlFlagsUB, ctrlFlagsGM, magic);
+    } else {
+        buffOffsetNum = rank * singleNPUProcessDataNum + coreSegmentedIdx * thisNPUCoreGroupAvgDMADataNum;
+        dataSizeRemain = thisNPUCoreGroupAvgDMADataNum * sizeof(T);
+        if (coreSegmentedIdx == corePerRank - 1) {
+            dataSizeRemain = (thisNPUProcessDataNum - coreSegmentedIdx * thisNPUCoreGroupAvgDMADataNum) * sizeof(T);
+        }
+
+        __gm__ int64_t* ctrlFlagsGMX = (__gm__ int64_t*)buff[x] + (coreSegmentedIdx + rank * corePerRank) * MEM_DMA_UNIT_INT_NUM;
+
+        __gm__ T *receiveBuff = (__gm__ T*)((__gm__ int64_t *)buff[rank] + dataOffsetNum);
+        __gm__ T *sendBuff = (__gm__ T *)((__gm__ int64_t *)buff[x] + dataOffsetNum);
+        int64_t revBuffOffsetNum = deterministicOffNum + x * thisNPUProcessDataNum + coreSegmentedIdx * thisNPUCoreGroupAvgDMADataNum;
+        CheckFlag((__ubuf__ int64_t*)ctrlFlagsUB, ctrlFlagsGMX, magic);
+        GM2GM(dataSizeRemain, inputUB[0], receiveBuff, revBuffOffsetNum, sendBuff, buffOffsetNum);
+
+        __gm__ int64_t* ctrlFlagsGM = (__gm__ int64_t*)buff[rank] + GetBlockIdx() * MEM_DMA_UNIT_INT_NUM;
+
+        if (rankSize >= 4) {
+            SetFlag(ctrlFlagsUB, ctrlFlagsGM, magic);
+            SumByPairs(ctrlFlagsUB, buff, x, blockNumPerGroup, corePerRank, coreSegmentedIdx, magic, deterministicOffNum, thisNPUProcessDataNum,
+                       thisNPUCoreGroupAvgDMADataNum, dataOffsetNum, dataSizeRemain, inputUB, op, rank, rankSize);
+        } else {
+            SetFlag(ctrlFlagsUB, ctrlFlagsGM, ((x == 0) ? (magic + 1) : magic));
+            if (x != 0) {
+                __gm__ int64_t *ctrlFlagsGMTemp = (__gm__ int64_t*)buff[rank] + (blockNumPerGroup + (x - 1) * corePerRank + coreSegmentedIdx) * MEM_DMA_UNIT_INT_NUM;
+                CheckFlag(ctrlFlagsUB, ctrlFlagsGMTemp, magic + 1);
+                buffOffsetNum = deterministicOffNum + x * thisNPUProcessDataNum + coreSegmentedIdx * thisNPUCoreGroupAvgDMADataNum;
+                __gm__ T *processOutput = (__gm__ T*)((__gm__ int64_t *)buff[rank] + dataOffsetNum);
+                int64_t outputOffsetNum = deterministicOffNum + coreSegmentedIdx * thisNPUCoreGroupAvgDMADataNum;
+                ProcessData(dataSizeRemain, inputUB[0], buff[rank], dataOffsetNum, buffOffsetNum,
+                            processOutput, outputOffsetNum, op);
+                SetFlag(ctrlFlagsUB, ctrlFlagsGM, magic + 1);
+            }
+        }
+    }
+    SyncWithinNPU(ctrlFlagsUB, (__gm__ int64_t *)((__gm__ T *)((__gm__ int64_t *)buff[rank] + dataOffsetNum) + IPC_BUFF_MAX_SIZE / sizeof(T)) + MEM_DMA_UNIT_INT_NUM, magic);
+
+    if (GetBlockIdx() >= blockNumPerGroup) {
+        DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+        DumpLcclLogInfo(dumpAddr, LogId::OVERALL, static_cast<Op>(op));
+        return;
+    }
+
+    __gm__ int64_t* ctrlFlagsGM = (__gm__ int64_t*)buff[rank] + (GetLcalBlockNum() + GetBlockIdx()) * MEM_DMA_UNIT_INT_NUM;
+    SetFlag((__ubuf__ int64_t*)ctrlFlagsUB, ctrlFlagsGM, (int64_t)magic);
+
+    __gm__ int64_t* ctrlFlagsGMX= ((__gm__ int64_t*)buff[x] + (GetLcalBlockNum() + GetBlockIdx()) * MEM_DMA_UNIT_INT_NUM);
+    CheckFlag((__ubuf__ int64_t*)ctrlFlagsUB, ctrlFlagsGMX, (int64_t)magic);
+
+    buffOffsetNum = coreSegmentedIdx * xNPUCoreGroupAvgDMADataNum;
+    dataSizeRemain = xNPUCoreGroupAvgDMADataNum * sizeof(T);
+    if (coreSegmentedIdx == corePerRank - 1) {
+        dataSizeRemain = (xNPUProcessDataNum - coreSegmentedIdx * xNPUCoreGroupAvgDMADataNum) * sizeof(T);
+    }
+
+    __gm__ T *sendBuff = (__gm__ T*)((__gm__ int64_t*)buff[x] + dataOffsetNum);
+    int64_t revBuffOffsetNum = x * singleNPUProcessDataNum + buffOffsetNum;
+    int64_t sendBuffOffsetNum = deterministicOffNum + buffOffsetNum;
+    GM2GM<T>(dataSizeRemain, inputUB[0], output, revBuffOffsetNum, sendBuff, sendBuffOffsetNum);
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+    DumpLcclLogInfo(dumpAddr, LogId::OVERALL, static_cast<Op>(op));
+}

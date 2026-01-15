@@ -1,0 +1,7 @@
+{
+  "model": "anthropic/claude-sonnet-4.5",
+  "total": 107,
+  "correct": 59,
+  "incorrect": 48,
+  "accuracy_percent": 55.14
+}

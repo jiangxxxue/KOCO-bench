@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|SetValueOperation1|214.685|214.685
+2|SetValueOperation2|230.795|230.795
+3|SetValueOperation3|169.96|169.96
+4|SetValueOperation4|343.355|343.355

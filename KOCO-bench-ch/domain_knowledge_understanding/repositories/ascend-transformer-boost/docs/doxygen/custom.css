@@ -1,0 +1,29 @@
+/* custom.css */
+table.ct {
+    border-collapse: collapse;
+    /* 设置表格宽度为80% */
+    width: 80%;
+}
+
+/* 表头样式 */
+th.ch {
+    /* 指定表头填充颜色为浅蓝色 */
+    background-color: rgb(225, 229, 240);
+    /* 设置表头边框样式为实线 */
+    border: 1px solid black;
+    /* 设置表头填充 */
+    padding: 8px;
+    text-align: left;
+}
+
+/* 单元格样式 */
+td.cc {
+    /* 设置单元格边框样式为实线 */
+    border: 1px solid black;
+    /* 设置单元格填充 */
+    padding: 8px;
+    /* 设置列宽 */
+    width: 20%;
+    /* 自动换行 */
+    word-wrap: break-word;
+}

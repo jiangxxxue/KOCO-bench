@@ -1,0 +1,15 @@
+dataset_name: replica
+
+rgb_hz: 30.0
+url_download_root: "https://cvg-data.inf.ethz.ch/nice-slam/data/Replica.zip"
+modes: ['mono', 'rgbd']
+
+sequence_names:
+  - office0
+  - office1
+  - office2
+  - office3
+  - office4
+  - room0
+  - room1
+  - room2

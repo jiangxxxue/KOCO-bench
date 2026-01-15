@@ -1,0 +1,277 @@
+{
+  "summary": {
+    "model": "deepseek/deepseek-chat-v3.1",
+    "total": 14,
+    "correct": 8,
+    "incorrect": 6,
+    "accuracy_percent": 57.14
+  },
+  "results": [
+    {
+      "id": 3,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In the GRPO loss computation, how does the GSPO variant differ from standard GRPO in handling importance ratios, and what are the implications for gradient flow?\n\n- (A) GSPO computes sequence-level importance ratios by averaging token-level KL divergences across each sequence\n- (B) GSPO uses the expand operation to broadcast sequence-level ratios back to token-level while maintaining gradient connections\n- (C) GSPO applies three-way clipping (loss1, loss2, loss3) for negative advantages, while standard GRPO uses two-way clipping\n- (D) GSPO eliminates the need for reference model KL penalties by incorporating them into the importance ratio calculation\n- (E) GSPO clamps the negative approximate KL at 10.0 for numerical stability before computing importance ratios",
+      "explanation": "This tests deep understanding of the `compute_loss` function in `cosmos_rl/policy/trainer/grpo_trainer.py`. (A) is correct - GSPO computes `negative_approx_kl_seq[i] = seq_tokens.sum() / seq_length`. (B) is correct - the code uses `.expand(seq_length)` to maintain gradient flow. (C) is wrong - GSPO uses two-way clipping (`torch.min(loss1, loss2)`), while standard GRPO uses three-way. (D) is wrong - both variants can use reference model KL. (E) is correct - `torch.clamp(negative_approx_kl_seq, max=10.0)` is applied in GSPO.",
+      "pred_raw": "Let's analyze each option step-by-step:\n\n- (A) GSPO computes sequence-level importance ratios by averaging token-level KL divergences across each sequence:  \n  This is incorrect. GSPO (Group Relative Policy Optimization) actually computes token-level importance ratios first and then aggregates them to sequence-level, not the other way around.\n\n- (B) GSPO uses the expand operation to broadcast sequence-level ratios back to token-level while maintaining gradient connections:  \n  This is correct. In GSPO, after computing sequence-level importance ratios (by aggregating token-level ones), it uses an expand operation to broadcast these sequence-level ratios back to token-level. This allows gradients to flow through the entire sequence during backpropagation, which is a key difference from standard GRPO.\n\n- (C) GSPO applies three-way clipping (loss1, loss2, loss3) for negative advantages, while standard GRPO uses two-way clipping:  \n  This is correct. Standard GRPO uses two-way clipping (for positive and negative advantages), but GSPO introduces three-way clipping: loss1 for positive advantages, loss2 for negative advantages with high confidence, and loss3 for negative advantages with low confidence. This helps in better handling of negative advantages.\n\n- (D) GSPO eliminates the need for reference model KL penalties by incorporating them into the importance ratio calculation:  \n  This is incorrect. GSPO still uses KL penalties; it does not eliminate them. The KL divergence is part of the importance ratio calculation in both GRPO and GSPO.\n\n- (E) GSPO clamps the negative approximate KL at 10.0 for numerical stability before computing importance ratios:  \n  This is incorrect. There is no such clamping of KL at 10.0 in GSPO. Numerical stability is handled through other means (like clipping), but not specifically by clamping KL at a fixed value.\n\nThus, the correct options are (B) and (C).\n\\boxed{B,C}",
+      "pred_letters": [
+        "B",
+        "C"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 5,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In Cosmos-RL's elastic scaling implementation, what mechanisms enable dynamic replica integration without disrupting ongoing training?\n\n- (A) The controller sends BuildMesh commands to reconstruct NCCL process groups when new replicas join\n- (B) Initialized replicas broadcast or unicast weights to new replicas based on whether they are rollout or policy workers\n- (C) New replicas automatically inherit the training state through shared filesystem checkpoints without explicit synchronization\n- (D) The heartbeat mechanism detects failed replicas and removes them from NCCL meshes to prevent blocking\n- (E) All existing replicas must pause training and enter a barrier synchronization when new replicas join",
+      "explanation": "This tests understanding of elastic scaling from `docs/elastic/overview.rst`, `cosmos_rl/dispatcher/controller.py` (BuildMesh logic), and `cosmos_rl/comm/base.py` (heartbeat). (A) is correct - BuildMesh commands reconstruct NCCL groups. (B) is correct - policy uses unicast, rollout uses broadcast per the documentation. (C) is wrong - explicit weight synchronization is required. (D) is correct - heartbeat timeout triggers replica removal. (E) is wrong - the design specifically avoids blocking existing replicas.",
+      "pred_raw": "Let’s reason step by step:  \n\n- **Option A**: In Cosmos-RL, when new replicas join, the controller issues `BuildMesh` commands to form new NCCL groups including the new replicas. This matches known RL elastic scaling mechanisms. ✅  \n\n- **Option B**: After NCCL group is built, weights are synchronized; rollout workers might broadcast, policy workers may unicast/receive parameters — this fits the described procedure. ✅  \n\n- **Option C**: Not correct — shared filesystem checkpoint loading is not the primary or dynamic integration method; explicit synchronization happens via network broadcast/unicast, not just inheriting checkpoints automatically.  ❌  \n\n- **Option D**: Heartbeat mechanism removing failed replicas is part of maintaining the NCCL mesh and avoiding hangs. This is part of dynamic scaling without disruption. ✅  \n\n- **Option E**: Training doesn’t require **all** replicas to pause and synchronize in a barrier; the system is designed to avoid such global pauses for elastic scaling. ❌  \n\nThus correct options are **A, B, D**.  \n\n\\boxed{A,B,D}",
+      "pred_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 9,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "How does Cosmos-RL's DataPacker abstraction enable model-agnostic RL training across different model architectures and modalities?\n\n- (A) It defines separate transformation pipelines for Dataset→Rollout and Rollout→Policy, allowing each stage to use format-specific requirements\n- (B) It provides pre-built packers for decoder-only LLMs (Llama, Qwen) and vision-language models (Qwen2.5-VL) as reference implementations\n- (C) It requires all models to use a standardized internal representation, eliminating the need for model-specific logic\n- (D) It handles conversation-to-prompt conversion using model-specific chat templates through the tokenizer\n- (E) It computes maximum sequence lengths for dynamic batching to optimize memory usage across different sequence length distributions",
+      "explanation": "This tests understanding of the DataPacker design from `docs/quickstart/dataflow.rst`, `cosmos_rl/dispatcher/data/packer/base.py`, and specific packers like `decoder_only_llm_packer.py` and `qwen2_5_vlm_packer.py`. (A) is correct - `get_rollout_input` and `get_policy_input` handle different stages. (B) is correct - these packers exist as documented. (C) is wrong - the design explicitly allows model-specific logic. (D) is correct - chat templates are applied in the packer. (E) is correct - `policy_compute_max_len` is part of the interface.",
+      "pred_raw": "Let’s go step by step.  \n\n1. The question is about Cosmos-RL’s **DataPacker abstraction** enabling **model-agnostic RL training** across architectures/modalities.  \n\n2. Option A:  \n   - DataPacker abstracts **Dataset→Rollout** and **Rollout→Policy** formats separately → each stage can have model-specific transformations → supports model-agnostic training.  \n   - This is correct because the separation allows flexibility for different models.  \n\n3. Option B:  \n   - Providing pre-built packers for different architectures (LLMs, VLMs) gives reference implementations that show how to handle different models → supports the idea of model-agnosticism via examples.  \n   - This fits the “model-agnostic” claim since they are included to handle differences.  \n\n4. Option C:  \n   - Says “requires all models to use a standardized internal representation” — but that would **not** be model-agnostic in the sense of allowing different internal representations; DataPacker actually allows different formats per model, not one rigid standard. Sounds opposite to the approach.  \n   - Likely incorrect.  \n\n5. Option D:  \n   - Handles conversation-to-prompt conversion using model-specific chat templates via tokenizer → This is an example of how DataPacker accommodates model-specific needs within the abstraction.  \n   - Supports model-agnostic training.  \n\n6. Option E:  \n   - Computes max sequence lengths for dynamic batching to optimize memory → This is more about efficiency, not directly about enabling model-agnostic training across modalities/architectures (it’s an optimization, not a core enabler of model-agnosticism).  \n   - Less relevant to the central “enable model-agnostic RL training” point.  \n\nFrom this, the key enablers are **A** (separate pipelines), **B** (reference implementations), and **D** (model-specific templates via abstraction). E is an optimization detail. C is incorrect.\n\n\\boxed{A,B,D}",
+      "pred_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 11,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "What are the architectural reasons for Cosmos-RL's constraint that dp_replicate must equal 1 when pipeline parallelism (pp > 1) is enabled?\n\n- (A) Pipeline parallelism requires deterministic micro-batch scheduling across stages, which conflicts with data parallel replication's independent gradient computation\n- (B) The framework only supports FSDP (dp_shard) with pipeline parallelism, not DDP (dp_replicate), to avoid complex gradient synchronization patterns\n- (C) NCCL process groups cannot span both pipeline stages and data parallel replicas simultaneously\n- (D) Memory constraints prevent storing multiple pipeline stage activations when data parallel replication is enabled\n- (E) The validation logic in ParallelDims explicitly enforces this constraint to maintain a supported configuration space",
+      "explanation": "This tests understanding of parallelism constraints from `cosmos_rl/utils/parallelism.py`. The `_validate` method explicitly checks: `if pp > 1 and dp_replicate > 1: raise ValueError('dp_replicate must be 1 when pp > 1, since we only support FSDP with pipeline parallelism.')`. (B) is correct - this is the stated reason. (E) is correct - the validation enforces it. (A) is a plausible technical reason but not the stated one. (C) is wrong - NCCL can handle this. (D) is wrong - memory is not the primary constraint.",
+      "pred_raw": "Let's analyze each option step by step:\n\n- (A) Pipeline parallelism (PP) requires deterministic micro-batch scheduling across stages to ensure correct forward and backward passes. If data parallel replication (dp_replicate > 1) is enabled, each replica would compute gradients independently and asynchronously, which could disrupt the deterministic scheduling needed for PP. This is a valid architectural reason.\n- (B) Cosmos-RL supports both FSDP (dp_shard) and DDP (dp_replicate) in general, but when PP is enabled, it restricts to dp_replicate=1. However, the framework does not only support FSDP with PP; it actually avoids DDP (dp_replicate) with PP due to synchronization complexities. This is plausible.\n- (C) NCCL process groups are used for collective communication. In PP, each stage might be on different devices, and data parallelism requires communication within replicas. While it is technically possible to design process groups spanning both, it introduces complexity and might not be implemented. However, this is not the primary reason; the issue is more about scheduling and synchronization.\n- (D) Memory constraints are a practical concern but not the core architectural reason. With dp_replicate > 1, each replica would have its own copy of the pipeline stages, increasing activation memory. However, this is a side effect rather than the fundamental architectural constraint.\n- (E) The ParallelDims validation logic indeed enforces dp_replicate=1 when pp>1, but this is an implementation of the constraint, not the architectural reason itself. The validation exists to prevent unsupported configurations.\n\nThe key architectural reasons are related to the conflict between deterministic scheduling in PP and independent gradient computation in DDP (dp_replicate), as well as avoiding complex synchronization patterns. Options (A) and (B) directly address these issues. (C) is not entirely accurate, (D) is secondary, and (E) is about enforcement rather than the reason.\n\nThus, the correct options are (A) and (B).\n\\boxed{A,B}",
+      "pred_letters": [
+        "A",
+        "B"
+      ],
+      "gt_letters": [
+        "B",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 13,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "How does Cosmos-RL's Redis-based messaging system enable efficient coordination between the controller and distributed workers?\n\n- (A) Redis Streams provide ordered, persistent message queues that ensure commands are delivered reliably even if workers temporarily disconnect\n- (B) The framework uses multiple Redis clients with fallback IPs to provide fault tolerance if one connection fails\n- (C) Redis pub/sub is used for broadcasting rollout results to all policy replicas simultaneously\n- (D) The controller publishes commands to replica-specific streams, enabling targeted unicast communication\n- (E) Redis transactions ensure atomic updates when multiple workers attempt to fetch the same rollout batch",
+      "explanation": "This tests understanding of Redis usage from `cosmos_rl/utils/redis_stream.py` and `cosmos_rl/dispatcher/controller.py`. (A) is correct - Redis Streams are used for reliable message delivery. (B) is correct - `RedisStreamHandler` initializes multiple clients for fault tolerance. (C) is wrong - rollouts are sent to controller, not broadcast to all policies. (D) is correct - commands are published to specific replica streams. (E) is wrong - the code doesn't use Redis transactions for this purpose.",
+      "pred_raw": "Let's analyze each option step by step:\n\n(A) Redis Streams are indeed used in Cosmos-RL for ordered and persistent message queues. This ensures that commands (like rollout requests) are not lost if workers disconnect and can be replayed when they reconnect. This is a key feature for reliability.\n\n(B) Cosmos-RL does not use multiple Redis clients with fallback IPs for fault tolerance. Instead, it relies on Redis' built-in persistence and replication (if configured) for high availability. This option is not correct.\n\n(C) Redis pub/sub is used for broadcasting commands (e.g., policy updates) to all policy replicas simultaneously. This allows efficient dissemination of global information without needing individual unicasts. This is accurate.\n\n(D) The controller publishes commands to replica-specific streams (each worker has its own stream). This enables targeted unicast communication, ensuring that each worker gets its specific assignments without interference. This is correct.\n\n(E) Redis transactions (MULTI/EXEC) are used to ensure atomicity when multiple workers attempt to fetch the same rollout batch. This prevents duplicate assignments and ensures each batch is processed by only one worker. This is a critical part of the coordination mechanism.\n\nThus, the correct options are A, C, D, and E. Option B is incorrect.\n\\boxed{A,C,D,E}",
+      "pred_letters": [
+        "A",
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 15,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "What are the key considerations in Cosmos-RL's implementation of behavior importance weighting when rollout_per_token_logps are provided?\n\n- (A) The framework computes behavior KL divergence as the difference between old policy and rollout policy log probabilities\n- (B) Behavior importance weights are capped using behav_imp_weight_cap to prevent extreme weight values from destabilizing training\n- (C) Samples exceeding the importance weight cap are completely discarded from the training batch\n- (D) The per-token loss is multiplied by behavior importance weights to correct for distribution mismatch\n- (E) Behavior importance weighting is only applied when using off-policy algorithms like AIPO",
+      "explanation": "This tests understanding of behavior importance weighting from the `compute_loss` function in `cosmos_rl/policy/trainer/grpo_trainer.py`. (A) is correct - `behav_kl = old_per_token_logps - rollout_per_token_logps`. (B) is correct - the code checks `behav_imp_weight <= config.train.train_policy.behav_imp_weight_cap`. (C) is wrong - weights are set to 0.0, not discarded. (D) is correct - `per_token_loss = per_token_loss * behav_imp_weight`. (E) is wrong - it's applied when rollout_per_token_logps are provided, regardless of algorithm.",
+      "pred_raw": "Let's analyze each option step by step:\n\n- (A) The framework computes behavior KL divergence as the difference between old policy and rollout policy log probabilities.  \n  This is correct. Cosmos-RL uses the provided `rollout_per_token_logps` (which are the behavior policy log probabilities) and compares them with the old policy log probabilities to compute the behavior KL divergence, which is part of the importance weighting.\n\n- (B) Behavior importance weights are capped using behav_imp_weight_cap to prevent extreme weight values from destabilizing training.  \n  This is correct. Capping the importance weights is a common technique to reduce variance and avoid training instability. Cosmos-RL implements this cap via `behav_imp_weight_cap`.\n\n- (C) Samples exceeding the importance weight cap are completely discarded from the training batch.  \n  This is incorrect. Instead of discarding samples, Cosmos-RL caps the weights. Discarding samples would lead to data inefficiency and potential bias.\n\n- (D) The per-token loss is multiplied by behavior importance weights to correct for distribution mismatch.  \n  This is correct. Importance weighting is applied to the loss to adjust for the fact that the data comes from a behavior policy different from the current policy.\n\n- (E) Behavior importance weighting is only applied when using off-policy algorithms like AIPO.  \n  This is incorrect. Behavior importance weighting is a general technique used in off-policy correction, but in Cosmos-RL, it is applied whenever `rollout_per_token_logps` are provided, regardless of the specific algorithm. It is not limited to AIPO.\n\nThus, the correct options are A, B, and D.\n\\boxed{A,B,D}",
+      "pred_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 17,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In Cosmos-RL's fault tolerance implementation, what mechanisms work together to maintain training progress when replicas fail?\n\n- (A) Heartbeat monitoring detects failed replicas that stop sending periodic status updates within the timeout window\n- (B) NCCL timeout detection identifies replicas that hang during collective operations\n- (C) The controller automatically checkpoints model state before removing failed replicas to enable recovery\n- (D) Failed replicas are manually unregistered and NCCL meshes are rebuilt for remaining live replicas\n- (E) The system automatically spawns replacement replicas on available GPUs to maintain the original replica count",
+      "explanation": "This tests understanding of fault tolerance from `docs/elastic/overview.rst`, `cosmos_rl/dispatcher/controller.py` (post_ncclerror), and `cosmos_rl/comm/base.py` (heartbeat). (A) is correct - heartbeat mechanism with COSMOS_HEARTBEAT_TIMEOUT. (B) is correct - NCCL timeout is mentioned in the docs. (C) is wrong - checkpointing is separate from failure handling. (D) is correct - `post_ncclerror` manually unregisters and triggers BuildMesh. (E) is wrong - the system doesn't auto-spawn replacements.",
+      "pred_raw": "Let’s go through each option against Cosmos-RL’s fault tolerance approach:  \n\n- **A**: Correct — Cosmos-RL does use heartbeat monitoring to detect failed replicas.  \n- **B**: Correct — It also uses NCCL timeout to detect hanging collective communications.  \n- **C**: Incorrect — The controller does **not** checkpoint before removing a failed replica; checkpoints are usually taken at fixed intervals or before preemption, not *automatically* right before removal due to failure.  \n- **D**: Incorrect — Failed replicas are **automatically** unregistered, not manually, and NCCL communicators are automatically rebuilt without user intervention.  \n- **E**: Correct — Cosmos-RL will automatically spawn replacement replicas on available GPUs to maintain the replica count.  \n\nSo correct choices: **A, B, E**.  \n\n\\boxed{A,B,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 19,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "How does Cosmos-RL's sequence packing optimization improve training efficiency for variable-length sequences?\n\n- (A) It concatenates multiple short sequences into a single packed sequence to reduce padding overhead\n- (B) It uses cu_seqlens (cumulative sequence lengths) to track boundaries between packed sequences for correct attention masking\n- (C) It eliminates the need for attention masks by ensuring all sequences in a batch have identical lengths\n- (D) It enables more efficient memory usage by reducing the number of padding tokens in each batch\n- (E) It requires specialized kernels that can handle packed sequences with variable-length attention",
+      "explanation": "This tests understanding of sequence packing from `cosmos_rl/utils/sequence_packing.py` and its usage in `grpo_trainer.py`. The code includes functions like `pack_sequences_for_inputs`, `pack_sequences_for_logprobs`, and uses `cu_seqlens` tensor to track sequence boundaries. (A) is correct - packing concatenates sequences. (B) is correct - cu_seqlens is used throughout. (C) is wrong - packing specifically handles variable lengths. (D) is correct - reducing padding is the main benefit. (E) is correct - flash attention and other kernels support packed sequences.",
+      "pred_raw": "Let's check each option:  \n\n**(A)** True — Sequence packing means combining multiple short sequences into one packed sequence, which indeed reduces padding overhead.  \n\n**(B)** True — cu_seqlens is used to track boundaries so that attention mechanisms can correctly mask out padding or irrelevant tokens between different sequences in the same packed input.  \n\n**(C)** False — Attention masks are still needed; sequence packing doesn’t eliminate masking, it just changes how it's handled.  \n\n**(D)** True — By packing sequences, fewer padding tokens are included, improving memory efficiency.  \n\n**(E)** True — To efficiently handle packed sequences, specialized kernels (like FlashAttention with support for variable CUDA seqlens) are required.  \n\nCorrect choices: A, B, D, E.  \n\n\\boxed{A,B,D,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 21,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "What are the architectural implications of Cosmos-RL's decision to use a single-controller architecture rather than a distributed controller design?\n\n- (A) The controller becomes a potential single point of failure, but this is mitigated by making it lightweight and stateless\n- (B) All coordination logic is centralized, simplifying the protocol and eliminating the need for complex consensus algorithms\n- (C) The controller must handle all data transfers between policy and rollout workers, creating a potential bottleneck\n- (D) Replica registration and status management are simplified because all state is maintained in one location\n- (E) The architecture cannot scale beyond a single datacenter due to controller communication latency",
+      "explanation": "This tests understanding of the single-controller design from `docs/async/overview.rst` and `cosmos_rl/dispatcher/controller.py`. The docs state: 'Single-controller architecture – Coordinates all workers, eliminates heavyweight orchestration layers'. (A) is correct - it's a SPOF but lightweight. (B) is correct - centralized coordination simplifies the protocol. (C) is wrong - data transfers are P2P between workers, not through controller. (D) is correct - `PolicyStatusManager` and `RolloutStatusManager` centralize state. (E) is wrong - the design can scale across datacenters.",
+      "pred_raw": "Step-by-step reasoning:\n\n1. Cosmos-RL is a reinforcement learning framework that uses a single-controller architecture. This means there is one central controller that manages policy workers and rollout workers.\n\n2. Option A: A single controller is indeed a single point of failure. However, in Cosmos-RL, the controller is designed to be lightweight and stateless, meaning it doesn't store persistent state, which allows for easy recovery and mitigates the failure risk. This is correct.\n\n3. Option B: With a single controller, all coordination logic (like assigning tasks to workers) is centralized. This simplifies the protocol because there is no need for distributed consensus (like Paxos or Raft) to agree on state changes. This is a key advantage mentioned in Cosmos-RL literature. This is correct.\n\n4. Option C: The controller does not handle data transfers between policy and rollout workers. In Cosmos-RL, data transfers (like model parameters and experiences) happen directly between workers through peer-to-peer connections to avoid bottleneck. The controller only handles metadata and coordination. Thus, this is incorrect.\n\n5. Option D: Since the controller is stateless, it does not maintain all state. Worker registration and status are managed by the controller, but the state is stored in a distributed key-value store (like etcd) for reliability. Therefore, state is not entirely maintained in one location, and this simplification is not accurate. This is incorrect.\n\n6. Option E: The single-controller architecture does not inherently restrict scaling to a single datacenter. The controller can communicate with workers across multiple datacenters, and the peer-to-peer data transfers are designed to work over WAN. Cosmos-RL is built for geo-distributed training. This is incorrect.\n\nBased on the above, only options A and B are correct architectural implications.\n\\boxed{A,B}",
+      "pred_letters": [
+        "A",
+        "B"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 23,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In Cosmos-RL's implementation of FP8 quantization, what are the key design choices that balance training accuracy with computational efficiency?\n\n- (A) The framework supports both dynamic_scaling and delayed_scaling recipes for FP8 computation\n- (B) Rowwise quantization is recommended over tensorwise for better accuracy preservation\n- (C) FP8 quantization is applied uniformly to all model parameters including embeddings and layer norms\n- (D) Rollout workers dynamically quantize weights received from policy workers during weight synchronization\n- (E) The framework requires specialized FP8-capable hardware (H100) to enable quantization",
+      "explanation": "This tests understanding of FP8 from `docs/quantization/fp8.rst` and `cosmos_rl/policy/config/__init__.py` (FP8Config). (A) is correct - both recipes are supported. (B) is correct - docs state 'rowwise is recommended for better accuracy'. (C) is wrong - not all parameters are quantized. (D) is correct - docs mention rollout dynamically quantizes during weight sync. (E) is wrong - while H100 is optimal, it's not strictly required.",
+      "pred_raw": "Step-by-step reasoning:\n\n1. The question is about Cosmos-RL's FP8 quantization implementation, focusing on design choices that balance accuracy and efficiency.\n2. Option A: Cosmos-RL indeed supports both dynamic_scaling (for accuracy) and delayed_scaling (for efficiency) recipes for FP8 computation. This allows flexibility to choose based on the trade-off between accuracy and performance.\n3. Option B: Rowwise quantization is recommended in Cosmos-RL because it preserves accuracy better than tensorwise quantization, especially for weight matrices with large variance across rows.\n4. Option C: FP8 quantization is NOT applied uniformly to all parameters. Embeddings and layer norms are kept in higher precision (FP16/BF16) to maintain stability and accuracy, as these are sensitive to quantization.\n5. Option D: Rollout workers dynamically quantize weights received from policy workers during synchronization. This reduces communication overhead (improving efficiency) while maintaining accuracy through appropriate scaling.\n6. Option E: The framework does NOT require specialized FP8-capable hardware like H100. It is designed to work on general GPUs (e.g., V100, A100) by emulating FP8 computation in software, ensuring broader accessibility.\n\nThus, the correct options are A, B, and D.\n\\boxed{A,B,D}",
+      "pred_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 24,
+      "dataset": "cosmos-rl",
+      "instruction": "choose ONE option",
+      "stem": "When implementing LoRA (Low-Rank Adaptation) in Cosmos-RL, why must the framework merge LoRA weights before synchronizing to rollout workers?\n\n- (A) Because rollout inference engines (vLLM, TensorRT-LLM) don't support LoRA adapter formats and require full merged weights\n- (B) Because merging reduces the total number of parameters that need to be transferred over the network\n- (C) Because LoRA adapters cannot be quantized to FP8 format during weight synchronization\n- (D) Because the rollout workers use different model architectures that are incompatible with LoRA",
+      "explanation": "This tests understanding of LoRA integration from `cosmos_rl/policy/trainer/grpo_trainer.py` where `merge_lora_weights_` is called before weight sync. The code shows: `if self.config.policy.lora is not None: merge_lora_weights_(self.model)` before sending weights to rollout. Inference engines like vLLM and TensorRT-LLM are optimized for standard model formats and don't natively support LoRA adapters, requiring merged weights. (B) is wrong - merging doesn't reduce parameters. (C) is wrong - quantization is orthogonal. (D) is wrong - same architecture is used.",
+      "pred_raw": "Step-by-step reasoning:\n1. The question is about why LoRA weights must be merged before synchronizing to rollout workers in Cosmos-RL.\n2. Option A states that rollout inference engines like vLLM and TensorRT-LLM don't support LoRA adapter formats and require full merged weights. This is plausible because these optimized inference engines are designed for efficiency and may not natively support dynamic adapter loading, preferring a single consolidated weight matrix.\n3. Option B claims merging reduces parameters for network transfer. However, LoRA adapters are already low-rank and small compared to the base model, so the reduction in transfer size would be minimal. The primary reason is likely not about network efficiency.\n4. Option C suggests LoRA adapters cannot be quantized to FP8. This is incorrect; LoRA adapters can be quantized similarly to other weights, and quantization is often applied to reduce transfer size and memory usage.\n5. Option D says rollout workers use incompatible architectures. This is unlikely; LoRA is a general technique that should be compatible with the same architecture as the base model.\n6. Considering the context of Cosmos-RL (a reinforcement learning framework for large language models) and the mention of specific inference engines (vLLM, TensorRT-LLM), it is known that these engines typically require merged weights for optimal performance and do not support on-the-fly LoRA switching without additional overhead. Thus, merging is necessary for compatibility.\n\nTherefore, option A is the correct reason.\n\n\\boxed{A}",
+      "pred_letters": [
+        "A"
+      ],
+      "gt_letters": [
+        "A"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 25,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "How does Cosmos-RL's implementation of the Atom abstraction enable flexible distributed training configurations?\n\n- (A) Each Atom represents a single GPU process with its position in the multi-dimensional parallelism mesh\n- (B) Atoms store their ranks across all parallelism dimensions (pp, dp_shard, cp, tp) following the MESH_NAMES order\n- (C) The Atom abstraction allows the controller to determine which workers are responsible for specific operations like rollout fetching\n- (D) Atoms are dynamically created and destroyed as the training workload changes to optimize resource utilization\n- (E) Each Atom maintains its own independent copy of the model weights without synchronization",
+      "explanation": "This tests understanding of the Atom abstraction from `cosmos_rl/dispatcher/replica.py`. (A) is correct - Atom represents a single GPU process. (B) is correct - Atom stores ranks for each dimension. (C) is correct - the code checks atom ranks to determine responsibilities (e.g., 'pp_rank is 0, cp_rank is 0, tp_rank is 0' for rollout fetching). (D) is wrong - Atoms are created at replica initialization, not dynamically. (E) is wrong - Atoms synchronize weights.",
+      "pred_raw": "Let's break this down.\n\n**Step 1 — Understanding Cosmos-RL Atom abstraction**  \nThe Atom is a core concept in Cosmos-RL that wraps a single GPU process and its position in a multi-dimensional parallelism mesh (PP, DP_shard, CP, TP, etc.).\n\n**Step 2 — Option Analysis**  \n\n- **A**: True — Atoms correspond to GPU processes and hold a specific coordinate in the parallelism mesh.  \n- **B**: True — Atoms store their ranks across all parallelism dimensions (according to `MESH_NAMES`) — this matches the paper's description.  \n- **C**: True — The controller uses Atom information to determine which workers perform certain tasks like fetching rollouts in specific DP_shard positions.  \n- **D**: False — Atoms are not dynamically created/destroyed during training; they are fixed at initialization for given parallelism configuration.  \n- **E**: False — Atoms do NOT keep independent unsynchronized weights; synchronization happens via collective communication according to parallel strategy.  \n\n**Step 3 — Conclusion**  \nCorrect ones: A, B, C.\n\n\\boxed{A,B,C}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 27,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "What are the key challenges in implementing high-performance NCCL communication for Cosmos-RL's distributed training, and how does the framework address them?\n\n- (A) NCCL operations can hang indefinitely, so the framework implements configurable timeouts with default values\n- (B) Creating NCCL communicators requires unique IDs that must be broadcast from rank 0 to all participants\n- (C) NCCL doesn't support heterogeneous GPU types, requiring all workers to use identical hardware\n- (D) The framework uses grouped NCCL operations to batch multiple sends/receives and improve efficiency\n- (E) NCCL communicators must be recreated whenever the set of participating workers changes due to elastic scaling",
+      "explanation": "This tests understanding of NCCL usage from `cosmos_rl/utils/pynccl.py` and `cosmos_rl/policy/trainer/grpo_trainer.py`. (A) is correct - `_get_timeout_ms` provides configurable timeouts. (B) is correct - `create_nccl_uid` on rank 0, then broadcast. (C) is wrong - NCCL supports heterogeneous GPUs. (D) is correct - `nccl_group_start/end` batch operations. (E) is correct - BuildMesh commands recreate communicators when replicas change.",
+      "pred_raw": "Let’s break down each option based on NCCL common challenges and Cosmos-RL design:  \n\n- **(A)** True — NCCL can hang during collectives if there’s a failure or misalignment; using configurable timeouts is a practical solution.  \n- **(B)** True — Unique IDs (like `ncclUniqueId`) must be generated and broadcast from rank 0 for setting up communicators.  \n- **(C)** False — NCCL *does* support mixed compute capabilities in some cases, but identical hardware is not strictly required; this is not a main Cosmos-RL specific challenge as stated.  \n- **(D)** True — Grouping NCCL operations (start + end group) helps overlap and efficiency, something Cosmos-RL could use.  \n- **(E)** True — For elastic training, communicators must be recreated when worker set changes; this is a known challenge addressed by the framework.  \n\nValid choices: A, B, D, E.  \n\n\\boxed{A,B,D,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 29,
+      "dataset": "cosmos-rl",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In Cosmos-RL's reward calculation pipeline, what mechanisms ensure correct attribution of rewards to generated completions?\n\n- (A) Each rollout payload includes a prompt_idx that links completions back to their source prompts in the dataset\n- (B) The framework supports both local reference answers (from dataset) and remote reference answers (from payload) for reward computation\n- (C) Filter rewards are computed separately from training rewards to enable dynamic sampling without affecting the learning signal\n- (D) Rewards are always computed synchronously during rollout generation to ensure consistency\n- (E) The RolloutGroup abstraction encapsulates prompt, completions, and reference answer for batch reward computation",
+      "explanation": "This tests understanding of reward calculation from `cosmos_rl/reward/reward_calculator.py` and `cosmos_rl/dispatcher/data/schema.py`. (A) is correct - prompt_idx tracks the source. (B) is correct - code checks `payload.reference_answer if not self.config.train.local_dataset else self.query_reference_answer(payload.prompt_idx)`. (C) is correct - filter_reward is separate from reward. (D) is wrong - rewards are computed asynchronously by RewardDispatcher. (E) is correct - RolloutGroup encapsulates this data.",
+      "pred_raw": "Let's analyze each option step-by-step:\n\n(A) This is correct because the prompt_idx in the rollout payload ensures that each completion is correctly associated with its original prompt in the dataset, allowing proper reward attribution.\n\n(B) This is correct as Cosmos-RL supports both local reference answers (stored in the dataset) and remote reference answers (provided in the payload) for flexibility in reward computation, ensuring correct attribution regardless of the reference source.\n\n(C) This is correct because filter rewards (used for sampling) are computed separately from training rewards (used for learning), preventing interference between dynamic sampling and the learning signal.\n\n(D) This is incorrect because rewards in Cosmos-RL are computed asynchronously (not synchronously) during rollout generation to improve efficiency. Consistency is maintained through other mechanisms like prompt_idx and batch processing.\n\n(E) This is correct as the RolloutGroup abstraction groups prompts, completions, and reference answers together, enabling batch reward computation and ensuring that rewards are attributed correctly to the respective completions.\n\nThus, the correct options are A, B, C, and E.\n\\boxed{A,B,C,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": true
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|SortOperation1|234.855|234.855
+2|SortOperation2|389.245|389.245
+3|SortOperation3|389.245|389.245
+4|SortOperation4|389.245|389.245

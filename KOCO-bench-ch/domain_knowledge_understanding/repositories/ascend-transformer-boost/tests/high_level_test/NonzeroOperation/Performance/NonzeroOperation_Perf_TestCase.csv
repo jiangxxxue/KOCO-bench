@@ -1,0 +1,5 @@
+CaseNum|CaseName           |OpName          |OpParam|InNum|InDType|InFormat|InShape|OutNum  |OutDType|OutFormat|OutShape|DataGenType|DataGenRange|InTensorFile|OutTensorFile|TestType      |TestLevel|FromModel|SocVersion|ExpectedError
+1      |NonzeroOperation1  |NonzeroOperation|{}     |1    |int64  |nd      |4,20   |2     |int64;int64|nd;nd    |2,80;1  |customize  |1,1         |            |             |Performance|         |         |          |NO_ERROR     
+2      |NonzeroOperation2  |NonzeroOperation|{}     |1    |int64  |nd      |6,1    |2     |int64;int64|nd;nd    |2,6;1   |customize  |0,0         |            |             |Performance|         |         |          |NO_ERROR     
+3      |NonzeroOperation3  |NonzeroOperation|{}     |1    |int64  |nd      |6,14   |2     |int64;int64|nd;nd    |2,84;1  |customize  |0,0         |            |             |Performance|         |         |          |NO_ERROR     
+4      |NonzeroOperation4  |NonzeroOperation|{}     |1    |int64  |nd      |1,16   |2     |int64;int64|nd;nd    |2,16;1  |customize  |0,0         |            |             |Performance|         |         |          |NO_ERROR     

@@ -1,0 +1,3556 @@
+/*
+* Copyright (c) 2024 Huawei Technologies Co., Ltd.
+* This file is a part of the CANN Open Software.
+* Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+* Please refer to the License for details. You may not use this file except in compliance with the License.
+* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+* INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+* See LICENSE in the root of the software repository for the full text of the License.
+*/
+#include "kernels/utils/kernel/common.h"
+#include "kernels/utils/kernel/common_func.h"
+#include "kernels/utils/kernel/simd.h"
+#include "kernels/utils/kernel/iterator.h"
+#include "kernels/utils/kernel/utils.h"
+#include "kernels/utils/kernel/mma.h"
+#include "kernel_operator.h"
+
+#ifdef __CCE_KT_TEST__
+#define __aicore__
+#else
+#define __aicore__ [aicore]
+
+#endif
+
+#include "paged_attention_decoder.h"
+
+
+template<>
+__aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::Decode(const int32_t fm, const int32_t fn,
+                                                                                 const int32_t fk, const int32_t bn,
+                                                                                 const int32_t m_actual,
+                                                                                 const int32_t n0_actual,
+                                                                                 const int32_t n1_actual,
+                                                                                 const uint32_t maskType,
+                                                                                 const uint32_t initKVE,
+                                                                                 const uint32_t headOffset,
+                                                                                 const uint32_t initKV,
+                                                                                 half localTor,
+                                                                                 const uint32_t scaleType)
+{
+    int32_t Pingflag = 0; // manual PingPong attempt
+    int32_t Pongflag = 1;
+    if (scaleType == 0) {
+        localTor = tor;
+    }
+
+    AscendC::LocalTensor<half> l1kPingBuf_tensor =
+        l1kBufAddr_tensor.ReinterpretCast<uint8_t>()[Pingflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1kPongBuf_tensor =
+        l1kBufAddr_tensor.ReinterpretCast<uint8_t>()[Pongflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1vPingBuf_tensor =
+        l1vBufAddr_tensor.ReinterpretCast<uint8_t>()[Pingflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1vPongBuf_tensor =
+        l1vBufAddr_tensor.ReinterpretCast<uint8_t>()[Pongflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1pPingBuf_tensor =
+        l1pBufAddr_tensor.ReinterpretCast<uint8_t>()[Pingflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1pPongBuf_tensor =
+        l1pBufAddr_tensor.ReinterpretCast<uint8_t>()[Pongflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+
+    int32_t oSize = fm * fk;
+    int32_t mD64 = (fm + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE;
+    uint32_t kD64 = (fk + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE;
+    int32_t mD128 = (fm + VECTOR_SIZE - 1) / VECTOR_SIZE;
+    uint32_t kD128 = (fk + VECTOR_SIZE - 1) / VECTOR_SIZE;
+    int32_t initGgDm = (initG == 1) ? 1 : 0;
+    int32_t initGgO = (initG == 1) ? 1 : 0;
+    int32_t initKVG = (initG && initKV) ? 1 : 0; // synchronization for head loop start
+    int32_t initGgMask = (initG == 1) ? 1 : 0;
+    uint32_t qOffset = headOffset * FLOAT_VECTOR_SIZE * kD64;
+    uint32_t gmUOffset = headOffset * BLOCK_SIZE;
+    uint32_t glUOffset = gmUOffset;
+    uint32_t goUOffset = qOffset;
+
+    int32_t pSize = fm * fn;
+    int32_t pSize_b = fm * bn;
+
+    // 1. ################ Bmm1 Ping Start #######################
+    // 1.1 ################ QK Ping LOAD ################
+    if (initGgO != 0) {
+        if (initKVG) {
+            WAIT_FLAG(MTE1, MTE2, Pingflag);
+            WAIT_FLAG(MTE1, MTE2, Pongflag);
+        }
+        gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(l1qBufAddr_tensor[qOffset],
+                                                                              gmSrcq_tensor[srcqOffset],
+                                                                              1,        // nTileActual
+                                                                              1,        // nTileActual
+                                                                              ntokensQ,        // nTileCeil
+                                                                              fk,       // dTileActual
+                                                                              fk,       // dTileActual
+                                                                              fk        // dVal
+        );
+        SET_FLAG(MTE2, MTE1, Pingflag);
+        if (n1_actual != -1) {
+            SET_FLAG(MTE2, MTE1, Pongflag);
+        }
+    }
+    // Mask Preload
+    if (maskType != 0) {
+        // load mask ping gm -> l1
+        WAIT_FLAG(MTE1, MTE2, Pingflag + 2);
+        gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+            l1maskBufAddr_tensor[Pingflag * L0AB_HALF_BUF_SIZE], // Nz load
+            gmSrcm_tensor[srcmOffset], 1, 1, maskStride,
+            fn, // lenBurst
+            fn, fn);
+        SET_FLAG(MTE2, MTE1, Pingflag + 2);
+        WAIT_FLAG(MTE2, MTE1, Pingflag + 2);
+        // load mask ping l1 -> ub
+        WAIT_FLAG(V, MTE1, Pingflag);
+        l1_to_ub<ArchType::ASCEND_V200, half>(
+            maskUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+            l1maskBufAddr_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 1, fn / BLOCK_SIZE, 0, 0);
+        SET_FLAG(MTE1, V, Pingflag);
+        SET_FLAG(MTE1, MTE2, Pingflag + 2);
+        if (n1_actual != -1) {
+            // load mask pong gm -> l1
+            WAIT_FLAG(MTE1, MTE2, Pongflag + 2);
+            gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1maskBufAddr_tensor[Pongflag * L0AB_HALF_BUF_SIZE], // Nz load
+                gmSrcm_tensor[srcmOffset + maskStride * blockSize],1, 1, maskStride,
+                bn, // lenBurst
+                bn, bn);
+            SET_FLAG(MTE2, MTE1, Pongflag + 2);
+            WAIT_FLAG(MTE2, MTE1, Pongflag + 2);
+            // load mask pong l1 -> ub
+            WAIT_FLAG(V, MTE1, Pongflag);
+            l1_to_ub<ArchType::ASCEND_V200, half>(
+                maskUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                l1maskBufAddr_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 1, bn / BLOCK_SIZE, 0, 0);
+            SET_FLAG(MTE1, V, Pongflag);
+            SET_FLAG(MTE1, MTE2, Pongflag + 2);
+        }
+    }
+    WAIT_FLAG(M, MTE1, Pingflag);
+    if (initGgO == 1) {
+        WAIT_FLAG(MTE2, MTE1, Pingflag);
+    }
+    l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+        l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l1qBufAddr_tensor[qOffset].ReinterpretCast<half>(), 0, 1, 0, 1, 0,
+        0);
+    SET_FLAG(MTE1, M, Pingflag);
+#if __CCE_AICORE__ == 100
+    WAIT_FLAG(MTE1, MTE2, Pingflag + 2);
+#else
+    WAIT_FLAG(MTE1, MTE2, Pingflag + 4);
+#endif
+    if (initKV) {
+        gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+            l1kPingBuf_tensor, gmSrck_tensor[srckOffset], fn, fn, blockSize,
+            fk, // (fn, fk) double buffer
+            fk, fk);
+    }
+    SET_FLAG(MTE2, MTE1, Pingflag);
+    WAIT_FLAG(MTE2, MTE1, Pingflag);
+    WAIT_FLAG(M, MTE1, Pingflag + 2);
+    l1_to_l0_b<ArchType::ASCEND_V200, half, 0, DataFormat::VECTOR, DataFormat::VECTOR>(
+        l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], // Nz ->(transpose) nZ -> nZ
+        l1kPingBuf_tensor, 0, fk * fn / CUBE_MATRIX_SIZE, 0, 1, 0, 0);
+#if __CCE_AICORE__ == 100
+    SET_FLAG(MTE1, MTE2, Pingflag + 2);
+#else
+    SET_FLAG(MTE1, MTE2, Pingflag + 4);
+#endif
+    SET_FLAG(MTE1, M, Pingflag + 2);
+    // 2. ################ Bmm1 Pong Starts #######################
+    // 2.1 ################ QK Pong PRELOAD ################
+    if (n1_actual != -1) {
+        WAIT_FLAG(M, MTE1, Pongflag);
+        if (initGgO == 1) {
+            WAIT_FLAG(MTE2, MTE1, Pongflag);
+        }
+        l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l1qBufAddr_tensor[qOffset], 0, 1, 0, 1, 0, 0);
+        SET_FLAG(MTE1, M, Pongflag);
+#if __CCE_AICORE__ == 100
+        WAIT_FLAG(MTE1, MTE2, Pongflag + 2);
+#else
+        WAIT_FLAG(MTE1, MTE2, Pongflag + 4);
+#endif
+        if (initKV) {
+            gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1kPongBuf_tensor, gmSrck_tensor[srckOffset1], bn, bn, blockSize,
+                fk, // (fn, fk) double buffer
+                fk, fk);
+        }
+        SET_FLAG(MTE2, MTE1, Pongflag);
+        WAIT_FLAG(MTE2, MTE1, Pongflag);
+        WAIT_FLAG(M, MTE1, Pongflag + 2);
+        l1_to_l0_b<ArchType::ASCEND_V200, half, 0, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], // Nz ->(transpose) nZ -> nZ
+            l1kPongBuf_tensor, 0, fk * bn / CUBE_MATRIX_SIZE, 0, 1, 0, 0);
+        SET_FLAG(MTE1, M, Pongflag + 2);
+#if __CCE_AICORE__ == 100
+        SET_FLAG(MTE1, MTE2, Pongflag + 2);
+#else
+        SET_FLAG(MTE1, MTE2, Pongflag + 4);
+#endif
+    }
+    // 1.2 ################ Bmm1 Ping + V PRELOAD ################
+    // v preload
+#if __CCE_AICORE__ == 100
+    WAIT_FLAG(MTE1, MTE2, Pingflag + 2);
+#else
+    WAIT_FLAG(MTE1, MTE2, Pingflag + 6);
+#endif
+    if (initKV) {
+        gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(l1vPingBuf_tensor, // load V Nz
+                                                                              gmSrcv_tensor[srcvOffset], fn, fn,
+                                                                              blockSize, fk, fk, fk);
+    }
+#if __CCE_AICORE__ == 100
+    SET_FLAG(MTE2, MTE1, Pingflag + 2);
+#else
+    SET_FLAG(MTE2, MTE1, Pingflag + 4);
+#endif
+    // bmm1 ping
+    WAIT_FLAG(MTE1, M, Pingflag + 2);
+    WAIT_FLAG(MTE1, M, Pingflag);
+    WAIT_FLAG(V, M, Pingflag);
+    mmad<ArchType::ASCEND_V200, half, half, float, false>(
+        l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+        l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+        l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], m_actual, n0_actual, fk, 1);
+    SET_FLAG(M, V, Pingflag);
+    SET_FLAG(M, MTE1, Pingflag);
+    SET_FLAG(M, MTE1, Pingflag + 2);
+    // BMM2 V L0B PRELOAD ping
+#if __CCE_AICORE__ == 100
+    WAIT_FLAG(MTE2, MTE1, Pingflag + 2);
+#else
+    WAIT_FLAG(MTE2, MTE1, Pingflag + 4);
+#endif
+    WAIT_FLAG(M, MTE1, Pingflag + 2);
+    // 16 is blocksize in format zN
+    if (fk == 16) {
+        l1_to_l0_b<ArchType::ASCEND_V200, half, 1, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l1vPingBuf_tensor, 0, fn / BLOCK_SIZE,
+            0, 1, 0, 0);
+    } else {
+        for (int32_t l0bLoadIdx = 0; l0bLoadIdx < (fn / BLOCK_SIZE); ++l0bLoadIdx) { // Nz -> nZ
+            l1_to_l0_b<ArchType::ASCEND_V200, half, 1, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + l0bLoadIdx * fk * BLOCK_SIZE],
+                l1vPingBuf_tensor[l0bLoadIdx * CUBE_MATRIX_SIZE], 0, fk / BLOCK_SIZE, 0, fn / BLOCK_SIZE, 0, 0);
+        }
+    }
+#if __CCE_AICORE__ == 100
+    SET_FLAG(MTE1, MTE2, Pingflag + 2);
+#else
+    SET_FLAG(MTE1, MTE2, Pingflag + 6);
+#endif
+    SET_FLAG(MTE1, M, Pingflag + 2);
+    // 1. ################ Bmm1 Ping Ends #######################
+    // 2.2 ################ Bmm1 Pong + V PRELOAD ################
+    if (n1_actual != -1) {
+        // v preload
+#if __CCE_AICORE__ == 100
+        WAIT_FLAG(MTE1, MTE2, Pongflag + 2);
+#else
+        WAIT_FLAG(MTE1, MTE2, Pongflag + 6);
+#endif
+        if (initKV) {
+            gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(l1vPongBuf_tensor, // load V Nz
+                                                                                  gmSrcv_tensor[srcvOffset1],
+                                                                                  bn, bn, blockSize, fk, fk, fk);
+        }
+#if __CCE_AICORE__ == 100
+        SET_FLAG(MTE2, MTE1, Pongflag + 2);
+#else
+        SET_FLAG(MTE2, MTE1, Pongflag + 4);
+#endif
+        // bmm1 pong
+        WAIT_FLAG(MTE1, M, Pongflag + 2);
+        WAIT_FLAG(MTE1, M, Pongflag);
+        WAIT_FLAG(V, M, Pongflag);
+
+        mmad<ArchType::ASCEND_V200, half, half, float, false>(
+            l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+            l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+            l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], m_actual, n1_actual, fk, 1);
+
+        SET_FLAG(M, V, Pongflag);
+        SET_FLAG(M, MTE1, Pongflag);
+        SET_FLAG(M, MTE1, Pongflag + 2);
+        // BMM2 V L0B PRELOAD Pong
+#if __CCE_AICORE__ == 100
+        WAIT_FLAG(MTE2, MTE1, Pongflag + 2);
+#else
+        WAIT_FLAG(MTE2, MTE1, Pongflag + 4);
+#endif
+        WAIT_FLAG(M, MTE1, Pongflag + 2);
+        // 16 is blocksize in format zN
+        if (fk == 16) {
+            l1_to_l0_b<ArchType::ASCEND_V200, half, 1, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l1vPongBuf_tensor, 0,
+                bn / BLOCK_SIZE, 0, 1, 0, 0);
+        } else {
+            for (int32_t l0bLoadIdx = 0; l0bLoadIdx < (bn / BLOCK_SIZE); ++l0bLoadIdx) { // Nz -> nZ
+                l1_to_l0_b<ArchType::ASCEND_V200, half, 1, DataFormat::VECTOR, DataFormat::VECTOR>(
+                    l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + l0bLoadIdx * fk * BLOCK_SIZE],
+                    l1vPongBuf_tensor[l0bLoadIdx * CUBE_MATRIX_SIZE], 0, fk / BLOCK_SIZE, 0, bn / BLOCK_SIZE, 0,
+                    0); // transpose
+            }
+        }
+#if __CCE_AICORE__ == 100
+        SET_FLAG(MTE1, MTE2, Pongflag + 2);
+#else
+        SET_FLAG(MTE1, MTE2, Pongflag + 6);
+#endif
+        SET_FLAG(MTE1, M, Pongflag + 2);
+    }
+    // 2. ################ Bmm1 Pong Ends #######################
+    // 3. ################ Softmax Ping Starts #######################
+    WAIT_FLAG(M, V, Pingflag);
+    l0c_to_ub<ArchType::ASCEND_V200, float, half>(lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                                  l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 1,
+                                                  pSize / CUBE_MATRIX_SIZE, 0, 0);
+    PIPE_BARRIER(V);
+    SET_FLAG(V, M, Pingflag);
+    // 3.1. mask(attention score * tor)
+    muls_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                        lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], localTor,
+                                        (fn + 127) / 128, // repeat
+                                        1, fm,            // dstBlockStride, srcBlockStride
+                                        8, fm * 8);
+    PIPE_BARRIER(V);
+    if (maskType != 0) {
+        WAIT_FLAG(MTE1, V, Pingflag);
+        add_v<ArchType::ASCEND_V200, half>(
+            lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+            maskUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], n0_actual / VECTOR_SIZE, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+        if (n0_actual % 128 != 0) {
+            __set_mask(n0_actual % 128);
+            add_v<ArchType::ASCEND_V200, half>(
+                lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE + n0_actual / VECTOR_SIZE * VECTOR_SIZE],
+                lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE + n0_actual / VECTOR_SIZE * VECTOR_SIZE],
+                maskUbuf_tensor[Pingflag * LS_PINGPONG_SIZE + n0_actual / VECTOR_SIZE * VECTOR_SIZE], 1, 1, 1, 1, 8, 8,
+                8);
+            PIPE_BARRIER(V);
+            SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        }
+        SET_FLAG(V, MTE1, Pingflag);
+    }
+    // 3. softmax part
+    if (n0_actual <= VECTOR_SIZE) {
+        if (n0_actual != 128) {
+            __set_mask(n0_actual % 128);
+        }
+        cmax_v<ArchType::ASCEND_V200, half, AscendC::ReduceOrder::ORDER_ONLY_VALUE>(
+            lmUbuf_tensor, lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+            1, // repeat, fm is always 16
+            1, 1, 8);
+        PIPE_BARRIER(V);
+    } else {
+        ub_to_ub<ArchType::ASCEND_V200, half>(tvUbuf_tensor, lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], 0,
+                                              1, // nBurst
+                                              8, // lenBurst
+                                              8, // srcStride
+                                              8  // dstStride
+        );
+        PIPE_BARRIER(V);
+        if (n0_actual % 128 != 0) {
+            __set_mask(n0_actual % VECTOR_SIZE);
+        }
+        max_v<ArchType::ASCEND_V200, half>(tvUbuf_tensor, tvUbuf_tensor,
+                                           lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE + VECTOR_SIZE], 1, 1, 1, 1, 8, 8,
+                                           8);
+        PIPE_BARRIER(V);
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        cmax_v<ArchType::ASCEND_V200, half, AscendC::ReduceOrder::ORDER_ONLY_VALUE>(lmUbuf_tensor, tvUbuf_tensor,
+                                                                                    1, // repeat, fm is always 16
+                                                                                    1, 1, 8);
+        PIPE_BARRIER(V);
+    }
+    SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+    PIPE_BARRIER(V);
+
+    if (initGgDm == 0) { // ??update m_j
+        max_v<ArchType::ASCEND_V200, half>(hmUbuf_tensor, lmUbuf_tensor, gmUbuf_tensor[gmUOffset], 1, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+
+        sub_v<ArchType::ASCEND_V200, half>(dmUbuf_tensor[Pingflag * UB_HALF_LINE_SIZE], gmUbuf_tensor[gmUOffset],
+                                           hmUbuf_tensor, 1, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+        ub_to_ub<ArchType::ASCEND_V200, half>(gmUbuf_tensor[gmUOffset], hmUbuf_tensor, 0, 1, 1, 0, 0);
+        PIPE_BARRIER(V);
+        ExpandToBlockHalf(tvUbuf_tensor, hmUbuf_tensor, fm); // (fm,) -> (fm, 16)
+    } else {
+        initGgDm = 0;
+        ub_to_ub<ArchType::ASCEND_V200, half>(gmUbuf_tensor[gmUOffset], lmUbuf_tensor, 0, 1, 1, 0, 0);
+        PIPE_BARRIER(V);
+        ExpandToBlockHalf(tvUbuf_tensor, gmUbuf_tensor[gmUOffset], fm); // (fm,) -> (fm, 16)
+    }
+    sub_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                       lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], tvUbuf_tensor, (fn + 127) / 128, 1,
+                                       1, 0, 8, 8, 0);
+    PIPE_BARRIER(V);
+    conv_v<ArchType::ASCEND_V200, half, float>(ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                               lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], (fn + 63) / 64, 1, 1, 8, 4);
+    PIPE_BARRIER(V);
+    exp_v<ArchType::ASCEND_V200, float>(ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                        ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                        (fn + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE, 1, 1, 8, 8);
+    PIPE_BARRIER(V);
+    WAIT_FLAG(MTE3, V, Pingflag);
+    conv_v<ArchType::ASCEND_V200, float, half>(lpUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                               ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                               (fn + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE, 1, 1, 4, 8);
+    PIPE_BARRIER(V);
+    SET_FLAG(V, MTE3, Pingflag);
+    SetMasknorm();
+    if (n0_actual < FLOAT_VECTOR_SIZE) {
+        if (n0_actual != FLOAT_VECTOR_SIZE) {
+            SetVectorMask<int8_t>(0x0, ((long)1 << n0_actual) - 1);
+        }
+        cadd_v<ArchType::ASCEND_V200, float>(llUbuf_tensor[Pingflag * UB_FLOAT_LINE_SIZE],
+                                             ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                             1, // fm is always 16
+                                             1, // dstRepeatStride
+                                             1, // srcBlockStride
+                                             2);
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+    } else {
+        for (int64_t vcalcIdx = 1; vcalcIdx < n0_actual / 64; vcalcIdx++) {
+            add_v<ArchType::ASCEND_V200, float>(
+                ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE], ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE + vcalcIdx * 64], 1, 1, 1, 1, 8, 8, 8);
+            PIPE_BARRIER(V);
+        }
+        if (n0_actual % FLOAT_VECTOR_SIZE != 0) {
+            __set_mask(n0_actual % 64);
+            add_v<ArchType::ASCEND_V200, float>(
+                ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE], ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE + n0_actual / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE], 1, 1,
+                1, 1, 8, 8, 8);
+            PIPE_BARRIER(V);
+            SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        }
+        cadd_v<ArchType::ASCEND_V200, float>(llUbuf_tensor[Pingflag * UB_FLOAT_LINE_SIZE],
+                                             ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                             1, // fm is always 16
+                                             1, // dstRepeatStride
+                                             1, // srcBlockStride
+                                             2);
+    }
+    PIPE_BARRIER(V);
+    SetMasknorm();
+    SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+    WAIT_FLAG(MTE1, MTE3, Pingflag);
+    WAIT_FLAG(V, MTE3, Pingflag);
+    ub_to_l1<ArchType::ASCEND_V200, half>(l1pPingBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+                                          lpUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], 1,
+                                          fn / BLOCK_SIZE, 0, 0);
+    SET_FLAG(MTE3, V, Pingflag);
+    SET_FLAG(MTE3, MTE1, Pingflag);
+    // 3. ################ Softmax Ping Ends #######################
+    // 4. ################ Softmax Pong Starts #######################
+    if (n1_actual != -1) {
+        WAIT_FLAG(M, V, Pongflag);
+        l0c_to_ub<ArchType::ASCEND_V200, float, half>(lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                      l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 1,
+                                                      pSize / CUBE_MATRIX_SIZE, 0, 0);
+        PIPE_BARRIER(V);
+        SET_FLAG(V, M, Pongflag);
+
+        // 3.1. mask(attention score * tor)
+        muls_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                            lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE], localTor, (bn + 127) / 128, 1, fm, 8,
+                                            fm * 8);
+        PIPE_BARRIER(V);
+        if (maskType != 0) {
+            WAIT_FLAG(MTE1, V, Pongflag);
+            add_v<ArchType::ASCEND_V200, half>(
+                lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE], lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                maskUbuf_tensor[Pongflag * LS_PINGPONG_SIZE], n1_actual / VECTOR_SIZE, 1, 1, 1, 8, 8, 8);
+            PIPE_BARRIER(V);
+            if (n1_actual % 128 != 0) {
+                __set_mask(n1_actual % 128);
+                add_v<ArchType::ASCEND_V200, half>(
+                    lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE + n1_actual / VECTOR_SIZE * VECTOR_SIZE],
+                    lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE + n1_actual / VECTOR_SIZE * VECTOR_SIZE],
+                    maskUbuf_tensor[Pongflag * LS_PINGPONG_SIZE + n1_actual / VECTOR_SIZE * VECTOR_SIZE], 1, 1, 1, 1, 8,
+                    8, 8);
+                PIPE_BARRIER(V);
+                SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+            }
+            SET_FLAG(V, MTE1, Pongflag);
+        }
+        // 3. softmax part
+        if (n1_actual <= VECTOR_SIZE) {
+            if (n1_actual != 128) {
+                __set_mask(n1_actual % 128);
+            }
+            cmax_v<ArchType::ASCEND_V200, half, AscendC::ReduceOrder::ORDER_ONLY_VALUE>(
+                lmUbuf_tensor, lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                1, // repeat, fm is always 16
+                1, 1, 8);
+            PIPE_BARRIER(V);
+        } else {
+            ub_to_ub<ArchType::ASCEND_V200, half>(tvUbuf_tensor, lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE], 0,
+                                                  1, // nBurst
+                                                  8, // lenBurst
+                                                  8, // srcStride
+                                                  8  // dstStride
+            );
+            PIPE_BARRIER(V);
+            if (n1_actual % 128 != 0) {
+                __set_mask(n1_actual % 128);
+            }
+            max_v<ArchType::ASCEND_V200, half>(tvUbuf_tensor, tvUbuf_tensor,
+                                               lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE + VECTOR_SIZE], 1, 1, 1, 1, 8,
+                                               8, 8);
+            PIPE_BARRIER(V);
+            SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+            cmax_v<ArchType::ASCEND_V200, half, AscendC::ReduceOrder::ORDER_ONLY_VALUE>(lmUbuf_tensor, tvUbuf_tensor,
+                                                                                        1, // repeat, fm is always 16
+                                                                                        1, 1, 8);
+            PIPE_BARRIER(V);
+        }
+        SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+        PIPE_BARRIER(V);
+
+        max_v<ArchType::ASCEND_V200, half>(hmUbuf_tensor, lmUbuf_tensor, gmUbuf_tensor[gmUOffset], 1, 1, 1, 1, 8, 8, 8);
+
+        PIPE_BARRIER(V);
+
+        sub_v<ArchType::ASCEND_V200, half>(dmUbuf_tensor[Pongflag * UB_HALF_LINE_SIZE], gmUbuf_tensor[gmUOffset],
+                                           hmUbuf_tensor, 1, 1, 1, 1, 8, 8, 8);
+
+        PIPE_BARRIER(V);
+        ExpandToBlockHalf(tvUbuf_tensor, hmUbuf_tensor, fm); // (fm,) -> (fm, 16)
+        ub_to_ub<ArchType::ASCEND_V200, half>(gmUbuf_tensor[gmUOffset], hmUbuf_tensor, 0, 1, 1, 0, 0);
+        PIPE_BARRIER(V);
+        sub_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                           lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE], tvUbuf_tensor, (bn + 127) / 128,
+                                           1, 1, 0, 8, 8, 0);
+        PIPE_BARRIER(V);
+        conv_v<ArchType::ASCEND_V200, half, float>(ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                   lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                   (bn + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE, 1, 1, 8, 4);
+        PIPE_BARRIER(V);
+        exp_v<ArchType::ASCEND_V200, float>(ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                            ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                            (bn + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE, 1, 1, 8, 8);
+        PIPE_BARRIER(V);
+        WAIT_FLAG(MTE3, V, Pongflag);
+        conv_v<ArchType::ASCEND_V200, float, half>(lpUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                   ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                   (bn + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE, 1, 1, 4, 8);
+        PIPE_BARRIER(V);
+        SET_FLAG(V, MTE3, Pongflag);
+        SetMasknorm();
+        if (n1_actual < FLOAT_VECTOR_SIZE) {
+            if (n1_actual != FLOAT_VECTOR_SIZE) {
+                SetVectorMask<int8_t>(0x0, ((long)1 << n1_actual) - 1);
+            }
+            cadd_v<ArchType::ASCEND_V200, float>(llUbuf_tensor[Pongflag * UB_FLOAT_LINE_SIZE],
+                                                 ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                 1, // fm is always 16
+                                                 1, // dstRepeatStride
+                                                 1, // srcBlockStride
+                                                 2);
+            SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        } else {
+            for (int64_t vcalcIdx = 1; vcalcIdx < n1_actual / 64; vcalcIdx++) {
+                add_v<ArchType::ASCEND_V200, float>(
+                    ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE], ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                    ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE + vcalcIdx * FLOAT_VECTOR_SIZE], 1, 1, 1, 1, 8, 8, 8);
+                PIPE_BARRIER(V);
+            }
+            if (n1_actual % FLOAT_VECTOR_SIZE != 0) {
+                SetVectorMask<int8_t>(0x0, ((long)1 << (n1_actual % FLOAT_VECTOR_SIZE)) - 1);
+                add_v<ArchType::ASCEND_V200, float>(
+                    ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE], ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                    ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE + n1_actual / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE], 1,
+                    1, 1, 1, 8, 8, 8);
+                PIPE_BARRIER(V);
+                SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+            }
+            cadd_v<ArchType::ASCEND_V200, float>(llUbuf_tensor[Pongflag * UB_FLOAT_LINE_SIZE],
+                                                 ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                 1, // fm is always 16
+                                                 1, // dstRepeatStride
+                                                 1, // srcBlockStride
+                                                 2);
+        }
+        PIPE_BARRIER(V);
+        SetMasknorm();
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        WAIT_FLAG(MTE1, MTE3, Pongflag);
+        WAIT_FLAG(V, MTE3, Pongflag);
+        ub_to_l1<ArchType::ASCEND_V200, half>(l1pPongBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                                              lpUbuf_tensor[Pongflag * LS_PINGPONG_SIZE], 1,
+                                              bn / BLOCK_SIZE, 0, 0);
+        SET_FLAG(MTE3, V, Pongflag);
+        SET_FLAG(MTE3, MTE1, Pongflag);
+    }
+    // 4. ################ Softmax Pong Ends #######################
+    // 5. ################ Bmm2 Ping Starts #######################
+    WAIT_FLAG(MTE3, MTE1, Pingflag);
+    WAIT_FLAG(M, MTE1, Pingflag);
+    // 16 is blocksize in format zN
+    l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+        l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+        l1pPingBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 0, 1, 0, 1, 0, 0);
+    SET_FLAG(MTE1, MTE3, Pingflag);
+    SET_FLAG(MTE1, M, Pingflag);
+    WAIT_FLAG(MTE1, M, Pingflag);
+    WAIT_FLAG(MTE1, M, Pingflag + 2);
+    WAIT_FLAG(V, M, Pingflag);
+    mmad<ArchType::ASCEND_V200, __fp16, __fp16, float, false>(
+        l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+        l0aBuf_tensor.ReinterpretCast<__fp16>()[Pingflag * L0AB_HALF_BUF_SIZE],
+        l0bBuf_tensor.ReinterpretCast<__fp16>()[Pingflag * L0AB_HALF_BUF_SIZE], m_actual, fk, n0_actual, 1);
+    SET_FLAG(M, MTE1, Pingflag);
+    SET_FLAG(M, MTE1, Pingflag + 2);
+    SET_FLAG(M, V, Pingflag);
+    if (initKVE) {
+        SET_FLAG(MTE1, MTE2, Pingflag);
+        if (n1_actual == -1) {
+            SET_FLAG(MTE1, MTE2, Pongflag);
+        }
+    }
+    // 5. ################ Bmm2 Ping Ends #######################
+    // 6. ################ Bmm2 Pong Starts #######################
+    if (n1_actual != -1) {
+        WAIT_FLAG(MTE3, MTE1, Pongflag);
+        WAIT_FLAG(M, MTE1, Pongflag);
+
+        // 16 is blocksize in format zN
+        l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+            l1pPongBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 0, 1, 0, 1, 0, 0);
+        SET_FLAG(MTE1, MTE3, Pongflag);
+        SET_FLAG(MTE1, M, Pongflag);
+        WAIT_FLAG(MTE1, M, Pongflag);
+        WAIT_FLAG(MTE1, M, Pongflag + 2);
+        WAIT_FLAG(V, M, Pongflag);
+
+        mmad<ArchType::ASCEND_V200, __fp16, __fp16, float, false>(
+            l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+            l0aBuf_tensor.ReinterpretCast<__fp16>()[Pongflag * L0AB_HALF_BUF_SIZE],
+            l0bBuf_tensor.ReinterpretCast<__fp16>()[Pongflag * L0AB_HALF_BUF_SIZE], m_actual, fk, n1_actual, 1);
+
+        SET_FLAG(M, MTE1, Pongflag);
+        SET_FLAG(M, MTE1, Pongflag + 2);
+        SET_FLAG(M, V, Pongflag);
+        if (initKVE) {
+            SET_FLAG(MTE1, MTE2, Pongflag);
+        }
+    }
+    // 6. ################ Bmm2 Pong Ends #######################
+    // 7. ################ Update Ping Starts #######################
+    WAIT_FLAG(M, V, Pingflag);
+    l0c_to_ub<ArchType::ASCEND_V200, float, float, false>(
+            loUbuf_tensor,
+            l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], fk / BLOCK_SIZE, 1, 0, 0);
+    PIPE_BARRIER(V);
+    // 8. ################ Update Pong Starts #######################
+    if (n1_actual != -1) {
+        WAIT_FLAG(M, V, Pongflag);
+        l0c_to_ub<ArchType::ASCEND_V200, float, float, false>(
+            loUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+            l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], fk / BLOCK_SIZE, 1, 0, 0);
+        PIPE_BARRIER(V);
+    }
+    // 5. update for outer loop
+    if (initGgO == 0) {
+        // Only one number need to be updated
+        conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                                   dmUbuf_tensor[Pingflag * UB_HALF_LINE_SIZE], mD64, 1, 1, uint16_t(8),
+                                                   uint16_t(4));
+
+        PIPE_BARRIER(V);
+
+        exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                            tvUbuf_tensor.ReinterpretCast<float>(), mD64, 1, 1, uint16_t(8),
+                                            uint16_t(8));
+        PIPE_BARRIER(V);
+        SetVectorMask<int8_t>(0x0, ((long)1 << (16)) - 1);
+        mul_v<ArchType::ASCEND_V200, float>(glUbuf_tensor[glUOffset], tvUbuf_tensor.ReinterpretCast<float>(),
+                                            glUbuf_tensor[glUOffset], mD64, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+
+        add_v<ArchType::ASCEND_V200, float>(glUbuf_tensor[glUOffset], glUbuf_tensor[glUOffset],
+                                            llUbuf_tensor[Pingflag * UB_FLOAT_LINE_SIZE], mD64, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        ExpandToBlockHalf(tvUbuf_tensor, // broadcast(m_j-1 - m_j)
+                          dmUbuf_tensor[Pingflag * UB_HALF_LINE_SIZE], fm);
+
+        adds_v<ArchType::ASCEND_V200, half>(tvUbuf_tensor[BLOCK_SIZE], tvUbuf_tensor, 0.0,
+                                            kD64, // repeat
+                                            1, 0, 8, 0);
+
+        PIPE_BARRIER(V);
+
+        conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>()[fk], tvUbuf_tensor,
+                                                   kD64, 1, 1, uint16_t(8), uint16_t(4));
+        PIPE_BARRIER(V);
+
+        exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>()[fk],
+                                            tvUbuf_tensor.ReinterpretCast<float>()[fk], kD64, 1, 1, uint16_t(8),
+                                            uint16_t(8));
+        PIPE_BARRIER(V);
+        if (vmPingpongFlag == 1) {
+            WAIT_FLAG(MTE3, V, EVENT_ID2);
+            vmPingpongFlag = 0;
+        }
+
+        mul_v<ArchType::ASCEND_V200, float>(goUbuf_tensor[goUOffset], goUbuf_tensor[goUOffset],
+                                            tvUbuf_tensor.ReinterpretCast<float>()[fk], kD64, 1, 1, 1, 8, 8, 8);
+
+        PIPE_BARRIER(V);
+
+        add_v<ArchType::ASCEND_V200, float>(goUbuf_tensor[goUOffset], goUbuf_tensor[goUOffset],
+                                            loUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], kD64, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+    } else {
+        ub_to_ub<ArchType::ASCEND_V200, float>(glUbuf_tensor[glUOffset], llUbuf_tensor[Pingflag * UB_FLOAT_LINE_SIZE],
+                                               0, 1, 1, 0, 0);
+        PIPE_BARRIER(V);
+        if (vmPingpongFlag == 1) {
+            WAIT_FLAG(MTE3, V, EVENT_ID2);
+            vmPingpongFlag = 0;
+        }
+
+        ub_to_ub<ArchType::ASCEND_V200, float>(goUbuf_tensor[goUOffset], loUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], 0,
+                                               1, fk / 8, 0, 0);
+        PIPE_BARRIER(V);
+    }
+    PIPE_BARRIER(V);
+    initGgO = 0;
+    // 7. ################ Update Ping Ends #######################
+    if (n1_actual != -1) {
+        // Update for outer loop Pong
+        conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                                   dmUbuf_tensor[Pongflag * UB_HALF_LINE_SIZE], mD64, 1, 1, uint16_t(8),
+                                                   uint16_t(4));
+
+        PIPE_BARRIER(V);
+        exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                            tvUbuf_tensor.ReinterpretCast<float>(), mD64, 1, 1, uint16_t(8),
+                                            uint16_t(8));
+        PIPE_BARRIER(V);
+        SetVectorMask<int8_t>(0x0, ((long)1 << (16)) - 1);
+        mul_v<ArchType::ASCEND_V200, float>(glUbuf_tensor[glUOffset], tvUbuf_tensor.ReinterpretCast<float>(),
+                                            glUbuf_tensor[glUOffset], mD64, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+
+        add_v<ArchType::ASCEND_V200, float>(glUbuf_tensor[glUOffset], glUbuf_tensor[glUOffset],
+                                            llUbuf_tensor[Pongflag * UB_FLOAT_LINE_SIZE], mD64, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        ExpandToBlockHalf(tvUbuf_tensor, // broadcast(m_j-1 - m_j)
+                          dmUbuf_tensor[Pongflag * UB_HALF_LINE_SIZE], fm);
+
+        adds_v<ArchType::ASCEND_V200, half>(tvUbuf_tensor[BLOCK_SIZE], tvUbuf_tensor, 0.0,
+                                            kD64, // repeat
+                                            1, 0, 8, 0);
+
+        PIPE_BARRIER(V);
+        conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>()[fk], tvUbuf_tensor,
+                                                   kD64, 1, 1, uint16_t(8), uint16_t(4));
+        PIPE_BARRIER(V);
+
+        exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>()[fk],
+                                            tvUbuf_tensor.ReinterpretCast<float>()[fk], kD64, 1,
+                                            1, uint16_t(8), uint16_t(8));
+        PIPE_BARRIER(V);
+        if (vmPingpongFlag == 1) {
+            WAIT_FLAG(MTE3, V, EVENT_ID2);
+            vmPingpongFlag = 0;
+        }
+        mul_v<ArchType::ASCEND_V200, float>(goUbuf_tensor[goUOffset], goUbuf_tensor[goUOffset],
+                                            tvUbuf_tensor.ReinterpretCast<float>()[fk], kD64, 1, 1, 1, 8, 8, 8);
+
+        PIPE_BARRIER(V);
+        add_v<ArchType::ASCEND_V200, float>(goUbuf_tensor[goUOffset], goUbuf_tensor[goUOffset],
+                                            loUbuf_tensor[Pongflag * LS_PINGPONG_SIZE], kD64, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+        SET_FLAG(V, M, Pongflag);
+    }
+    SET_FLAG(V, M, Pingflag);
+    // 8. ################ Update Pong Ends #######################
+    // 9. ################ Line Output Starts #####################
+    if (wrapO == 1) {
+        SetVectorMask<int8_t>(0x0, ((long)1 << (16)) - 1);
+        conv_v<ArchType::ASCEND_V200, float, half>(glUbuf_tensor[glUOffset].ReinterpretCast<half>(),
+                                                   glUbuf_tensor[glUOffset], mD64, 1, 1, uint16_t(4), uint16_t(8));
+
+        PIPE_BARRIER(V);
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        // 2 for double buffer
+        conv_v<ArchType::ASCEND_V200, float, half>(goUbuf_tensor[goUOffset].ReinterpretCast<half>(),
+                                                   goUbuf_tensor[goUOffset], kD64, 1, 1, uint16_t(4),
+                                                   uint16_t(8));
+        PIPE_BARRIER(V);
+
+        ExpandToBlockHalf(tvUbuf_tensor, glUbuf_tensor[glUOffset].ReinterpretCast<half>(), fm);
+
+        SetVectorMask<int8_t>(0x0, ((long)1 << (16)) - 1);
+        for (int32_t vdivIdx = 0; vdivIdx < (fk / BLOCK_SIZE); ++vdivIdx) { // Oi / li
+            div_v<ArchType::ASCEND_V200, half>(goUbuf_tensor[goUOffset].ReinterpretCast<half>()[vdivIdx * BLOCK_SIZE],
+                                               goUbuf_tensor[goUOffset].ReinterpretCast<half>()[vdivIdx * BLOCK_SIZE],
+                                               tvUbuf_tensor, 1, 1, 1, 1, 8, 8, 8);
+            PIPE_BARRIER(V);
+        }
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        PIPE_BARRIER(V);
+        SET_FLAG(V, MTE3, EVENT_ID2);
+        WAIT_FLAG(V, MTE3, EVENT_ID2);
+        // move O to gm
+        ub_to_gm<ArchType::ASCEND_V200, half>(gmDsto_tensor[(int64_t)dstoOffset],
+                                              goUbuf_tensor[goUOffset].ReinterpretCast<half>(), 0,
+                                              fk / BLOCK_SIZE,      // nburst
+                                              m_actual,             // burstlen
+                                              0,                    // srcStride
+                                              ntokensQ - m_actual); // dstStride
+
+        if (vmPingpongFlag == 0) {
+            SET_FLAG(MTE3, V, EVENT_ID2);
+            vmPingpongFlag = 1;
+        }
+    }
+    // 9. ################ Line Output Ends #####################
+}
+template<>
+__aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>::DecodeParallel(const int32_t fm, const int32_t fn,
+                                                                                 const int32_t fk, const int32_t bn,
+                                                                                 const int32_t m_actual,
+                                                                                 const int32_t n0_actual,
+                                                                                 const int32_t n1_actual,
+                                                                                 const uint32_t maskType, const int32_t nIdx,
+                                                                                 const int32_t mask_n, const int32_t is_ping)
+{
+    int32_t Pingflag = 0; // manual PingPong attempt
+    int32_t Pongflag = 1;
+
+    AscendC::LocalTensor<half> l1kPingBuf_tensor =
+        l1kBufAddr_tensor.ReinterpretCast<uint8_t>()[Pingflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1kPongBuf_tensor =
+        l1kBufAddr_tensor.ReinterpretCast<uint8_t>()[Pongflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1vPingBuf_tensor =
+        l1vBufAddr_tensor.ReinterpretCast<uint8_t>()[Pingflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1vPongBuf_tensor =
+        l1vBufAddr_tensor.ReinterpretCast<uint8_t>()[Pongflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1pPingBuf_tensor =
+        l1pBufAddr_tensor.ReinterpretCast<uint8_t>()[Pingflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1pPongBuf_tensor =
+        l1pBufAddr_tensor.ReinterpretCast<uint8_t>()[Pongflag * 4 * L1_UINT8_BLOCK_SIZE].ReinterpretCast<half>();
+
+    int32_t oSize = fm * fk;
+    int32_t mD64 = (fm + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE;
+    int32_t mD128 = (fm + VECTOR_SIZE - 1) / VECTOR_SIZE;
+    int32_t initGgDm = (initG == 1) ? 1 : 0;
+    int32_t initGgO = (initG == 1) ? 1 : 0;
+    int32_t initGgMask = (initG == 1) ? 1 : 0;
+
+    int32_t pSize = fm * fn;
+    int32_t pSize_b = fm * bn;
+    // 1. ################ Bmm1 Ping Start #######################
+    // 1.1 ################ QK Ping LOAD ################
+    if (initGgO != 0) {
+        WAIT_FLAG(MTE1, MTE2, Pingflag);
+        WAIT_FLAG(MTE1, MTE2, Pongflag);
+        if (ntokensQ <= STRIDE_UPPER_BOUND + fm) { // (fm, fk)
+            gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1qBufAddr_tensor, gmSrcq_tensor[(int64_t)srcqOffset], fm, fm, ntokensQ, fk, fk, fk);
+        } else {
+            for (int32_t l1qBurstIdx = 0; l1qBurstIdx < (fk / BLOCK_SIZE); ++l1qBurstIdx) {
+                gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                    l1qBufAddr_tensor[l1qBurstIdx * fm * BLOCK_SIZE],
+                    gmSrcq_tensor[(int64_t)srcqOffset + l1qBurstIdx * ntokensQ * BLOCK_SIZE], fm, fm, fm, BLOCK_SIZE,
+                    BLOCK_SIZE, BLOCK_SIZE);
+            }
+        }
+        SET_FLAG(MTE2, MTE1, Pingflag);
+        if (n1_actual != -1) {
+            SET_FLAG(MTE2, MTE1, Pongflag);
+        }
+    }
+    // Mask Preload
+    if (maskType != 0) {
+        // load mask ping gm -> l1
+        WAIT_FLAG(MTE1, MTE2, Pingflag + 2);
+        gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+            l1maskBufAddr_tensor[Pingflag * L0AB_HALF_BUF_SIZE], // Nz load
+            gmSrcm_tensor[srcmOffset], fm, fm, maskStride,
+            fn, // lenBurst
+            fn, fn);
+        SET_FLAG(MTE2, MTE1, Pingflag + 2);
+        WAIT_FLAG(MTE2, MTE1, Pingflag + 2);
+        // load mask ping l1 -> ub
+        WAIT_FLAG(V, MTE1, Pingflag);
+        l1_to_ub<ArchType::ASCEND_V200, half>(
+            maskUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+            l1maskBufAddr_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 1, fm * fn / BLOCK_SIZE, 0, 0);
+        SET_FLAG(MTE1, V, Pingflag);
+        SET_FLAG(MTE1, MTE2, Pingflag + 2);
+        if (n1_actual != -1) {
+            // load mask pong gm -> l1
+            WAIT_FLAG(MTE1, MTE2, Pongflag + 2);
+            gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1maskBufAddr_tensor[Pongflag * L0AB_HALF_BUF_SIZE], // Nz load
+                gmSrcm_tensor[srcmOffset + maskStride * blockSize], fm, fm, maskStride,
+                bn, // lenBurst
+                bn, bn);
+            SET_FLAG(MTE2, MTE1, Pongflag + 2);
+            WAIT_FLAG(MTE2, MTE1, Pongflag + 2);
+            // load mask pong l1 -> ub
+            WAIT_FLAG(V, MTE1, Pongflag);
+            l1_to_ub<ArchType::ASCEND_V200, half>(
+                maskUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                l1maskBufAddr_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 1, fm * bn / BLOCK_SIZE, 0, 0);
+            SET_FLAG(MTE1, V, Pongflag);
+            SET_FLAG(MTE1, MTE2, Pongflag + 2);
+        }
+    }
+    WAIT_FLAG(M, MTE1, Pingflag);
+    if (initGgO == 1) {
+        WAIT_FLAG(MTE2, MTE1, Pingflag);
+    }
+    if (fk == BLOCK_SIZE) {
+        l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l1qBufAddr_tensor, 0,
+            fm / BLOCK_SIZE, // repeat
+            0,
+            1, // srcStride
+            0,
+            0 // dstStride
+        );
+
+    } else {
+        for (int32_t l0aLoadIdx = 0; l0aLoadIdx < (fm / BLOCK_SIZE); ++l0aLoadIdx) { // (fm, fk) Nz-> zZ
+            l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * fk * BLOCK_SIZE],
+                l1qBufAddr_tensor[l0aLoadIdx * CUBE_MATRIX_SIZE], 0,
+                fk / BLOCK_SIZE, // repeat
+                0,
+                fm / BLOCK_SIZE, // srcStride
+                0,
+                0 // dstStride
+            );
+        }
+    }
+    SET_FLAG(MTE1, M, Pingflag);
+    WAIT_FLAG(MTE1, MTE2, Pingflag + 4);
+    gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+        l1kPingBuf_tensor, gmSrck_tensor[(int64_t)srckOffset], fn, fn, blockSize,
+        fk, // (fn, fk) double buffer
+        fk, fk);
+    SET_FLAG(MTE2, MTE1, Pingflag);
+    WAIT_FLAG(MTE2, MTE1, Pingflag);
+    WAIT_FLAG(M, MTE1, Pingflag + 2);
+    l1_to_l0_b<ArchType::ASCEND_V200, half, 0, DataFormat::VECTOR, DataFormat::VECTOR>(
+        l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], // Nz ->(transpose) nZ -> nZ
+        l1kPingBuf_tensor, 0, fk * fn / CUBE_MATRIX_SIZE, 0, 1, 0, 0);
+    SET_FLAG(MTE1, MTE2, Pingflag + 4);
+    SET_FLAG(MTE1, M, Pingflag + 2);
+    // 2. ################ Bmm1 Pong Starts #######################
+    // 2.1 ################ QK Pong PRELOAD ################
+    if (n1_actual != -1) {
+        WAIT_FLAG(M, MTE1, Pongflag);
+        if (initGgO == 1) {
+            WAIT_FLAG(MTE2, MTE1, Pongflag);
+        }
+        if (fk == BLOCK_SIZE) {
+            l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l1qBufAddr_tensor, 0,
+                fm / BLOCK_SIZE, // repeat
+                0,
+                1, // srcStride
+                0,
+                0 // dstStride
+            );
+        } else {
+            for (int32_t l0aLoadIdx = 0; l0aLoadIdx < (fm / BLOCK_SIZE); ++l0aLoadIdx) { // (fm, fk) Nz-> zZ
+                l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                    l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * fk * BLOCK_SIZE],
+                    l1qBufAddr_tensor[l0aLoadIdx * CUBE_MATRIX_SIZE], 0,
+                    fk / BLOCK_SIZE, // repeat
+                    0,
+                    fm / BLOCK_SIZE, // srcStride
+                    0,
+                    0 // dstStride
+                );
+            }
+        }
+        SET_FLAG(MTE1, M, Pongflag);
+        WAIT_FLAG(MTE1, MTE2, Pongflag + 4);
+        gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+            l1kPongBuf_tensor, gmSrck_tensor[(int64_t)srckOffset1], bn, bn, blockSize,
+            fk, // (fn, fk) double buffer
+            fk, fk);
+        SET_FLAG(MTE2, MTE1, Pongflag);
+        WAIT_FLAG(MTE2, MTE1, Pongflag);
+        WAIT_FLAG(M, MTE1, Pongflag + 2);
+        l1_to_l0_b<ArchType::ASCEND_V200, half, 0, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], // Nz ->(transpose) nZ -> nZ
+            l1kPongBuf_tensor, 0, fk * bn / CUBE_MATRIX_SIZE, 0, 1, 0, 0);
+        SET_FLAG(MTE1, M, Pongflag + 2);
+        SET_FLAG(MTE1, MTE2, Pongflag + 4);
+    }
+    // 1.2 ################ Bmm1 Ping + V PRELOAD ################
+    // v preload
+    WAIT_FLAG(MTE1, MTE2, Pingflag + 6);
+    gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(l1vPingBuf_tensor, // load V Nz
+                                                                          gmSrcv_tensor[(int64_t)srcvOffset], fn, fn,
+                                                                          blockSize, fk, fk, fk);
+    SET_FLAG(MTE2, MTE1, Pingflag + 4);
+    // bmm1 ping
+    WAIT_FLAG(MTE1, M, Pingflag + 2);
+    WAIT_FLAG(MTE1, M, Pingflag);
+    WAIT_FLAG(V, M, Pingflag);
+    mmad<ArchType::ASCEND_V200, half, half, float, false>(
+        l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+        l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+        l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], m_actual, n0_actual, fk, 1);
+    SET_FLAG(M, V, Pingflag);
+    SET_FLAG(M, MTE1, Pingflag);
+    SET_FLAG(M, MTE1, Pingflag + 2);
+    // BMM2 V L0B PRELOAD ping
+    WAIT_FLAG(MTE2, MTE1, Pingflag + 4);
+    WAIT_FLAG(M, MTE1, Pingflag + 2);
+    // 16 is blocksize in format zN
+    if (fk == 16) {
+        l1_to_l0_b<ArchType::ASCEND_V200, half, 1, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l1vPingBuf_tensor, 0, fn / BLOCK_SIZE,
+            0, 1, 0, 0);
+    } else {
+        for (int32_t l0bLoadIdx = 0; l0bLoadIdx < (fn / BLOCK_SIZE); ++l0bLoadIdx) { // Nz -> nZ
+            l1_to_l0_b<ArchType::ASCEND_V200, half, 1, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + l0bLoadIdx * fk * BLOCK_SIZE],
+                l1vPingBuf_tensor[l0bLoadIdx * CUBE_MATRIX_SIZE], 0, fk / BLOCK_SIZE, 0, fn / BLOCK_SIZE, 0, 0);
+        }
+    }
+    SET_FLAG(MTE1, MTE2, Pingflag + 6);
+    SET_FLAG(MTE1, M, Pingflag + 2);
+    // 1. ################ Bmm1 Ping Ends #######################
+    // 2.2 ################ Bmm1 Pong + V PRELOAD ################
+    if (n1_actual != -1) {
+        // v preload
+        WAIT_FLAG(MTE1, MTE2, Pongflag + 6);
+        gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(l1vPongBuf_tensor, // load V Nz
+                                                                              gmSrcv_tensor[(int64_t)srcvOffset1], bn, bn,
+                                                                              blockSize, fk, fk, fk);
+        SET_FLAG(MTE2, MTE1, Pongflag + 4);
+        // bmm1 pong
+        WAIT_FLAG(MTE1, M, Pongflag + 2);
+        WAIT_FLAG(MTE1, M, Pongflag);
+        WAIT_FLAG(V, M, Pongflag);
+
+        mmad<ArchType::ASCEND_V200, half, half, float, false>(
+            l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+            l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+            l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], m_actual, n1_actual, fk, 1);
+
+        SET_FLAG(M, V, Pongflag);
+        SET_FLAG(M, MTE1, Pongflag);
+        SET_FLAG(M, MTE1, Pongflag + 2);
+        // BMM2 V L0B PRELOAD Pong
+        WAIT_FLAG(MTE2, MTE1, Pongflag + 4);
+        WAIT_FLAG(M, MTE1, Pongflag + 2);
+        // 16 is blocksize in format zN
+        if (fk == 16) {
+            l1_to_l0_b<ArchType::ASCEND_V200, half, 1, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l1vPongBuf_tensor, 0,
+                bn / BLOCK_SIZE, 0, 1, 0, 0);
+        } else {
+            for (int32_t l0bLoadIdx = 0; l0bLoadIdx < (bn / BLOCK_SIZE); ++l0bLoadIdx) { // Nz -> nZ
+                l1_to_l0_b<ArchType::ASCEND_V200, half, 1, DataFormat::VECTOR, DataFormat::VECTOR>(
+                    l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + l0bLoadIdx * fk * BLOCK_SIZE],
+                    l1vPongBuf_tensor[l0bLoadIdx * CUBE_MATRIX_SIZE], 0, fk / BLOCK_SIZE, 0, bn / BLOCK_SIZE, 0,
+                    0); // transpose
+            }
+        }
+        SET_FLAG(MTE1, MTE2, Pongflag + 6);
+        SET_FLAG(MTE1, M, Pongflag + 2);
+    }
+    // 2. ################ Bmm1 Pong Ends #######################
+    // 3. ################ Softmax Ping Starts #######################
+    WAIT_FLAG(M, V, Pingflag);
+    l0c_to_ub<ArchType::ASCEND_V200, float, half>(lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                                  l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 1,
+                                                  pSize / CUBE_MATRIX_SIZE, 0, 0);
+    PIPE_BARRIER(V);
+    SET_FLAG(V, M, Pingflag);
+    // 3.1. mask(attention score * tor)
+    muls_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                        lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], tor,
+                                        pSize / 128, // repeat
+                                        1, 1,            // dstBlockStride, srcBlockStride
+                                        8, 8);
+    PIPE_BARRIER(V);
+    if (maskType != 0) {
+        WAIT_FLAG(MTE1, V, Pingflag);
+        add_v<ArchType::ASCEND_V200, half>(
+            lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+            maskUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], pSize / VECTOR_SIZE, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+        SET_FLAG(V, MTE1, Pingflag);
+    }
+    // 3. softmax part
+    if (n0_actual / BLOCK_SIZE > 1) { // 前两个(fm, 16)求最大值
+        max_v<ArchType::ASCEND_V200, half>(tvUbuf_tensor, lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                           lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE + fm * BLOCK_SIZE],
+                                           fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                                           1,                             // dstBlockStride
+                                           1,                             // src0BlockStride
+                                           1,                             // src1BlockStride
+                                           8,                             // dstRepeatStride
+                                           8,                             // src0RepeatStride
+                                           8                              // src1RepeatStride
+        );
+        PIPE_BARRIER(V);
+    } else {
+        ub_to_ub<ArchType::ASCEND_V200, half>(tvUbuf_tensor, lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                              0,  // sid
+                                              1,  // nBurst
+                                              fm, // lenBurst
+                                              0,  // srcGap
+                                              0   // dstGap
+        );
+
+        PIPE_BARRIER(V);
+    }
+    for (int32_t rowmaxIdx = 2; rowmaxIdx < (n0_actual / BLOCK_SIZE); ++rowmaxIdx) { // 循环比较(fm, 16)
+        max_v<ArchType::ASCEND_V200, half>(tvUbuf_tensor, tvUbuf_tensor,
+                                           lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE + rowmaxIdx * fm * BLOCK_SIZE],
+                                           fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                                           1,                             // dstBlockStride
+                                           1,                             // src0BlockStride
+                                           1,                             // src1BlockStride
+                                           8,                             // dstRepeatStride
+                                           8,                             // src0RepeatStride
+                                           8                              // src1RepeatStride
+        );
+        PIPE_BARRIER(V);
+    }
+    if (n0_actual % BLOCK_SIZE > 0) {
+        __set_mask(n0_actual % BLOCK_SIZE);
+        if (n0_actual / BLOCK_SIZE > 0) {
+            max_v<ArchType::ASCEND_V200, half>(
+                tvUbuf_tensor, tvUbuf_tensor,
+                lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE + n0_actual / BLOCK_SIZE * fm * BLOCK_SIZE],
+                fm, // repeat
+                1,  // dstBlockStride
+                1,  // src0BlockStride
+                1,  // src1BlockStride
+                1,  // dstRepeatStride
+                1,  // src0RepeatStride
+                1   // src1RepeatStride
+            );
+
+            PIPE_BARRIER(V);
+            set_vector_mask((uint64_t)-1, (uint64_t)-1);
+        }
+    }
+    if (n0_actual < BLOCK_SIZE) {
+        __set_vcg_mask(n0_actual);
+    }
+    cgmax_v<ArchType::ASCEND_V200, half>(lmUbuf_tensor, tvUbuf_tensor, fm * BLOCK_SIZE / VECTOR_SIZE, 1, 1, 8);
+    SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+    PIPE_BARRIER(V);
+
+    if (initGgDm == 0) { // update m_j
+        max_v<ArchType::ASCEND_V200, half>(hmUbuf_tensor, lmUbuf_tensor, gmUbuf_tensor, 1, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+
+        sub_v<ArchType::ASCEND_V200, half>(dmUbuf_tensor[Pingflag * UB_HALF_LINE_SIZE], gmUbuf_tensor, hmUbuf_tensor, 1,
+                                           1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+        ub_to_ub<ArchType::ASCEND_V200, half>(gmUbuf_tensor, hmUbuf_tensor, 0, 1, 1, 0, 0);
+        PIPE_BARRIER(V);
+        ExpandToBlockHalf(tvUbuf_tensor, hmUbuf_tensor, fm); // (fm,) -> (fm, 16)
+    } else {
+        initGgDm = 0;
+        ub_to_ub<ArchType::ASCEND_V200, half>(gmUbuf_tensor, lmUbuf_tensor, 0, 1, 1, 0, 0);
+        PIPE_BARRIER(V);
+        ExpandToBlockHalf(tvUbuf_tensor, gmUbuf_tensor, fm); // (fm,) -> (fm, 16)
+    }
+    for (int32_t vsubIdx = 0; vsubIdx < (fn / BLOCK_SIZE); ++vsubIdx) { // (fm, fn)
+        sub_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE + vsubIdx * fm * BLOCK_SIZE],
+                                           lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE + vsubIdx * fm * BLOCK_SIZE],
+                                           tvUbuf_tensor,
+                                           fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                                           1,                             // dstBlockStride
+                                           1,                             // src0BlockStride
+                                           1,                             // src1BlockStride
+                                           8,                             // dstRepeatStride
+                                           8,                             // src0RepeatStride
+                                           8                              // src1RepeatStride
+        );
+    }
+    PIPE_BARRIER(V);
+    conv_v<ArchType::ASCEND_V200, half, float>(ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                               lsUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], pSize / 64, 1, 1, 8, 4);
+    PIPE_BARRIER(V);
+    exp_v<ArchType::ASCEND_V200, float>(ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                        ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                        pSize / FLOAT_VECTOR_SIZE, 1, 1, 8, 8);
+    PIPE_BARRIER(V);
+    WAIT_FLAG(MTE3, V, Pingflag);
+    conv_v<ArchType::ASCEND_V200, float, half>(lpUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                               ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                               pSize / FLOAT_VECTOR_SIZE, 1, 1, 4, 8);
+    PIPE_BARRIER(V);
+    SET_FLAG(V, MTE3, Pingflag);
+    SetMasknorm();
+    if (n0_actual / BLOCK_SIZE > 1) {
+        add_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(), ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                            ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE + fm * BLOCK_SIZE],
+                                            fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, // repeat
+                                            1,                                   // dstBlockStride
+                                            1,                                   // src0BlockStride
+                                            1,                                   // src1BlockStride
+                                            8,                                   // dstRepeatStride
+                                            8,                                   // src0RepeatStride
+                                            8                                    // src1RepeatStride
+        );
+        PIPE_BARRIER(V);
+    } else {
+        ub_to_ub<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(), ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                               0,                   // sid
+                                               1,                   // nBurst
+                                               fm * BLOCK_SIZE / 8, // lenBurst
+                                               0,                   // srcGap
+                                               0                    // dstGap
+        );
+        PIPE_BARRIER(V);
+    }
+    for (int32_t rowsumIdx = 2; rowsumIdx < (n0_actual / BLOCK_SIZE); ++rowsumIdx) {
+        add_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                            tvUbuf_tensor.ReinterpretCast<float>(),
+                                            ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE + rowsumIdx * fm * BLOCK_SIZE],
+                                            fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, // repeat
+                                            1,                                   // dstBlockStride
+                                            1,                                   // src0BlockStride
+                                            1,                                   // src1BlockStride
+                                            8,                                   // dstRepeatStride
+                                            8,                                   // src0RepeatStride
+                                            8                                    // src1RepeatStride
+        );
+        PIPE_BARRIER(V);
+    }
+    SetMasknorm();
+    if (n0_actual % BLOCK_SIZE > 0) {
+        __set_mask(n0_actual % BLOCK_SIZE);
+        if (n0_actual / BLOCK_SIZE > 0) {
+            add_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                                tvUbuf_tensor.ReinterpretCast<float>(),
+                                                ls32Ubuf_tensor[Pingflag * LS_PINGPONG_SIZE + n0_actual / BLOCK_SIZE * fm * BLOCK_SIZE],
+                                                fm, // repeat
+                                                1,  // dstBlockStride
+                                                1,  // src0BlockStride
+                                                1,  // src1BlockStride
+                                                2,  // dstRepeatStride
+                                                2,  // src0RepeatStride
+                                                2   // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+            SetVectorMask<int8_t>(0x0, 0xffff);
+        }
+    } else {
+        SetVectorMask<int8_t>(0x0, 0xffff);
+    }
+
+    cadd_v<ArchType::ASCEND_V200, float>(llUbuf_tensor[Pingflag * UB_FLOAT_LINE_SIZE],
+                                         tvUbuf_tensor.ReinterpretCast<float>(), fm,
+                                         1,  // dstRepeatStride
+                                         1,  // srcBlockStride
+                                         2); // srcRepeatStride, fp32 2 block
+
+    PIPE_BARRIER(V);
+    SetMasknorm();
+    SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+    WAIT_FLAG(MTE1, MTE3, Pingflag);
+    WAIT_FLAG(V, MTE3, Pingflag);
+
+    ub_to_l1<ArchType::ASCEND_V200, half>(l1pPingBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+                                            lpUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], 1, pSize / BLOCK_SIZE, 0,
+                                            0);
+    SET_FLAG(MTE3, V, Pingflag);
+    SET_FLAG(MTE3, MTE1, Pingflag);
+    // 3. ################ Softmax Ping Ends #######################
+    // 4. ################ Softmax Pong Starts #######################
+    if (n1_actual != -1) {
+        WAIT_FLAG(M, V, Pongflag);
+        l0c_to_ub<ArchType::ASCEND_V200, float, half>(lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                      l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 1,
+                                                      pSize_b / CUBE_MATRIX_SIZE, 0, 0);
+        PIPE_BARRIER(V);
+        SET_FLAG(V, M, Pongflag);
+
+        // 3.1. mask(attention score * tor)
+        muls_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                            lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE], tor, pSize_b / 128, 1, 1, 8, 8);
+        PIPE_BARRIER(V);
+        if (maskType != 0) {
+            WAIT_FLAG(MTE1, V, Pongflag);
+            add_v<ArchType::ASCEND_V200, half>(
+                lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE], lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                maskUbuf_tensor[Pongflag * LS_PINGPONG_SIZE], pSize_b / VECTOR_SIZE, 1, 1, 1, 8, 8, 8);
+            PIPE_BARRIER(V);
+            SET_FLAG(V, MTE1, Pongflag);
+        }
+        // 3. softmax part
+        if (n1_actual / BLOCK_SIZE > 1) { // 前两个(fm, 16)求最大值
+            max_v<ArchType::ASCEND_V200, half>(tvUbuf_tensor, lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                               lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE + fm * BLOCK_SIZE],
+                                               fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                                               1,                             // dstBlockStride
+                                               1,                             // src0BlockStride
+                                               1,                             // src1BlockStride
+                                               8,                             // dstRepeatStride
+                                               8,                             // src0RepeatStride
+                                               8                              // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+        } else {
+            ub_to_ub<ArchType::ASCEND_V200, half>(tvUbuf_tensor, lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                  0,  // sid
+                                                  1,  // nBurst
+                                                  fm, // lenBurst
+                                                  0,  // srcGap
+                                                  0   // dstGap
+            );
+
+            PIPE_BARRIER(V);
+        }
+        for (int32_t rowmaxIdx = 2; rowmaxIdx < (n1_actual / BLOCK_SIZE); ++rowmaxIdx) { // 循环比较(fm, 16)
+            max_v<ArchType::ASCEND_V200, half>(
+                tvUbuf_tensor, tvUbuf_tensor,
+                lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE + rowmaxIdx * fm * BLOCK_SIZE],
+                fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                1,                             // dstBlockStride
+                1,                             // src0BlockStride
+                1,                             // src1BlockStride
+                8,                             // dstRepeatStride
+                8,                             // src0RepeatStride
+                8                              // src1RepeatStride
+            );
+
+            PIPE_BARRIER(V);
+        }
+        if (n1_actual % BLOCK_SIZE > 0) {
+            __set_mask(n1_actual % BLOCK_SIZE);
+            if (n1_actual / BLOCK_SIZE > 0) {
+                max_v<ArchType::ASCEND_V200, half>(
+                    tvUbuf_tensor, tvUbuf_tensor,
+                    lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE + n1_actual / BLOCK_SIZE * fm * BLOCK_SIZE],
+                    fm, // repeat
+                    1,  // dstBlockStride
+                    1,  // src0BlockStride
+                    1,  // src1BlockStride
+                    1,  // dstRepeatStride
+                    1,  // src0RepeatStride
+                    1   // src1RepeatStride
+                );
+                PIPE_BARRIER(V);
+                SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+            }
+        }
+        if (n1_actual < BLOCK_SIZE) {
+            __set_vcg_mask(n1_actual);
+        }
+        cgmax_v<ArchType::ASCEND_V200, half>(lmUbuf_tensor, tvUbuf_tensor, fm * BLOCK_SIZE / VECTOR_SIZE, 1, 1, 8);
+        SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+        PIPE_BARRIER(V);
+
+        max_v<ArchType::ASCEND_V200, half>(hmUbuf_tensor, lmUbuf_tensor, gmUbuf_tensor, 1, 1, 1, 1, 8, 8, 8);
+
+        PIPE_BARRIER(V);
+
+        sub_v<ArchType::ASCEND_V200, half>(dmUbuf_tensor[Pongflag * UB_HALF_LINE_SIZE], gmUbuf_tensor, hmUbuf_tensor, 1,
+                                           1, 1, 1, 8, 8, 8);
+
+        PIPE_BARRIER(V);
+        ExpandToBlockHalf(tvUbuf_tensor, hmUbuf_tensor, fm); // (fm,) -> (fm, 16)
+        ub_to_ub<ArchType::ASCEND_V200, half>(gmUbuf_tensor, hmUbuf_tensor, 0, 1, 1, 0, 0);
+        PIPE_BARRIER(V);
+        for (int32_t vsubIdx = 0; vsubIdx < (bn / BLOCK_SIZE); ++vsubIdx) { // (fm, bn)
+            sub_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE + vsubIdx * fm * BLOCK_SIZE],
+                                               lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE + vsubIdx * fm * BLOCK_SIZE],
+                                               tvUbuf_tensor,
+                                               fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                                               1,                             // dstBlockStride
+                                               1,                             // src0BlockStride
+                                               1,                             // src1BlockStride
+                                               8,                             // dstRepeatStride
+                                               8,                             // src0RepeatStride
+                                               8                              // src1RepeatStride
+            );
+        }
+        PIPE_BARRIER(V);
+        conv_v<ArchType::ASCEND_V200, half, float>(ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                   lsUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                   pSize_b / FLOAT_VECTOR_SIZE, 1, 1, 8, 4);
+        PIPE_BARRIER(V);
+        exp_v<ArchType::ASCEND_V200, float>(ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                            ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                            pSize_b / FLOAT_VECTOR_SIZE, 1, 1, 8, 8);
+        PIPE_BARRIER(V);
+        WAIT_FLAG(MTE3, V, Pongflag);
+        conv_v<ArchType::ASCEND_V200, float, half>(lpUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                   ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                   pSize_b / FLOAT_VECTOR_SIZE, 1, 1, 4, 8);
+        PIPE_BARRIER(V);
+        SET_FLAG(V, MTE3, Pongflag);
+        SetMasknorm();
+        if (n1_actual / BLOCK_SIZE > 1) {
+            add_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(), ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE + fm * BLOCK_SIZE],
+                                                fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, // repeat
+                                                1,                                   // dstBlockStride
+                                                1,                                   // src0BlockStride
+                                                1,                                   // src1BlockStride
+                                                8,                                   // dstRepeatStride
+                                                8,                                   // src0RepeatStride
+                                                8                                    // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+        } else {
+            ub_to_ub<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(), ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                   0,                   // sid
+                                                   1,                   // nBurst
+                                                   fm * BLOCK_SIZE / 8, // lenBurst
+                                                   0,                   // srcGap
+                                                   0                    // dstGap
+            );
+            PIPE_BARRIER(V);
+        }
+        for (int32_t rowsumIdx = 2; rowsumIdx < (n1_actual / BLOCK_SIZE); ++rowsumIdx) {
+            add_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                                tvUbuf_tensor.ReinterpretCast<float>(),
+                                                ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE + rowsumIdx * fm * BLOCK_SIZE],
+                                                fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, // repeat
+                                                1,                                   // dstBlockStride
+                                                1,                                   // src0BlockStride
+                                                1,                                   // src1BlockStride
+                                                8,                                   // dstRepeatStride
+                                                8,                                   // src0RepeatStride
+                                                8                                    // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+        }
+        SetMasknorm();
+        if (n1_actual % BLOCK_SIZE > 0) {
+            __set_mask(n1_actual % BLOCK_SIZE);
+            if (n1_actual / BLOCK_SIZE > 0) {
+                add_v<ArchType::ASCEND_V200, float>(
+                    tvUbuf_tensor.ReinterpretCast<float>(), tvUbuf_tensor.ReinterpretCast<float>(),
+                    ls32Ubuf_tensor[Pongflag * LS_PINGPONG_SIZE + n1_actual / BLOCK_SIZE * fm * BLOCK_SIZE], fm, 1, 1, 1, 2, 2, 2);
+                PIPE_BARRIER(V);
+                SetVectorMask<int8_t>(0x0, 0xffff);
+            }
+        } else {
+            SetVectorMask<int8_t>(0x0, 0xffff);
+        }
+        cadd_v<ArchType::ASCEND_V200, float>(llUbuf_tensor[Pongflag * UB_FLOAT_LINE_SIZE],
+                                             tvUbuf_tensor.ReinterpretCast<float>(), fm,
+                                             1,  // dstRepeatStride
+                                             1,  // srcBlockStride
+                                             2); // srcRepeatStride, fp32 2 block
+        SetMasknorm();
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        WAIT_FLAG(MTE1, MTE3, Pongflag);
+        WAIT_FLAG(V, MTE3, Pongflag);
+        ub_to_l1<ArchType::ASCEND_V200, half>(l1pPongBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                                                lpUbuf_tensor[Pongflag * LS_PINGPONG_SIZE], 1, pSize_b / BLOCK_SIZE,
+                                                0, 0);
+        SET_FLAG(MTE3, V, Pongflag);
+        SET_FLAG(MTE3, MTE1, Pongflag);
+    }
+    // 4. ################ Softmax Pong Ends #######################
+    // 5. ################ Bmm2 Ping Starts #######################
+    WAIT_FLAG(MTE3, MTE1, Pingflag);
+    WAIT_FLAG(M, MTE1, Pingflag);
+    // 16 is blocksize in format zN
+    if (fn == BLOCK_SIZE) {
+        l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l1pPingBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 0,
+            fm / BLOCK_SIZE, // repeat
+            0,
+            1, // srcStride
+            0,
+            0 // dstStride
+        );
+    } else {
+        for (int32_t l0aLoadIdx = 0; l0aLoadIdx < (fm / BLOCK_SIZE); ++l0aLoadIdx) { // (fm, fn)
+            l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * fn * BLOCK_SIZE],
+                l1pPingBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * CUBE_MATRIX_SIZE], 0,
+                fn / BLOCK_SIZE, // repeat
+                0,
+                fm / BLOCK_SIZE, // srcStride
+                0,
+                0 // dstStride
+            );
+        }
+    }
+    SET_FLAG(MTE1, MTE3, Pingflag);
+    SET_FLAG(MTE1, M, Pingflag);
+    WAIT_FLAG(MTE1, M, Pingflag);
+    WAIT_FLAG(MTE1, M, Pingflag + 2);
+    WAIT_FLAG(V, M, Pingflag);
+    mmad<ArchType::ASCEND_V200, __fp16, __fp16, float, false>(
+        l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+        l0aBuf_tensor.ReinterpretCast<__fp16>()[Pingflag * L0AB_HALF_BUF_SIZE],
+        l0bBuf_tensor.ReinterpretCast<__fp16>()[Pingflag * L0AB_HALF_BUF_SIZE], m_actual, fk, n0_actual, 1);
+    SET_FLAG(M, MTE1, Pingflag);
+    SET_FLAG(M, MTE1, Pingflag + 2);
+    SET_FLAG(M, V, Pingflag);
+    if (wrapO == 1) {
+        SET_FLAG(MTE1, MTE2, Pingflag);
+        if (n1_actual == -1) {
+            SET_FLAG(MTE1, MTE2, Pongflag);
+        }
+    }
+    // 5. ################ Bmm2 Ping Ends #######################
+    // 6. ################ Bmm2 Pong Starts #######################
+    if (n1_actual != -1) {
+        WAIT_FLAG(MTE3, MTE1, Pongflag);
+        WAIT_FLAG(M, MTE1, Pongflag);
+
+        if (bn == BLOCK_SIZE) {
+            l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l1pPongBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 0,
+                fm / BLOCK_SIZE, // repeat
+                0,
+                1, // srcStride
+                0,
+                0 // dstStride
+            );
+        } else {
+            for (int32_t l0aLoadIdx = 0; l0aLoadIdx < (fm / BLOCK_SIZE); ++l0aLoadIdx) { // (fm, bn)
+                l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                    l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * bn * BLOCK_SIZE],
+                    l1pPongBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * CUBE_MATRIX_SIZE], 0,
+                    bn / BLOCK_SIZE, // repeat
+                    0,
+                    fm / BLOCK_SIZE, // srcStride
+                    0,
+                    0 // dstStride
+                );
+            }
+        }
+        SET_FLAG(MTE1, MTE3, Pongflag);
+        SET_FLAG(MTE1, M, Pongflag);
+        WAIT_FLAG(MTE1, M, Pongflag);
+        WAIT_FLAG(MTE1, M, Pongflag + 2);
+        WAIT_FLAG(V, M, Pongflag);
+
+        mmad<ArchType::ASCEND_V200, __fp16, __fp16, float, false>(
+            l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+            l0aBuf_tensor.ReinterpretCast<__fp16>()[Pongflag * L0AB_HALF_BUF_SIZE],
+            l0bBuf_tensor.ReinterpretCast<__fp16>()[Pongflag * L0AB_HALF_BUF_SIZE], m_actual, fk, n1_actual, 1);
+
+        SET_FLAG(M, MTE1, Pongflag);
+        SET_FLAG(M, MTE1, Pongflag + 2);
+        SET_FLAG(M, V, Pongflag);
+        if (wrapO == 1) {
+            SET_FLAG(MTE1, MTE2, Pongflag);
+        }
+    }
+    // 6. ################ Bmm2 Pong Ends #######################
+    // 7. ################ Update Ping Starts #######################
+    WAIT_FLAG(M, V, Pingflag);
+    l0c_to_ub<ArchType::ASCEND_V200, float, float>(loUbuf_tensor[Pingflag * LS_PINGPONG_SIZE],
+                                                   l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 1,
+                                                   oSize / CUBE_MATRIX_SIZE, 0, 0);
+    PIPE_BARRIER(V);
+    // 8. ################ Update Pong Starts #######################
+    if (n1_actual != -1) {
+        WAIT_FLAG(M, V, Pongflag);
+        l0c_to_ub<ArchType::ASCEND_V200, float, float>(loUbuf_tensor[Pongflag * LS_PINGPONG_SIZE],
+                                                       l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 1,
+                                                       oSize / CUBE_MATRIX_SIZE, 0, 0);
+        PIPE_BARRIER(V);
+    }
+    // 5. update for outer loop
+    if (initGgO == 0) { // ????O
+        // Only one number need to be updated
+        conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                                   dmUbuf_tensor[Pingflag * UB_HALF_LINE_SIZE], mD64, 1, 1, uint16_t(8),
+                                                   uint16_t(4));
+
+        PIPE_BARRIER(V);
+
+        exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                            tvUbuf_tensor.ReinterpretCast<float>(), mD64, 1, 1, uint16_t(8),
+                                            uint16_t(8));
+        PIPE_BARRIER(V);
+        mul_v<ArchType::ASCEND_V200, float>(glUbuf_tensor, tvUbuf_tensor.ReinterpretCast<float>(), glUbuf_tensor, mD64,
+                                            1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+
+        add_v<ArchType::ASCEND_V200, float>(glUbuf_tensor, glUbuf_tensor, llUbuf_tensor[Pingflag * UB_FLOAT_LINE_SIZE],
+                                            mD64, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+        ExpandToBlockHalf(tvUbuf_tensor, // broadcast(m_j-1 - m_j)
+                          dmUbuf_tensor[Pingflag * UB_HALF_LINE_SIZE], fm);
+
+        conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                                   tvUbuf_tensor, fm * BLOCK_SIZE / 64, 1, 1, uint16_t(8), uint16_t(4));
+        PIPE_BARRIER(V);
+
+        exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                            tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                            fm * BLOCK_SIZE / 64, 1, 1, uint16_t(8), uint16_t(8));
+        PIPE_BARRIER(V);
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+
+        if (vmPingpongFlag == 1) {
+            WAIT_FLAG(MTE3, V, EVENT_ID2);
+            vmPingpongFlag = 0;
+        }
+
+        // (1, fk) * (1, 16) (Nz format)
+        for (int32_t vmulIdx = 0; vmulIdx < (fk / BLOCK_SIZE); ++vmulIdx) { // e^broadcast(m_j-1 - m_j) * Oj_1
+            mul_v<ArchType::ASCEND_V200, float>(
+                goUbuf_tensor[vmulIdx * fm * BLOCK_SIZE], goUbuf_tensor[vmulIdx * fm * BLOCK_SIZE],
+                tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2], fm * BLOCK_SIZE / 64, 1, 1, 1, 8, 8, 8);
+            PIPE_BARRIER(V);
+        }
+        // 2 for double buffer
+        for (int32_t vaddIdx = 0; vaddIdx < 2; ++vaddIdx) { // update Oj
+            add_v<ArchType::ASCEND_V200, float>(goUbuf_tensor[vaddIdx * oSize / 2], goUbuf_tensor[vaddIdx * oSize / 2],
+                                                loUbuf_tensor[Pingflag * LS_PINGPONG_SIZE + vaddIdx * oSize / 2],
+                                                oSize / 2 / 64, 1, 1, 1, 8, 8, 8);
+            PIPE_BARRIER(V);
+        }
+    } else {
+        ub_to_ub<ArchType::ASCEND_V200, float>(glUbuf_tensor, llUbuf_tensor[Pingflag * UB_FLOAT_LINE_SIZE], 0, 1,
+                                               fm / 8, 0, 0);
+        PIPE_BARRIER(V);
+        if (vmPingpongFlag == 1) {
+            WAIT_FLAG(MTE3, V, EVENT_ID2);
+            vmPingpongFlag = 0;
+        }
+
+        ub_to_ub<ArchType::ASCEND_V200, float>(goUbuf_tensor, loUbuf_tensor[Pingflag * LS_PINGPONG_SIZE], 0, 1,
+                                               oSize / 8, 0, 0);
+        PIPE_BARRIER(V);
+    }
+    PIPE_BARRIER(V);
+    initGgO = 0;
+    // 7. ################ Update Ping Ends #######################
+    if (n1_actual != -1) {
+        // Update for outer loop Pong
+        conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                                   dmUbuf_tensor[Pongflag * UB_HALF_LINE_SIZE], mD64, 1, 1, uint16_t(8),
+                                                   uint16_t(4));
+
+        PIPE_BARRIER(V);
+        exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                            tvUbuf_tensor.ReinterpretCast<float>(), mD64, 1, 1, uint16_t(8),
+                                            uint16_t(8));
+        PIPE_BARRIER(V);
+        mul_v<ArchType::ASCEND_V200, float>(glUbuf_tensor, tvUbuf_tensor.ReinterpretCast<float>(), glUbuf_tensor, mD64,
+                                            1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+
+        add_v<ArchType::ASCEND_V200, float>(glUbuf_tensor, glUbuf_tensor, llUbuf_tensor[Pongflag * UB_FLOAT_LINE_SIZE],
+                                            mD64, 1, 1, 1, 8, 8, 8);
+        PIPE_BARRIER(V);
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        ExpandToBlockHalf(tvUbuf_tensor, // broadcast(m_j-1 - m_j)
+                          dmUbuf_tensor[Pongflag * UB_HALF_LINE_SIZE], fm);
+        conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                                   tvUbuf_tensor, fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, 1, 1,
+                                                   uint16_t(8), uint16_t(4));
+        PIPE_BARRIER(V);
+
+        exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                            tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                            fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, 1, 1, uint16_t(8), uint16_t(8));
+        PIPE_BARRIER(V);
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+        if (vmPingpongFlag == 1) {
+            WAIT_FLAG(MTE3, V, EVENT_ID2);
+            vmPingpongFlag = 0;
+        }
+
+        for (int32_t vmulIdx = 0; vmulIdx < (fk / BLOCK_SIZE); ++vmulIdx) { // e^broadcast(m_j-1 - m_j) * Oj_1
+            mul_v<ArchType::ASCEND_V200, float>(
+                goUbuf_tensor[vmulIdx * fm * BLOCK_SIZE], goUbuf_tensor[vmulIdx * fm * BLOCK_SIZE],
+                tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2], fm * BLOCK_SIZE / 64, 1, 1, 1, 8, 8, 8);
+            PIPE_BARRIER(V);
+        }
+        // 2 for double buffer
+        for (int32_t vaddIdx = 0; vaddIdx < 2; ++vaddIdx) { // update Oj
+            add_v<ArchType::ASCEND_V200, float>(goUbuf_tensor[vaddIdx * oSize / 2], goUbuf_tensor[vaddIdx * oSize / 2],
+                                                loUbuf_tensor[Pongflag * LS_PINGPONG_SIZE + vaddIdx * oSize / 2],
+                                                oSize / 2 / 64, 1, 1, 1, 8, 8, 8);
+            PIPE_BARRIER(V);
+        }
+        SET_FLAG(V, M, Pongflag);
+    }
+    SET_FLAG(V, M, Pingflag);
+    // 8. ################ Update Pong Ends #######################
+    // 9. ################ Line Output Starts #####################
+    if (wrapO == 1) {
+        conv_v<ArchType::ASCEND_V200, float, half>(glUbuf_tensor.ReinterpretCast<half>(), glUbuf_tensor, mD64, 1, 1,
+                                                   uint16_t(4), uint16_t(8));
+
+        PIPE_BARRIER(V);
+        // 2 for double buffer
+        conv_v<ArchType::ASCEND_V200, float, half>(goUbuf_tensor.ReinterpretCast<half>(), goUbuf_tensor,
+                                                   oSize / FLOAT_VECTOR_SIZE, 1, 1, uint16_t(4), uint16_t(8));
+        PIPE_BARRIER(V);
+
+        ExpandToBlockHalf(tvUbuf_tensor, glUbuf_tensor.ReinterpretCast<half>(), fm); // ??
+
+        for (int32_t vdivIdx = 0; vdivIdx < (fk / BLOCK_SIZE); ++vdivIdx) { // Oi / li
+            div_v<ArchType::ASCEND_V200, half>(goUbuf_tensor.ReinterpretCast<half>()[vdivIdx * fm * BLOCK_SIZE],
+                                               goUbuf_tensor.ReinterpretCast<half>()[vdivIdx * fm * BLOCK_SIZE],
+                                               tvUbuf_tensor, m_actual * BLOCK_SIZE / VECTOR_SIZE, 1, 1, 1, 8, 8, 8);
+            PIPE_BARRIER(V);
+        }
+        int32_t blockV = VECTOR_SIZE / BLOCK_SIZE;
+        if (m_actual % blockV != 0) {
+            __set_mask(m_actual * BLOCK_SIZE % 128);
+            div_v<ArchType::ASCEND_V200, half>(goUbuf_tensor.ReinterpretCast<half>()[m_actual * BLOCK_SIZE / 128 * 128],
+                                               goUbuf_tensor.ReinterpretCast<half>()[m_actual * BLOCK_SIZE / 128 * 128],
+                                               tvUbuf_tensor[m_actual / blockV * blockV * 16], fk / BLOCK_SIZE, 1, 1, 1,
+                                               fm, fm, 0);
+            SetVectorMask<int8_t>(-1, -1);
+        }
+        PIPE_BARRIER(V);
+        SET_FLAG(V, MTE3, EVENT_ID2);
+        WAIT_FLAG(V, MTE3, EVENT_ID2);
+        // move O to gm
+        ub_to_gm<ArchType::ASCEND_V200, half>(gmDsto_tensor[(int64_t)dstoOffset], goUbuf_tensor.ReinterpretCast<half>(),
+                                              0,
+                                              fk / BLOCK_SIZE,      // nburst
+                                              m_actual,             // burstlen
+                                              fm - m_actual,        // strStride
+                                              ntokensQ - m_actual); // dstStride
+
+        if (vmPingpongFlag == 0) {
+            SET_FLAG(MTE3, V, EVENT_ID2);
+            vmPingpongFlag = 1;
+        }
+    }
+    // 9. ################ Line Output Ends #####################
+}
+
+
+template<>
+__aicore__ inline void PagedAttentionDecoder<CalcMode::CALC_MODE_PREFILL>::DecodeParallel(const int32_t fm, const int32_t fn, const int32_t fk,
+                                                                                          const int32_t bn, const int32_t m_actual,
+                                                                                          const int32_t n0_actual, const int32_t n1_actual,
+                                                                                          const uint32_t maskType, const int32_t nIdx,
+                                                                                          const int32_t mask_n, const int32_t is_ping)
+{
+    int32_t Pingflag = 0; // manual PingPong attempt
+    int32_t Pongflag = 1;
+
+    const uint32_t l1q_buf_addr_offset = 0;
+    const uint32_t l1kpv_buf_addr_offset = 4 * L1_UINT8_BLOCK_SIZE;
+
+    AscendC::LocalTensor<half> l1qBuf_tensor =
+        l1qBufAddr_tensor.ReinterpretCast<uint8_t>()[l1q_buf_addr_offset].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1kPingBuf_tensor =
+        l1kBufAddr_tensor.ReinterpretCast<uint8_t>()[Pingflag * l1kpv_buf_addr_offset].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1kPongBuf_tensor =
+        l1kBufAddr_tensor.ReinterpretCast<uint8_t>()[Pongflag * l1kpv_buf_addr_offset].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1vPingBuf_tensor =
+        l1vBufAddr_tensor.ReinterpretCast<uint8_t>()[Pingflag * l1kpv_buf_addr_offset].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1vPongBuf_tensor =
+        l1vBufAddr_tensor.ReinterpretCast<uint8_t>()[Pongflag * l1kpv_buf_addr_offset].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1pPingBuf_tensor =
+        l1pBufAddr_tensor.ReinterpretCast<uint8_t>()[Pingflag * l1kpv_buf_addr_offset].ReinterpretCast<half>();
+    AscendC::LocalTensor<half> l1pPongBuf_tensor =
+        l1pBufAddr_tensor.ReinterpretCast<uint8_t>()[Pongflag * l1kpv_buf_addr_offset].ReinterpretCast<half>();
+
+    gmSrcq_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(gmSrcq));
+    gmSrck_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(gmSrck));
+    gmSrcv_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(gmSrcv));
+    gmSrcm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(gmSrcm));
+    gmDsto_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(gmDsto));
+
+    int32_t oSize = fm * fk;
+    int32_t mD64 = (fm + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE;
+    int32_t mD128 = (fm + VECTOR_SIZE - 1) / VECTOR_SIZE;
+    int32_t initGgDm = (initG == 1) ? 1 : 0;
+    int32_t initGgO = (initG == 1) ? 1 : 0;
+
+    int32_t pSize = fm * fn;
+    int32_t pSize_b = fm * bn;
+    // 1. ################ Bmm1 Ping Start #######################
+    // 1.1 ################ QK Ping LOAD ################
+    if (initGgO != 0) {
+        WAIT_FLAG(MTE1, MTE2, Pingflag);
+        WAIT_FLAG(MTE1, MTE2, Pongflag);
+        if (m_actual == 1) {
+            gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1qBuf_tensor, gmSrcq_tensor[(int64_t)srcqOffset], 1, 1, ntokensQ, fk, fk, fk);
+        } else if (ntokensQ <= STRIDE_UPPER_BOUND + fm) { // (fm, fk)
+            gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1qBuf_tensor, gmSrcq_tensor[(int64_t)srcqOffset], fm, fm, ntokensQ, fk, fk, fk);
+        } else {
+            for (int32_t l1qBurstIdx = 0; l1qBurstIdx < (fk / BLOCK_SIZE); ++l1qBurstIdx) {
+                gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                    l1qBuf_tensor[l1qBurstIdx * fm * BLOCK_SIZE],
+                    gmSrcq_tensor[(int64_t)srcqOffset + l1qBurstIdx * ntokensQ * BLOCK_SIZE], fm, fm, fm, BLOCK_SIZE,
+                    BLOCK_SIZE, BLOCK_SIZE);
+            }
+        }
+        SET_FLAG(MTE2, MTE1, Pingflag);
+        if (n1_actual != -1) {
+            SET_FLAG(MTE2, MTE1, Pongflag);
+        }
+    }
+    //  Mask Preload L1
+    if (maskType != 0) {
+        WAIT_FLAG(MTE1, MTE2, Pingflag + 2);
+        gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+            l1maskBufAddr_tensor[Pingflag * L0AB_HALF_BUF_SIZE], gmSrcm_tensor[srcmOffset], fm, fm, maskStride, fn,
+            fn, fn);
+        SET_FLAG(MTE2, MTE1, Pingflag + 2);
+        if (n1_actual != -1) {
+            WAIT_FLAG(MTE1, MTE2, Pongflag + 2);
+            if (maskType == 4) {
+                gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1maskBufAddr_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                gmSrcm_tensor[0], fm, fm, maskStride, bn, bn,
+                bn);
+            } else {
+                gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1maskBufAddr_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                gmSrcm_tensor[srcmOffset + maskStride * blockSize], fm, fm, maskStride, bn, bn,
+                bn);
+            }
+            SET_FLAG(MTE2, MTE1, Pongflag + 2);
+        }
+    }
+    WAIT_FLAG(M, MTE1, Pingflag);
+    if (initGgO == 1) {
+        WAIT_FLAG(MTE2, MTE1, Pingflag);
+    }
+    if (m_actual == 1) {
+        l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l1qBuf_tensor, 0,
+            1, // repeat
+            0,
+            1, // srcStride
+            0,
+            0 // dstStride
+        );
+    } else if (fk == BLOCK_SIZE) {
+        l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l1qBuf_tensor, 0,
+            fm / BLOCK_SIZE, // repeat
+            0,
+            1, // srcStride
+            0,
+            0 // dstStride
+        );
+    } else {
+        for (int32_t l0aLoadIdx = 0; l0aLoadIdx < (fm / BLOCK_SIZE); ++l0aLoadIdx) { // (fm, fk) Nz-> zZ
+            l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * fk * BLOCK_SIZE],
+                l1qBuf_tensor[l0aLoadIdx * CUBE_MATRIX_SIZE], 0,
+                fk / BLOCK_SIZE, // repeat
+                0,
+                fm / BLOCK_SIZE, // srcStride
+                0,
+                0 // dstStride
+            );
+        }
+    }
+
+    SET_FLAG(MTE1, M, Pingflag);
+    WAIT_FLAG(MTE1, MTE2, Pingflag + 4);
+    if (blockSize <= STRIDE_UPPER_BOUND + fn) {
+        gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+            l1kPingBuf_tensor, gmSrck_tensor[(int64_t)srckOffset], fn, fn, blockSize, fk, fk, fk);
+    } else {
+        for (int32_t l1kBurstIdx = 0; l1kBurstIdx < (fk / BLOCK_SIZE); ++l1kBurstIdx) {
+            gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1kPingBuf_tensor[l1kBurstIdx * fn * BLOCK_SIZE],
+                gmSrck_tensor[(int64_t)srckOffset + l1kBurstIdx * blockSize * BLOCK_SIZE], fn, fn, fn, BLOCK_SIZE,
+                BLOCK_SIZE, BLOCK_SIZE);
+        }
+    }
+    SET_FLAG(MTE2, MTE1, Pingflag);
+    WAIT_FLAG(MTE2, MTE1, Pingflag);
+
+    WAIT_FLAG(M, MTE1, Pingflag + 2);
+    l1_to_l0_b<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+        l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l1kPingBuf_tensor, 0,
+        fk * fn / CUBE_MATRIX_SIZE, // repeat
+        0,
+        1, // srcStride
+        0,
+        0 // dstStride
+    );
+    SET_FLAG(MTE1, MTE2, Pingflag + 4);
+    SET_FLAG(MTE1, M, Pingflag + 2);
+    // V PRELOAD PING
+    WAIT_FLAG(MTE1, MTE2, Pingflag + 6);
+    if (blockSize <= STRIDE_UPPER_BOUND + fn) {
+        gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+            l1vPingBuf_tensor, gmSrcv_tensor[(int64_t)srcvOffset],  fn, fn, blockSize, fk, fk, fk);
+    } else {
+        for (int32_t l1vBurstIdx = 0; l1vBurstIdx < (fk / BLOCK_SIZE); ++l1vBurstIdx) {
+            gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1vPingBuf_tensor[l1vBurstIdx * fn * BLOCK_SIZE],
+                gmSrcv_tensor[(int64_t)srcvOffset + l1vBurstIdx * blockSize * BLOCK_SIZE], fn, fn, fn, BLOCK_SIZE,
+                BLOCK_SIZE, BLOCK_SIZE);
+        }
+    }
+    SET_FLAG(MTE2, MTE1, Pingflag + 4);
+    // bmm1 ping
+    WAIT_FLAG(MTE1, M, Pingflag + 2);
+    WAIT_FLAG(MTE1, M, Pingflag);
+    WAIT_FLAG(V, M, Pingflag);
+
+    mmad<ArchType::ASCEND_V200, half, half, float, false>(
+        l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+        l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], m_actual, n0_actual, fk, 1);
+
+    SET_FLAG(M, MTE1, Pingflag);
+    SET_FLAG(M, MTE1, Pingflag + 2);
+    SET_FLAG(M, V, Pingflag);
+    // 1. ################ Bmm1 Ping Ends #######################
+    // 2. ################ Bmm1 Pong Starts #######################
+    // 2.1 ################ QK Pong LOAD ################
+    if (n1_actual != -1) {
+        WAIT_FLAG(M, MTE1, Pongflag);
+        if (initGgO == 1) {
+            WAIT_FLAG(MTE2, MTE1, Pongflag);
+        }
+        if (m_actual == 1) {
+            l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l1qBuf_tensor, 0,
+                1, // repeat
+                0,
+                1, // srcStride
+                0,
+                0 // dstStride
+            );
+        } else if (fk == BLOCK_SIZE) {
+            l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l1qBuf_tensor, 0,
+                fm / BLOCK_SIZE, // repeat
+                0,
+                1, // srcStride
+                0,
+                0 // dstStride
+            );
+        } else {
+            for (int32_t l0aLoadIdx = 0; l0aLoadIdx < (fm / BLOCK_SIZE); ++l0aLoadIdx) { // (fm, fk) Nz-> zZ
+                l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                    l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * fk * BLOCK_SIZE],
+                    l1qBuf_tensor[l0aLoadIdx * CUBE_MATRIX_SIZE], 0,
+                    fk / BLOCK_SIZE, // repeat
+                    0,
+                    fm / BLOCK_SIZE, // srcStride
+                    0,
+                    0 // dstStride
+                );
+            }
+        }
+        SET_FLAG(MTE1, M, Pongflag);
+        WAIT_FLAG(MTE1, MTE2, Pongflag + 4);
+        if (blockSize <= STRIDE_UPPER_BOUND + bn) {
+            gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1kPongBuf_tensor, gmSrck_tensor[(int64_t)srckOffset1], bn, bn,
+                blockSize, fk, fk, fk);
+        } else {
+            for (int32_t l1kBurstIdx = 0; l1kBurstIdx < (fk / BLOCK_SIZE); ++l1kBurstIdx) {
+                gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                    l1kPongBuf_tensor[l1kBurstIdx * bn * BLOCK_SIZE],
+                    gmSrck_tensor[(int64_t)srckOffset1 + l1kBurstIdx * blockSize * BLOCK_SIZE],
+                    bn, bn, bn, BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+            }
+        }
+        SET_FLAG(MTE2, MTE1, Pongflag);
+        WAIT_FLAG(MTE2, MTE1, Pongflag);
+        WAIT_FLAG(M, MTE1, Pongflag + 2);
+        l1_to_l0_b<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l1kPongBuf_tensor, 0,
+            fk * bn / CUBE_MATRIX_SIZE, // repeat
+            0,
+            1, // srcStride
+            0,
+            0 // dstStride
+        );
+        SET_FLAG(MTE1, MTE2, Pongflag + 4);
+        SET_FLAG(MTE1, M, Pongflag + 2);
+        WAIT_FLAG(MTE1, MTE2, Pongflag + 6);
+        if (blockSize <= STRIDE_UPPER_BOUND + bn) {
+            gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                l1vPongBuf_tensor, gmSrcv_tensor[(int64_t)srcvOffset1], bn, bn,
+                blockSize, fk, fk, fk);
+        } else {
+            for (int32_t l1vBurstIdx = 0; l1vBurstIdx < (fk / BLOCK_SIZE); ++l1vBurstIdx) {
+                gm_to_l1<ArchType::ASCEND_V200, half, DataFormat::NZ, DataFormat::NZ>(
+                    l1vPongBuf_tensor[l1vBurstIdx * bn * BLOCK_SIZE],
+                    gmSrcv_tensor[(int64_t)srcvOffset1 + l1vBurstIdx * blockSize * BLOCK_SIZE],
+                    bn, bn, bn, BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+            }
+        }
+        SET_FLAG(MTE2, MTE1, Pongflag + 4);
+        WAIT_FLAG(MTE1, M, Pongflag + 2);
+        WAIT_FLAG(MTE1, M, Pongflag);
+        WAIT_FLAG(V, M, Pongflag);
+
+        mmad<ArchType::ASCEND_V200, half, half, float, false>(
+            l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+            l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], m_actual, n1_actual, fk, 1);
+
+        SET_FLAG(M, MTE1, Pongflag);
+        SET_FLAG(M, V, Pongflag);
+        SET_FLAG(M, MTE1, Pongflag + 2);
+    }
+    // 2. ################ Bmm1 Pong Ends #######################
+    // 3. ################ Softmax Ping Starts #######################
+    WAIT_FLAG(M, V, Pingflag);
+    WAIT_FLAG(MTE3, V, Pingflag);
+    l0c_to_ub<ArchType::ASCEND_V200, float, half>(lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+                                                  l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 1,
+                                                  pSize / CUBE_MATRIX_SIZE, 0, 0);
+    SET_FLAG(V, M, Pingflag);
+
+    PIPE_BARRIER(V);
+
+    // 3.1. mask(attention score * tor)
+    muls_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+                                        lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], tor,
+                                        pSize / 128,             // repeat
+                                        1,                       // dstBlockStride
+                                        1,                       // srcBlockStride
+                                        uint16_t(8), uint16_t(8) // dstRepeatStride
+    );
+
+    PIPE_BARRIER(V);
+    // Must Sync, otherwise error
+    WAIT_FLAG(V, MTE1, EVENT_ID0);
+    // Mask Ping Load UB
+    if (maskType != 0) {
+        WAIT_FLAG(MTE2, MTE1, Pingflag + 2);
+        l1_to_ub<ArchType::ASCEND_V200, half>(loUbuf_tensor.ReinterpretCast<half>()[Pingflag * L0AB_HALF_BUF_SIZE],
+                                              l1maskBufAddr_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+                                              1,                    // nBurst, 次数
+                                              fm * fn / BLOCK_SIZE, // lenBurst
+                                              0,                    // srcStride，尾-头,32byte
+                                              0);
+        SET_FLAG(MTE1, MTE2, Pingflag + 2);
+        SET_FLAG(MTE1, V, Pingflag);
+        WAIT_FLAG(MTE1, V, Pingflag);
+        if ((maskType == 4 && is_ping == 1 &&  mask_n == nIdx) || maskType != 4) {
+            add_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+                                           lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+                                           loUbuf_tensor.ReinterpretCast<half>()[Pingflag * L0AB_HALF_BUF_SIZE],
+                                           fm * fn / VECTOR_SIZE, // repeat
+                                           1,                     // dstBlockStride
+                                           1,                     // src0BlockStride
+                                           1,                     // src1BlockStride
+                                           8,                     // dstRepeatStride
+                                           8,                     // src0RepeatStride
+                                           8                      // src1RepeatStride
+            );
+        }
+
+        PIPE_BARRIER(V);
+    }
+    // 3. softmax part
+    if (n0_actual / BLOCK_SIZE > 1) { // 前两个(fm, 16)求最大值
+        max_v<ArchType::ASCEND_V200, half>(tvUbuf_tensor, lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+                                           lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + fm * BLOCK_SIZE],
+                                           fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                                           1,                             // dstBlockStride
+                                           1,                             // src0BlockStride
+                                           1,                             // src1BlockStride
+                                           8,                             // dstRepeatStride
+                                           8,                             // src0RepeatStride
+                                           8                              // src1RepeatStride
+        );
+        PIPE_BARRIER(V);
+    } else {
+        ub_to_ub<ArchType::ASCEND_V200, half>(tvUbuf_tensor, lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+                                              0,  // sid
+                                              1,  // nBurst
+                                              fm, // lenBurst
+                                              0,  // srcGap
+                                              0   // dstGap
+        );
+
+        PIPE_BARRIER(V);
+    }
+    for (int32_t rowmaxIdx = 2; rowmaxIdx < (n0_actual / BLOCK_SIZE); ++rowmaxIdx) { // 循环比较(fm, 16)
+        max_v<ArchType::ASCEND_V200, half>(tvUbuf_tensor, tvUbuf_tensor,
+                                           lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + rowmaxIdx * fm * BLOCK_SIZE],
+                                           fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                                           1,                             // dstBlockStride
+                                           1,                             // src0BlockStride
+                                           1,                             // src1BlockStride
+                                           8,                             // dstRepeatStride
+                                           8,                             // src0RepeatStride
+                                           8                              // src1RepeatStride
+        );
+        PIPE_BARRIER(V);
+    }
+    if (n0_actual % BLOCK_SIZE > 0) {
+        __set_mask(n0_actual % BLOCK_SIZE);
+        if (n0_actual / BLOCK_SIZE > 0) {
+            max_v<ArchType::ASCEND_V200, half>(
+                tvUbuf_tensor, tvUbuf_tensor,
+                lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + n0_actual / BLOCK_SIZE * fm * BLOCK_SIZE],
+                fm, // repeat
+                1,  // dstBlockStride
+                1,  // src0BlockStride
+                1,  // src1BlockStride
+                1,  // dstRepeatStride
+                1,  // src0RepeatStride
+                1   // src1RepeatStride
+            );
+
+            PIPE_BARRIER(V);
+            set_vector_mask((uint64_t)-1, (uint64_t)-1);
+        }
+    }
+    if (n0_actual < BLOCK_SIZE) {
+        __set_vcg_mask(n0_actual);
+    }
+    cgmax_v<ArchType::ASCEND_V200, half>(lmUbuf_tensor, tvUbuf_tensor, fm * BLOCK_SIZE / VECTOR_SIZE, 1, 1, 8);
+    SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+    PIPE_BARRIER(V);
+
+    if (initGgDm == 0) { // 需要update m_j
+        max_v<ArchType::ASCEND_V200, half>(hmUbuf_tensor, lmUbuf_tensor, gmUbuf_tensor,
+                                           mD128, // repeat
+                                           1,     // dstBlockStride
+                                           1,     // src0BlockStride
+                                           1,     // src1BlockStride
+                                           8,     // dstRepeatStride
+                                           8,     // src0RepeatStride
+                                           8      // src1RepeatStride
+        );
+        PIPE_BARRIER(V);
+        sub_v<ArchType::ASCEND_V200, half>(dmUbuf_tensor[Pingflag * UB_HALF_LINE_SIZE], gmUbuf_tensor, hmUbuf_tensor,
+                                           mD128, // repeat
+                                           1,     // dstBlockStride
+                                           1,     // src0BlockStride
+                                           1,     // src1BlockStride
+                                           8,     // dstRepeatStride
+                                           8,     // src0RepeatStride
+                                           8      // src1RepeatStride
+        );
+
+        PIPE_BARRIER(V);
+    } else {
+        ub_to_ub<ArchType::ASCEND_V200, half>(hmUbuf_tensor, lmUbuf_tensor,
+                                              0,               // sid
+                                              1,               // nBurst
+                                              fm / BLOCK_SIZE, // lenBurst
+                                              0,               // srcGap
+                                              0                // dstGap
+        );
+        PIPE_BARRIER(V);
+    }
+
+    ub_to_ub<ArchType::ASCEND_V200, half>(gmUbuf_tensor, hmUbuf_tensor,
+                                          0,               // sid
+                                          1,               // nBurst
+                                          fm / BLOCK_SIZE, // lenBurst
+                                          0,               // srcGap
+                                          0                // dstGap
+    );
+
+    initGgDm = 0;
+    PIPE_BARRIER(V);
+    ExpandToBlockHalf(tvUbuf_tensor, hmUbuf_tensor, fm);                // (fm,) -> (fm, 16)
+    for (int32_t vsubIdx = 0; vsubIdx < (fn / BLOCK_SIZE); ++vsubIdx) { // (fm, fn)
+        sub_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + vsubIdx * fm * BLOCK_SIZE],
+                                           lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + vsubIdx * fm * BLOCK_SIZE],
+                                           tvUbuf_tensor,
+                                           fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                                           1,                             // dstBlockStride
+                                           1,                             // src0BlockStride
+                                           1,                             // src1BlockStride
+                                           8,                             // dstRepeatStride
+                                           8,                             // src0RepeatStride
+                                           8                              // src1RepeatStride
+        );
+    }
+    PIPE_BARRIER(V);
+    // 2 for Repeatimes above 255
+    for (int32_t vconvIdx = 0; vconvIdx < 2; ++vconvIdx) {
+        conv_v<ArchType::ASCEND_V200, half, float>(ls32Ubuf_tensor[vconvIdx * pSize / 2],
+                                                   lsUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + vconvIdx * pSize / 2],
+                                                   pSize / 2 / FLOAT_VECTOR_SIZE, // repeat
+                                                   1,                             // dstBlockStride
+                                                   1,                             // srcBlockStride
+                                                   uint16_t(8),                   // dstRepeatStride
+                                                   uint16_t(4)                    // srcRepeatStride
+        );
+    }
+    PIPE_BARRIER(V);
+    // 2 for Repeatimes above 255
+    for (int32_t vexpIdx = 0; vexpIdx < 2; ++vexpIdx) {
+        exp_v<ArchType::ASCEND_V200, float>(ls32Ubuf_tensor[vexpIdx * pSize / 2], ls32Ubuf_tensor[vexpIdx * pSize / 2],
+                                            pSize / 2 / FLOAT_VECTOR_SIZE, // repeat
+                                            1,                             // dstBlockStride
+                                            1,                             // srcBlockStride
+                                            8,                             // dstRepeatStride
+                                            8                              // srcRepeatStride
+        );
+    }
+    PIPE_BARRIER(V);
+    // 2 for Repeatimes above 255
+    for (int32_t vconvIdx = 0; vconvIdx < 2; ++vconvIdx) {
+        conv_v<ArchType::ASCEND_V200, float, half>(lpUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + vconvIdx * pSize / 2],
+                                                   ls32Ubuf_tensor[vconvIdx * pSize / 2],
+                                                   pSize / 2 / FLOAT_VECTOR_SIZE, // repeat
+                                                   1,                             // dstBlockStride
+                                                   1,                             // srcBlockStride
+                                                   4,                             // dstRepeatStride
+                                                   8                              // srcRepeatStride
+        );
+    }
+    PIPE_BARRIER(V);
+    SET_FLAG(V, MTE3, Pingflag);
+    if (n0_actual / BLOCK_SIZE > 1) {
+        add_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(), ls32Ubuf_tensor,
+                                            ls32Ubuf_tensor[fm * BLOCK_SIZE],
+                                            fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, // repeat
+                                            1,                                   // dstBlockStride
+                                            1,                                   // src0BlockStride
+                                            1,                                   // src1BlockStride
+                                            8,                                   // dstRepeatStride
+                                            8,                                   // src0RepeatStride
+                                            8                                    // src1RepeatStride
+        );
+        PIPE_BARRIER(V);
+    } else {
+        ub_to_ub<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(), ls32Ubuf_tensor,
+                                               0,                   // sid
+                                               1,                   // nBurst
+                                               fm * BLOCK_SIZE / 8, // lenBurst
+                                               0,                   // srcGap
+                                               0                    // dstGap
+        );
+        PIPE_BARRIER(V);
+    }
+    for (int32_t rowsumIdx = 2; rowsumIdx < (n0_actual / BLOCK_SIZE); ++rowsumIdx) {
+        add_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                            tvUbuf_tensor.ReinterpretCast<float>(),
+                                            ls32Ubuf_tensor[rowsumIdx * fm * BLOCK_SIZE],
+                                            fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, // repeat
+                                            1,                                   // dstBlockStride
+                                            1,                                   // src0BlockStride
+                                            1,                                   // src1BlockStride
+                                            8,                                   // dstRepeatStride
+                                            8,                                   // src0RepeatStride
+                                            8                                    // src1RepeatStride
+        );
+        PIPE_BARRIER(V);
+    }
+    SetMasknorm();
+    if (n0_actual % BLOCK_SIZE > 0) {
+        __set_mask(n0_actual % BLOCK_SIZE);
+        if (n0_actual / BLOCK_SIZE > 0) {
+            add_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                                tvUbuf_tensor.ReinterpretCast<float>(),
+                                                ls32Ubuf_tensor[n0_actual / BLOCK_SIZE * fm * BLOCK_SIZE],
+                                                fm, // repeat
+                                                1,  // dstBlockStride
+                                                1,  // src0BlockStride
+                                                1,  // src1BlockStride
+                                                2,  // dstRepeatStride
+                                                2,  // src0RepeatStride
+                                                2   // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+            SetVectorMask<int8_t>(0x0, 0xffff);
+        }
+    } else {
+        SetVectorMask<int8_t>(0x0, 0xffff);
+    }
+
+    cadd_v<ArchType::ASCEND_V200, float>(llUbuf_tensor[Pingflag * UB_FLOAT_LINE_SIZE],
+                                         tvUbuf_tensor.ReinterpretCast<float>(), fm,
+                                         1,  // dstRepeatStride
+                                         1,  // srcBlockStride
+                                         2); // srcRepeatStride, fp32 2 block
+
+    PIPE_BARRIER(V);
+    // Must Sync, otherwise error
+    SET_FLAG(V, MTE1, EVENT_ID0);
+    SetMasknorm();
+    SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+    // 3. ################ Softmax Ping Ends #######################
+    // 4. ################ Softmax Pong Starts #######################
+    if (n1_actual != -1) {
+        WAIT_FLAG(M, V, Pongflag);
+        WAIT_FLAG(MTE3, V, Pongflag);
+        l0c_to_ub<ArchType::ASCEND_V200, float, half>(lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                                                      l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 1,
+                                                      pSize_b / CUBE_MATRIX_SIZE, 0, 0);
+        PIPE_BARRIER(V);
+        SET_FLAG(V, M, Pongflag);
+
+        // 3.1. mask(attention score * tor)
+        muls_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                                            lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], tor,
+                                            pSize_b / 128, // repeat
+                                            1,             // dstBlockStride
+                                            1,             // srcBlockStride
+                                            uint16_t(8),   // dstRepeatStride
+                                            uint16_t(8)    // srcRepeatStride
+        );
+        PIPE_BARRIER(V);
+        WAIT_FLAG(V, MTE1, EVENT_ID0);
+        if (maskType != 0) {
+            // Mask Pong Load UB
+            WAIT_FLAG(MTE2, MTE1, Pongflag + 2);
+            l1_to_ub<ArchType::ASCEND_V200, half>(loUbuf_tensor.ReinterpretCast<half>()[Pongflag * L0AB_HALF_BUF_SIZE],
+                                                  l1maskBufAddr_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                                                  1,                    // nBurst, 次数
+                                                  fm * bn / BLOCK_SIZE, // lenBurst
+                                                  0,                    // srcStride，尾-头,32byte
+                                                  0);
+            SET_FLAG(MTE1, MTE2, Pongflag + 2);
+            SET_FLAG(MTE1, V, Pongflag);
+            WAIT_FLAG(MTE1, V, Pongflag);
+            if((maskType == 4 && is_ping == 0 &&  mask_n == nIdx)|| maskType != 4) {
+                add_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                                               lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                                               loUbuf_tensor.ReinterpretCast<half>()[Pongflag * L0AB_HALF_BUF_SIZE],
+                                               fm * bn / VECTOR_SIZE, // repeat
+                                               1,                     // dstBlockStride
+                                               1,                     // src0BlockStride
+                                               1,                     // src1BlockStride
+                                               8,                     // dstRepeatStride
+                                               8,                     // src0RepeatStride
+                                               8                      // src1RepeatStride
+                );
+            }
+            PIPE_BARRIER(V);
+        }
+        // 3. softmax part
+        if (n1_actual / BLOCK_SIZE > 1) { // 前两个(fm, 16)求最大值
+            max_v<ArchType::ASCEND_V200, half>(tvUbuf_tensor, lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                                               lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + fm * BLOCK_SIZE],
+                                               fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                                               1,                             // dstBlockStride
+                                               1,                             // src0BlockStride
+                                               1,                             // src1BlockStride
+                                               8,                             // dstRepeatStride
+                                               8,                             // src0RepeatStride
+                                               8                              // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+        } else {
+            ub_to_ub<ArchType::ASCEND_V200, half>(tvUbuf_tensor, lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                                                  0,  // sid
+                                                  1,  // nBurst
+                                                  fm, // lenBurst
+                                                  0,  // srcGap
+                                                  0   // dstGap
+            );
+
+            PIPE_BARRIER(V);
+        }
+        for (int32_t rowmaxIdx = 2; rowmaxIdx < (n1_actual / BLOCK_SIZE); ++rowmaxIdx) { // 循环比较(fm, 16)
+            max_v<ArchType::ASCEND_V200, half>(
+                tvUbuf_tensor, tvUbuf_tensor,
+                lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + rowmaxIdx * fm * BLOCK_SIZE],
+                fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                1,                             // dstBlockStride
+                1,                             // src0BlockStride
+                1,                             // src1BlockStride
+                8,                             // dstRepeatStride
+                8,                             // src0RepeatStride
+                8                              // src1RepeatStride
+            );
+
+            PIPE_BARRIER(V);
+        }
+        if (n1_actual % BLOCK_SIZE > 0) {
+            __set_mask(n1_actual % BLOCK_SIZE);
+            if (n1_actual / BLOCK_SIZE > 0) {
+                max_v<ArchType::ASCEND_V200, half>(
+                    tvUbuf_tensor, tvUbuf_tensor,
+                    lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + n1_actual / BLOCK_SIZE * fm * BLOCK_SIZE],
+                    fm, // repeat
+                    1,  // dstBlockStride
+                    1,  // src0BlockStride
+                    1,  // src1BlockStride
+                    1,  // dstRepeatStride
+                    1,  // src0RepeatStride
+                    1   // src1RepeatStride
+                );
+                max_v<ArchType::ASCEND_V200, half>(
+                    tvUbuf_tensor, tvUbuf_tensor,
+                    lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + n1_actual / BLOCK_SIZE * fm * BLOCK_SIZE], fm, 1, 1, 1, 1,
+                    1, 1);
+                PIPE_BARRIER(V);
+                SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+            }
+        }
+        if (n1_actual < BLOCK_SIZE) {
+            __set_vcg_mask(n1_actual);
+        }
+        cgmax_v<ArchType::ASCEND_V200, half>(lmUbuf_tensor, tvUbuf_tensor, fm * BLOCK_SIZE / VECTOR_SIZE, 1, 1, 8);
+        SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+        PIPE_BARRIER(V);
+
+        if (initGgDm == 0) { // 需要update m_j
+            max_v<ArchType::ASCEND_V200, half>(hmUbuf_tensor, lmUbuf_tensor, gmUbuf_tensor,
+                                               mD128, // repeat
+                                               1,     // dstBlockStride
+                                               1,     // src0BlockStride
+                                               1,     // src1BlockStride
+                                               8,     // dstRepeatStride
+                                               8,     // src0RepeatStride
+                                               8      // src1RepeatStride
+            );
+
+            PIPE_BARRIER(V);
+            sub_v<ArchType::ASCEND_V200, half>(dmUbuf_tensor[Pongflag * UB_HALF_LINE_SIZE], gmUbuf_tensor,
+                                               hmUbuf_tensor,
+                                               mD128, // repeat
+                                               1,     // dstBlockStride
+                                               1,     // src0BlockStride
+                                               1,     // src1BlockStride
+                                               8,     // dstRepeatStride
+                                               8,     // src0RepeatStride
+                                               8      // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+        } else {
+            ub_to_ub<ArchType::ASCEND_V200, half>(hmUbuf_tensor, lmUbuf_tensor,
+                                                  0,               // sid
+                                                  1,               // nBurst
+                                                  fm / BLOCK_SIZE, // lenBurst
+                                                  0,               // srcGap
+                                                  0                // dstGap
+            );
+            PIPE_BARRIER(V);
+        }
+        ub_to_ub<ArchType::ASCEND_V200, half>(gmUbuf_tensor, hmUbuf_tensor,
+                                              0,               // sid
+                                              1,               // nBurst
+                                              fm / BLOCK_SIZE, // lenBurst
+                                              0,               // srcGap
+                                              0                // dstGap
+        );
+        ub_to_ub<ArchType::ASCEND_V200, half>(gmUbuf_tensor, hmUbuf_tensor, 0, 1, fm / BLOCK_SIZE, 0, 0);
+        initGgDm = 0;
+        PIPE_BARRIER(V);
+        ExpandToBlockHalf(tvUbuf_tensor, hmUbuf_tensor, fm);                // (fm,) -> (fm, 16)
+        for (int32_t vsubIdx = 0; vsubIdx < (bn / BLOCK_SIZE); ++vsubIdx) { // (fm, bn)
+            sub_v<ArchType::ASCEND_V200, half>(lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + vsubIdx * fm * BLOCK_SIZE],
+                                               lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + vsubIdx * fm * BLOCK_SIZE],
+                                               tvUbuf_tensor,
+                                               fm * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                                               1,                             // dstBlockStride
+                                               1,                             // src0BlockStride
+                                               1,                             // src1BlockStride
+                                               8,                             // dstRepeatStride
+                                               8,                             // src0RepeatStride
+                                               8                              // src1RepeatStride
+            );
+        }
+        PIPE_BARRIER(V);
+        // 2 for Repeatimes above 255
+        for (int32_t vconvIdx = 0; vconvIdx < 2; ++vconvIdx) {
+            conv_v<ArchType::ASCEND_V200, half, float>(
+                ls32Ubuf_tensor[vconvIdx * pSize_b / 2],
+                lsUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + vconvIdx * pSize_b / 2],
+                pSize_b / 2 / FLOAT_VECTOR_SIZE, // repeat
+                1,                               // dstBlockStride
+                1,                               // srcBlockStride
+                uint16_t(8),                     // dstRepeatStride
+                uint16_t(4)                      // srcRepeatStride
+            );
+        }
+        PIPE_BARRIER(V);
+        for (int32_t vexpIdx = 0; vexpIdx < 2; ++vexpIdx) {
+            exp_v<ArchType::ASCEND_V200, float>(ls32Ubuf_tensor[vexpIdx * pSize_b / 2],
+                                                ls32Ubuf_tensor[vexpIdx * pSize_b / 2],
+                                                pSize_b / 2 / FLOAT_VECTOR_SIZE, // repeat
+                                                1,                               // dstBlockStride
+                                                1,                               // srcBlockStride
+                                                8,                               // dstRepeatStride
+                                                8                                // srcRepeatStride
+            );
+        }
+        PIPE_BARRIER(V);
+
+        // 2 for double buffer
+        for (int32_t vconvIdx = 0; vconvIdx < 2; ++vconvIdx) {
+            conv_v<ArchType::ASCEND_V200, float, half>(
+                lpUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + vconvIdx * pSize_b / 2],
+                ls32Ubuf_tensor[vconvIdx * pSize_b / 2],
+                pSize_b / 2 / FLOAT_VECTOR_SIZE, // repeat
+                1,                               // dstBlockStride
+                1,                               // srcBlockStride
+                4,                               // dstRepeatStride
+                8                                // srcRepeatStride
+            );
+        }
+        PIPE_BARRIER(V);
+        SET_FLAG(V, MTE3, Pongflag);
+        if (n1_actual / BLOCK_SIZE > 1) {
+            add_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(), ls32Ubuf_tensor,
+                                                ls32Ubuf_tensor[fm * BLOCK_SIZE],
+                                                fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, // repeat
+                                                1,                                   // dstBlockStride
+                                                1,                                   // src0BlockStride
+                                                1,                                   // src1BlockStride
+                                                8,                                   // dstRepeatStride
+                                                8,                                   // src0RepeatStride
+                                                8                                    // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+        } else {
+            ub_to_ub<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(), ls32Ubuf_tensor,
+                                                   0,                   // sid
+                                                   1,                   // nBurst
+                                                   fm * BLOCK_SIZE / 8, // lenBurst
+                                                   0,                   // srcGap
+                                                   0                    // dstGap
+            );
+            PIPE_BARRIER(V);
+        }
+        for (int32_t rowsumIdx = 2; rowsumIdx < (n1_actual / BLOCK_SIZE); ++rowsumIdx) {
+            add_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                                tvUbuf_tensor.ReinterpretCast<float>(),
+                                                ls32Ubuf_tensor[rowsumIdx * fm * BLOCK_SIZE],
+                                                fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, // repeat
+                                                1,                                   // dstBlockStride
+                                                1,                                   // src0BlockStride
+                                                1,                                   // src1BlockStride
+                                                8,                                   // dstRepeatStride
+                                                8,                                   // src0RepeatStride
+                                                8                                    // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+        }
+        SetMasknorm();
+        if (n1_actual % BLOCK_SIZE > 0) {
+            __set_mask(n1_actual % BLOCK_SIZE);
+            if (n1_actual / BLOCK_SIZE > 0) {
+                add_v<ArchType::ASCEND_V200, float>(
+                    tvUbuf_tensor.ReinterpretCast<float>(), tvUbuf_tensor.ReinterpretCast<float>(),
+                    ls32Ubuf_tensor[n1_actual / BLOCK_SIZE * fm * BLOCK_SIZE], fm, 1, 1, 1, 2, 2, 2);
+                PIPE_BARRIER(V);
+                SetVectorMask<int8_t>(0x0, 0xffff);
+            }
+        } else {
+            SetVectorMask<int8_t>(0x0, 0xffff);
+        }
+        cadd_v<ArchType::ASCEND_V200, float>(llUbuf_tensor[Pongflag * UB_FLOAT_LINE_SIZE],
+                                             tvUbuf_tensor.ReinterpretCast<float>(), fm,
+                                             1,  // dstRepeatStride
+                                             1,  // srcBlockStride
+                                             2); // srcRepeatStride, fp32 2 block
+        PIPE_BARRIER(V);
+        SET_FLAG(V, MTE1, EVENT_ID0);
+        SetMasknorm();
+        SetVectorMask<int8_t>(0xffffffffffffffff, 0xffffffffffffffff);
+    }
+    // 4. ################ Softmax Pong Ends #######################
+    // 5. ################ Bmm2 Ping Starts #######################
+    // BMM2 V L0B LOAD Ping
+    WAIT_FLAG(MTE2, MTE1, Pingflag + 4);
+    WAIT_FLAG(M, MTE1, Pingflag + 2);
+    // 16 is blocksize in format zN
+    if (fk == 16) {
+        l1_to_l0_b<ArchType::ASCEND_V200, half, true, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l1vPingBuf_tensor, 0,
+            fn / BLOCK_SIZE, // repeat
+            0,
+            1, // srcStride
+            0,
+            0 // dstStride
+        );
+    } else {
+        for (int32_t l0bLoadIdx = 0; l0bLoadIdx < (fn / BLOCK_SIZE); ++l0bLoadIdx) { // Nz -> nZ
+            l1_to_l0_b<ArchType::ASCEND_V200, half, true, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0bBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + l0bLoadIdx * fk * BLOCK_SIZE],
+                l1vPingBuf_tensor[l0bLoadIdx * CUBE_MATRIX_SIZE], 0,
+                fk / BLOCK_SIZE, // repeat
+                0,
+                fn / BLOCK_SIZE, // srcStride
+                0,
+                0 // dstStride
+            );
+        }
+    }
+    SET_FLAG(MTE1, M, Pingflag + 2);
+    SET_FLAG(MTE1, MTE2, Pingflag + 6);
+    // BMM2 P LOAD Ping
+    WAIT_FLAG(V, MTE3, Pingflag);
+    WAIT_FLAG(MTE1, MTE3, Pingflag);
+    if (m_actual == 1) {
+        ub_to_l1<ArchType::ASCEND_V200, half>(l1pPingBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+                                              lpUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], fn / BLOCK_SIZE, 1, fm - 1,
+                                              0);
+    } else {
+        ub_to_l1<ArchType::ASCEND_V200, half>(l1pPingBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+                                              lpUbuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 1, pSize / BLOCK_SIZE, 0,
+                                              0);
+    }
+    SET_FLAG(MTE3, V, Pingflag);
+    SET_FLAG(MTE3, MTE1, Pingflag);
+    WAIT_FLAG(MTE3, MTE1, Pingflag);
+    WAIT_FLAG(M, MTE1, Pingflag);
+    // 16 is blocksize in format zN
+    if (m_actual == 1) {
+        l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l1pPingBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 0,
+            1, // repeat
+            0,
+            1, // srcStride
+            0,
+            0 // dstStride
+        );
+    } else if (fn == BLOCK_SIZE) {
+        l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], l1pPingBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 0,
+            fm / BLOCK_SIZE, // repeat
+            0,
+            1, // srcStride
+            0,
+            0 // dstStride
+        );
+    } else {
+        for (int32_t l0aLoadIdx = 0; l0aLoadIdx < (fm / BLOCK_SIZE); ++l0aLoadIdx) { // (fm, fn)
+            l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0aBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * fn * BLOCK_SIZE],
+                l1pPingBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * CUBE_MATRIX_SIZE], 0,
+                fn / BLOCK_SIZE, // repeat
+                0,
+                fm / BLOCK_SIZE, // srcStride
+                0,
+                0 // dstStride
+            );
+        }
+    }
+    SET_FLAG(MTE1, M, Pingflag);
+    SET_FLAG(MTE1, MTE3, Pingflag);
+    WAIT_FLAG(MTE1, M, Pingflag);
+    // 4. bmm2 partr
+    WAIT_FLAG(MTE1, M, Pingflag + 2);
+    WAIT_FLAG(V, M, Pingflag);
+
+    mmad<ArchType::ASCEND_V200, __fp16, __fp16, float, false>(
+        l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE],
+        l0aBuf_tensor.ReinterpretCast<__fp16>()[Pingflag * L0AB_HALF_BUF_SIZE],
+        l0bBuf_tensor.ReinterpretCast<__fp16>()[Pingflag * L0AB_HALF_BUF_SIZE], m_actual, fk, n0_actual, 1);
+    SET_FLAG(M, V, Pingflag);
+    SET_FLAG(M, MTE1, Pingflag);
+    SET_FLAG(M, MTE1, Pingflag + 2);
+    if (wrapO == 1) {
+        SET_FLAG(MTE1, MTE2, Pingflag);
+        if (n1_actual == -1) {
+            SET_FLAG(MTE1, MTE2, Pongflag);
+        }
+    }
+    // 5. ################ Bmm2 Ping Ends #######################
+    // 6. ################ Bmm2 Pong Starts #######################
+    if (n1_actual != -1) {
+        // BMM2 V L0B LOAD Pong
+        WAIT_FLAG(MTE2, MTE1, Pongflag + 4);
+        WAIT_FLAG(M, MTE1, Pongflag + 2);
+        // 16 is blocksize in format zN
+        if (fk == 16) {
+            l1_to_l0_b<ArchType::ASCEND_V200, half, true, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l1vPongBuf_tensor, 0,
+                bn / BLOCK_SIZE, // repeat
+                0,
+                1, // srcStride
+                0,
+                0 // dstStride
+            );
+        } else {
+            for (int32_t l0bLoadIdx = 0; l0bLoadIdx < (bn / BLOCK_SIZE); ++l0bLoadIdx) { // Nz -> nZ
+                l1_to_l0_b<ArchType::ASCEND_V200, half, true, DataFormat::VECTOR, DataFormat::VECTOR>(
+                    l0bBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + l0bLoadIdx * fk * BLOCK_SIZE],
+                    l1vPongBuf_tensor[l0bLoadIdx * CUBE_MATRIX_SIZE], 0,
+                    fk / BLOCK_SIZE, // repeat
+                    0,
+                    bn / BLOCK_SIZE, // srcStride
+                    0,
+                    0 // dstStride
+                );
+            }
+        }
+        SET_FLAG(MTE1, MTE2, Pongflag + 6);
+        SET_FLAG(MTE1, M, Pongflag + 2);
+        // BMM2 P LOAD Pong
+        WAIT_FLAG(MTE1, MTE3, Pongflag);
+        WAIT_FLAG(V, MTE3, Pongflag);
+        if (m_actual == 1) {
+            ub_to_l1<ArchType::ASCEND_V200, half>(l1pPongBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                                                  lpUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], bn / BLOCK_SIZE, 1,
+                                                  fm - 1, 0);
+        } else {
+            ub_to_l1<ArchType::ASCEND_V200, half>(l1pPongBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+                                                  lpUbuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 1, pSize_b / BLOCK_SIZE,
+                                                  0, 0);
+        }
+        SET_FLAG(MTE3, V, Pongflag);
+        SET_FLAG(MTE3, MTE1, Pongflag);
+        WAIT_FLAG(MTE3, MTE1, Pongflag);
+        WAIT_FLAG(M, MTE1, Pongflag);
+
+        // 16 is blocksize in format zN
+        if (m_actual == 1) {
+            l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l1pPongBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 0,
+                1, // repeat
+                0,
+                1, // srcStride
+                0,
+                0 // dstStride
+            );
+        } else if (bn == BLOCK_SIZE) {
+            l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], l1pPongBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 0,
+                fm / BLOCK_SIZE, // repeat
+                0,
+                1, // srcStride
+                0,
+                0 // dstStride
+            );
+        } else {
+            for (int32_t l0aLoadIdx = 0; l0aLoadIdx < (fm / BLOCK_SIZE); ++l0aLoadIdx) { // (fm, bn)
+                l1_to_l0_a<ArchType::ASCEND_V200, half, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                    l0aBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * bn * BLOCK_SIZE],
+                    l1pPongBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE + l0aLoadIdx * CUBE_MATRIX_SIZE], 0,
+                    bn / BLOCK_SIZE, // repeat
+                    0,
+                    fm / BLOCK_SIZE, // srcStride
+                    0,
+                    0 // dstStride
+                );
+            }
+        }
+        SET_FLAG(MTE1, M, Pongflag);
+        SET_FLAG(MTE1, MTE3, Pongflag);
+        WAIT_FLAG(MTE1, M, Pongflag);
+        // 4. bmm2 part
+        WAIT_FLAG(MTE1, M, Pongflag + 2);
+        WAIT_FLAG(V, M, Pongflag);
+
+        mmad<ArchType::ASCEND_V200, __fp16, __fp16, float, false>(
+            l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE],
+            l0aBuf_tensor.ReinterpretCast<__fp16>()[Pongflag * L0AB_HALF_BUF_SIZE],
+            l0bBuf_tensor.ReinterpretCast<__fp16>()[Pongflag * L0AB_HALF_BUF_SIZE], m_actual, fk, n1_actual, 1);
+        SET_FLAG(M, V, Pongflag);
+        SET_FLAG(M, MTE1, Pongflag);
+        SET_FLAG(M, MTE1, Pongflag + 2);
+        if (wrapO == 1) {
+            SET_FLAG(MTE1, MTE2, Pongflag);
+        }
+    }
+    // 6. ################ Bmm2 Pong Ends #######################
+    // 7. ################ Update Ping Starts #######################
+    WAIT_FLAG(V, MTE1, EVENT_ID0);
+    WAIT_FLAG(M, V, Pingflag);
+    l0c_to_ub<ArchType::ASCEND_V200, float, float>(loUbuf_tensor, l0cBuf_tensor[Pingflag * L0AB_HALF_BUF_SIZE], 1,
+                                                   oSize / CUBE_MATRIX_SIZE, 0, 0);
+    PIPE_BARRIER(V);
+
+    // 5. update for outer loop
+    if (initGgO == 0) { // 需要更新O
+        conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                                   dmUbuf_tensor[Pingflag * UB_HALF_LINE_SIZE], mD64, 1, 1, uint16_t(8),
+                                                   uint16_t(4));
+        PIPE_BARRIER(V);
+        exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                            tvUbuf_tensor.ReinterpretCast<float>(), mD64, 1, 1, uint16_t(8),
+                                            uint16_t(8));
+        PIPE_BARRIER(V);
+        mul_v<ArchType::ASCEND_V200, float>(glUbuf_tensor, tvUbuf_tensor.ReinterpretCast<float>(), glUbuf_tensor,
+                                            mD64, // repeat
+                                            1,    // dstBlockStride
+                                            1,    // src0BlockStride
+                                            1,    // src1BlockStride
+                                            8,    // dstRepeatStride
+                                            8,    // src0RepeatStride
+                                            8     // src1RepeatStride
+        );
+        PIPE_BARRIER(V);
+        add_v<ArchType::ASCEND_V200, float>(glUbuf_tensor, glUbuf_tensor, llUbuf_tensor[Pingflag * UB_FLOAT_LINE_SIZE],
+                                            mD64, // repeat
+                                            1,    // dstBlockStride
+                                            1,    // src0BlockStride
+                                            1,    // src1BlockStride
+                                            8,    // dstRepeatStride
+                                            8,    // src0RepeatStride
+                                            8     // src1RepeatStride
+        );
+
+        PIPE_BARRIER(V);
+
+        ExpandToBlockHalf(tvUbuf_tensor, // broadcast(m_j-1 - m_j)
+                          dmUbuf_tensor[Pingflag * UB_HALF_LINE_SIZE], fm);
+
+        conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                                   tvUbuf_tensor,
+                                                   fm * BLOCK_SIZE / 64, // repeat
+                                                   1, 1, uint16_t(8), uint16_t(4));
+
+        PIPE_BARRIER(V);
+
+        exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                            tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                            fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, 1, 1, uint16_t(8), uint16_t(8));
+        PIPE_BARRIER(V);
+
+        if (vmPingpongFlag == 1) {
+            WAIT_FLAG(MTE3, V, EVENT_ID2);
+            vmPingpongFlag = 0;
+        }
+
+        for (int32_t vmulIdx = 0; vmulIdx < (fk / BLOCK_SIZE); ++vmulIdx) { // e^broadcast(m_j-1 - m_j) * Oj_1
+            mul_v<ArchType::ASCEND_V200, float>(goUbuf_tensor[vmulIdx * fm * BLOCK_SIZE],
+                                                goUbuf_tensor[vmulIdx * fm * BLOCK_SIZE],
+                                                tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                                fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, // repeat
+                                                1,                                   // dstBlockStride
+                                                1,                                   // src0BlockStride
+                                                1,                                   // src1BlockStride
+                                                8,                                   // dstRepeatStride
+                                                8,                                   // src0RepeatStride
+                                                8                                    // src1RepeatStride
+            );
+        }
+        PIPE_BARRIER(V);
+
+        // 2 for double buffer
+        for (int32_t vaddIdx = 0; vaddIdx < 2; ++vaddIdx) { // update Oj
+            add_v<ArchType::ASCEND_V200, float>(goUbuf_tensor[vaddIdx * oSize / 2], goUbuf_tensor[vaddIdx * oSize / 2],
+                                                loUbuf_tensor[vaddIdx * oSize / 2],
+                                                oSize / 2 / FLOAT_VECTOR_SIZE, // repeat
+                                                1,                             // dstBlockStride
+                                                1,                             // src0BlockStride
+                                                1,                             // src1BlockStride
+                                                8,                             // dstRepeatStride
+                                                8,                             // src0RepeatStride
+                                                8                              // src1RepeatStride
+            );
+        }
+        PIPE_BARRIER(V);
+    } else {
+        ub_to_ub<ArchType::ASCEND_V200, float>(glUbuf_tensor, llUbuf_tensor[Pingflag * UB_FLOAT_LINE_SIZE],
+                                               0,      // sid
+                                               1,      // nBurst
+                                               fm / 8, // lenBurst
+                                               0,      // srcGap
+                                               0       // dstGap
+        );
+
+        PIPE_BARRIER(V);
+        if (vmPingpongFlag == 1) {
+            WAIT_FLAG(MTE3, V, EVENT_ID2);
+            vmPingpongFlag = 0;
+        }
+        ub_to_ub<ArchType::ASCEND_V200, float>(goUbuf_tensor, loUbuf_tensor,
+                                               0,         // sid
+                                               1,         // nBurst
+                                               oSize / 8, // lenBurst
+                                               0,         // srcGap
+                                               0          // dstGap
+        );
+        PIPE_BARRIER(V);
+    }
+    SET_FLAG(V, MTE1, EVENT_ID0);
+    initGgO = 0;
+    // 7. ################ Update Ping Ends #######################
+    // 8. ################ Update Pong Starts #######################
+    if (n1_actual != -1) {
+        WAIT_FLAG(V, MTE1, EVENT_ID0);
+        WAIT_FLAG(M, V, Pongflag);
+        l0c_to_ub<ArchType::ASCEND_V200, float, float>(loUbuf_tensor, l0cBuf_tensor[Pongflag * L0AB_HALF_BUF_SIZE], 1,
+                                                       oSize / CUBE_MATRIX_SIZE, 0, 0);
+        PIPE_BARRIER(V);
+        // 5. update for outer loop
+        if (initGgO == 0) { // 需要更新O
+            conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                                       dmUbuf_tensor[Pongflag * UB_HALF_LINE_SIZE],
+                                                       mD64,                    // repeat
+                                                       1,                       // dstBlockStride
+                                                       1,                       // srcBlockStride
+                                                       uint16_t(8), uint16_t(4) // srcRepeatStride
+            );
+            PIPE_BARRIER(V);
+
+            exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>(),
+                                                tvUbuf_tensor.ReinterpretCast<float>(), mD64, 1, 1, uint16_t(8),
+                                                uint16_t(8));
+            PIPE_BARRIER(V);
+            mul_v<ArchType::ASCEND_V200, float>(glUbuf_tensor, tvUbuf_tensor.ReinterpretCast<float>(), glUbuf_tensor,
+                                                mD64, // repeat
+                                                1,    // dstBlockStride
+                                                1,    // srcBlockStride
+                                                1,
+                                                8, // dstRepeatStride
+                                                8, // srcRepeatStride
+                                                8);
+
+            PIPE_BARRIER(V);
+
+            add_v<ArchType::ASCEND_V200, float>(glUbuf_tensor, glUbuf_tensor,
+                                                llUbuf_tensor[Pongflag * UB_FLOAT_LINE_SIZE],
+                                                mD64, // repeat
+                                                1,    // dstBlockStride
+                                                1,    // src0BlockStride
+                                                1,    // src1BlockStride
+                                                8,    // dstRepeatStride
+                                                8,    // src0RepeatStride
+                                                8     // src1RepeatStride
+            );
+
+            PIPE_BARRIER(V);
+
+            ExpandToBlockHalf(tvUbuf_tensor, // broadcast(m_j-1 - m_j)
+                              dmUbuf_tensor[Pongflag * UB_HALF_LINE_SIZE], fm);
+
+            conv_v<ArchType::ASCEND_V200, half, float>(tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                                       tvUbuf_tensor,
+                                                       fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, // repeat
+                                                       1, 1, uint16_t(8), uint16_t(4));
+
+            PIPE_BARRIER(V);
+
+            exp_v<ArchType::ASCEND_V200, float>(tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                                tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                                fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, 1, 1, uint16_t(8), uint16_t(8));
+            PIPE_BARRIER(V);
+
+            if (vmPingpongFlag == 1) {
+                WAIT_FLAG(MTE3, V, EVENT_ID2);
+                vmPingpongFlag = 0;
+            }
+
+            for (int32_t vmulIdx = 0; vmulIdx < (fk / BLOCK_SIZE); ++vmulIdx) { // e^broadcast(m_j-1 - m_j) * Oj_1
+                mul_v<ArchType::ASCEND_V200, float>(goUbuf_tensor[vmulIdx * fm * BLOCK_SIZE],
+                                                    goUbuf_tensor[vmulIdx * fm * BLOCK_SIZE],
+                                                    tvUbuf_tensor.ReinterpretCast<float>()[fm * BLOCK_SIZE / 2],
+                                                    fm * BLOCK_SIZE / FLOAT_VECTOR_SIZE, // repeat
+                                                    1,                                   // dstBlockStride
+                                                    1,                                   // srcBlockStride
+                                                    1,
+                                                    8, // dstRepeatStride
+                                                    8, // srcRepeatStride
+                                                    8);
+            }
+            PIPE_BARRIER(V);
+
+            // 2 for double buffer
+            for (int32_t vaddIdx = 0; vaddIdx < 2; ++vaddIdx) { // update Oj
+                add_v<ArchType::ASCEND_V200, float>(goUbuf_tensor[vaddIdx * oSize / 2],
+                                                    goUbuf_tensor[vaddIdx * oSize / 2],
+                                                    loUbuf_tensor[vaddIdx * oSize / 2],
+                                                    oSize / 2 / FLOAT_VECTOR_SIZE, // repeat
+                                                    1,                             // dstBlockStride
+                                                    1,                             // src0BlockStride
+                                                    1,                             // src1BlockStride
+                                                    8,                             // dstRepeatStride
+                                                    8,                             // src0RepeatStride
+                                                    8                              // src1RepeatStride
+                );
+            }
+            PIPE_BARRIER(V);
+        } else {
+            ub_to_ub<ArchType::ASCEND_V200, float>(glUbuf_tensor, llUbuf_tensor[Pongflag * UB_FLOAT_LINE_SIZE],
+                                                   0,      // sid
+                                                   1,      // nBurst
+                                                   fm / 8, // lenBurst
+                                                   0,      // srcGap
+                                                   0       // dstGap
+            );
+
+            PIPE_BARRIER(V);
+            if (vmPingpongFlag == 1) {
+                WAIT_FLAG(MTE3, V, EVENT_ID2);
+                vmPingpongFlag = 0;
+            }
+            ub_to_ub<ArchType::ASCEND_V200, float>(goUbuf_tensor, loUbuf_tensor,
+                                                   0,         // sid
+                                                   1,         // nBurst
+                                                   oSize / 8, // lenBurst
+                                                   0,         // srcGap
+                                                   0          // dstGap
+            );
+
+            PIPE_BARRIER(V);
+        }
+        SET_FLAG(V, MTE1, EVENT_ID0);
+        SET_FLAG(V, M, Pongflag);
+        PIPE_BARRIER(V);
+        initGgO = 0;
+    }
+    SET_FLAG(V, M, Pingflag);
+    // 8. ################ Update Pong Ends #######################
+    // 9. ################ Line Output Starts #####################
+    if (wrapO == 1) {
+        conv_v<ArchType::ASCEND_V200, float, half>(glUbuf_tensor.ReinterpretCast<half>(), glUbuf_tensor,
+                                                   mD64,        // repeat
+                                                   1,           // dstBlockStride
+                                                   1,           // srcBlockStride
+                                                   uint16_t(4), // dstRepeatStride
+                                                   uint16_t(8)  // srcRepeatStride
+        );
+
+        PIPE_BARRIER(V);
+        // 2 for double buffer
+        for (int32_t vconvIdx = 0; vconvIdx < 2; ++vconvIdx) {
+            conv_v<ArchType::ASCEND_V200, float, half>(goUbuf_tensor.ReinterpretCast<half>()[vconvIdx * oSize / 2],
+                                                       goUbuf_tensor[vconvIdx * oSize / 2],
+                                                       oSize / 2 / FLOAT_VECTOR_SIZE, // repeat
+                                                       1,                             // dstBlockStride
+                                                       1,                             // srcBlockStride
+                                                       uint16_t(4),                   // dstRepeatStride
+                                                       uint16_t(8)                    // srcRepeatStride
+            );
+
+            PIPE_BARRIER(V);
+        }
+
+        ExpandToBlockHalf(tvUbuf_tensor, glUbuf_tensor.ReinterpretCast<half>(), fm); // 广播
+
+        for (int32_t vdivIdx = 0; vdivIdx < (fk / BLOCK_SIZE); ++vdivIdx) { // Oi / li
+            div_v<ArchType::ASCEND_V200, half>(goUbuf_tensor.ReinterpretCast<half>()[vdivIdx * fm * BLOCK_SIZE],
+                                               goUbuf_tensor.ReinterpretCast<half>()[vdivIdx * fm * BLOCK_SIZE],
+                                               tvUbuf_tensor.ReinterpretCast<half>(),
+                                               m_actual * BLOCK_SIZE / VECTOR_SIZE, // repeat
+                                               1,                               // dstBlockStride
+                                               1,                               // src0BlockStride
+                                               1,                               // src1BlockStride
+                                               8,                               // dstRepeatStride
+                                               8,                               // src0RepeatStride
+                                               8                                // src1RepeatStride
+            );
+
+            PIPE_BARRIER(V);
+        }
+        int32_t blockV = VECTOR_SIZE / BLOCK_SIZE;
+        if (m_actual % blockV != 0) {
+            __set_mask(m_actual * BLOCK_SIZE % 128);
+            div_v<ArchType::ASCEND_V200, half>(goUbuf_tensor.ReinterpretCast<half>()[m_actual * BLOCK_SIZE / 128 * 128],
+                                               goUbuf_tensor.ReinterpretCast<half>()[m_actual * BLOCK_SIZE / 128 * 128],
+                                               tvUbuf_tensor.ReinterpretCast<half>()[m_actual / blockV * blockV * 16],
+                                               fk / BLOCK_SIZE, // repeat
+                                               1,               // dstBlockStride
+                                               1,               // src0BlockStride
+                                               1,               // src1BlockStride
+                                               fm,              // dstRepeatStride
+                                               fm,              // src0RepeatStride
+                                               0                // src1RepeatStride
+            );
+
+            SetVectorMask<int8_t>(-1, -1);
+        }
+        PIPE_BARRIER(V);
+        SET_FLAG(V, MTE3, EVENT_ID2);
+        WAIT_FLAG(V, MTE3, EVENT_ID2);
+
+        // move O to gm
+        if (ntokensQ <= STRIDE_UPPER_BOUND + fm) {
+            ub_to_gm<ArchType::ASCEND_V200, half>(gmDsto_tensor[(int64_t)dstoOffset],
+                                                    goUbuf_tensor.ReinterpretCast<half>(), 0,
+                                                    fk / BLOCK_SIZE,  // nburst
+                                                    m_actual,             // burstlen
+                                                    fm - m_actual,        // srcStride
+                                                    ntokensQ - m_actual); // dstStride
+        } else {
+            for (int32_t gmBurstIdx = 0; gmBurstIdx < (fk / BLOCK_SIZE); ++gmBurstIdx) {
+                ub_to_gm<ArchType::ASCEND_V200, half>(
+                    gmDsto_tensor[(int64_t)dstoOffset + gmBurstIdx * ntokensQ * BLOCK_SIZE],
+                    goUbuf_tensor.ReinterpretCast<half>()[gmBurstIdx * fm * BLOCK_SIZE], 0, 1, m_actual, 0, 0);
+            }
+        }
+
+        if (vmPingpongFlag == 0) {
+            SET_FLAG(MTE3, V, EVENT_ID2);
+            vmPingpongFlag = 1;
+        }
+    }
+    // 9. ################ Line Output Ends #####################
+}
+
+__aicore__ inline void RunDefault(uint32_t startBlk, uint32_t endBlk, uint32_t numHeads, uint32_t startBatch,
+                                  uint32_t endBatch, int32_t kvHeads, int64_t batchMaskStride, int64_t headMaskStride,
+                                  int64_t strideKV, uint32_t groupNum, uint32_t blockSize, int64_t strideQO,
+                                  int32_t maxNumBlocksPerQuery, uint32_t embeddingSize, uint32_t maskStride,
+                                  uint32_t maskType, uint32_t headSplit,
+                                  AscendC::GlobalTensor<int32_t> context_lens_gm_tensor,
+                                  AscendC::GlobalTensor<int32_t> block_tables_gm_tensor,
+                                  AscendC::GlobalTensor<int32_t> tiling_para_gm_tensor,
+                                  AscendC::GlobalTensor<half> logn_gm_tensor,
+                                  PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT> &pa,
+                                  PagedAttentionDecoder<CalcMode::CALC_MODE_PREFILL> &paPrefill, uint32_t scaleType, half tor)
+{
+    // use left ub space to store tilingData
+    const uint32_t contextLenUb_offset = 4 * UB_UINT8_BLOCK_SIZE + 10 * UB_UINT8_LINE_SIZE;
+    const uint32_t blockTablesUb_offset = 4 * UB_UINT8_BLOCK_SIZE + 12 * UB_UINT8_LINE_SIZE;
+    const uint32_t contextLenUb_len = 2 * UB_UINT8_LINE_SIZE;
+    const uint32_t blockTablesUb_len = 20 * UB_UINT8_LINE_SIZE;
+    __ubuf__ int32_t *contextLenUb = (__ubuf__ int32_t *)get_imm(contextLenUb_offset);
+    __ubuf__ int32_t *blockTablesUb = (__ubuf__ int32_t *)get_imm(blockTablesUb_offset);
+    AscendC::LocalTensor<int32_t> contextLenUb_tensor;
+    AscendC::LocalTensor<int32_t> blockTablesUb_tensor;
+    contextLenUb_tensor.InitBuffer((const uint32_t)contextLenUb_offset, (const uint32_t)contextLenUb_len);
+    blockTablesUb_tensor.InitBuffer((const uint32_t)blockTablesUb_offset, (const uint32_t)blockTablesUb_len);
+    gm_to_ub<ArchType::ASCEND_V200, int32_t>(contextLenUb_tensor, context_lens_gm_tensor[startBatch], 0, 1,
+                                             (endBatch - startBatch + 1) * 4 / 32 + 1, 0, 0);
+
+    const uint32_t logNUb_offset = 4 * UB_UINT8_BLOCK_SIZE + 9 * UB_UINT8_LINE_SIZE;
+    const uint32_t logNUb_len = 1 * UB_UINT8_LINE_SIZE;
+    AscendC::LocalTensor<half> logNUb_tensor;
+    logNUb_tensor.InitBuffer(logNUb_offset, logNUb_len);
+    if (scaleType == 1) {
+        gm_to_ub<ArchType::ASCEND_V200, half>(logNUb_tensor, logn_gm_tensor[startBatch],
+                                            0, 1, (endBatch - startBatch + 1) * 2 / 32 + 1, 0, 0);
+        SET_FLAG(MTE2, V, EVENT_ID3);
+        WAIT_FLAG(MTE2, V, EVENT_ID3);
+        muls_v<ArchType::ASCEND_V200, half>(logNUb_tensor,
+                                            logNUb_tensor, tor,
+                                            (endBatch - startBatch + 1) / 128 + 1, // repeat
+                                            1,             // dstBlockStride
+                                            1,             // srcBlockStride
+                                            uint16_t(8),   // dstRepeatStride
+                                            uint16_t(8)    // srcRepeatStride
+        );
+        PIPE_BARRIER(V);
+    }
+    __ubuf__ half *logNUb = (__ubuf__ half *)get_imm(logNUb_offset);
+
+    for (uint32_t taskId = startBlk; taskId < endBlk; taskId++) {
+        uint32_t curBatch = taskId / numHeads;
+        uint32_t headId = taskId % numHeads;
+        uint32_t repeatLen = min(headSplit, min(endBlk - taskId, groupNum - headId % groupNum));
+        gm_to_ub<ArchType::ASCEND_V200, int32_t>(blockTablesUb_tensor,
+                                                 block_tables_gm_tensor[curBatch * maxNumBlocksPerQuery], 0, 1,
+                                                 maxNumBlocksPerQuery * 4 / 32 + 1, // 搬对应batch的tables信息
+                                                 0, 0);                             // 1024 * 20 空间可用
+        SET_FLAG(MTE2, S, EVENT_ID0);
+        WAIT_FLAG(MTE2, S, EVENT_ID0);
+        uint32_t contextLen = (uint32_t)(*((__ubuf__ int32_t *)contextLenUb + curBatch - startBatch));
+        uint32_t nLoop = (contextLen + blockSize - 1) / blockSize;
+        int32_t tail = contextLen % blockSize == 0 ? blockSize : contextLen % blockSize;
+        int32_t m_actual = 1;
+        int32_t roundM = (m_actual + 15) / 16 * 16;
+        int32_t __k = embeddingSize;
+        int32_t roundK = (__k + 15) / 16 * 16;
+        int64_t kvHeadOffset = (headId / groupNum) * strideKV;
+        half localTor = 0;
+        if (scaleType == 1) {
+            SET_FLAG(V, S, EVENT_ID2);
+            WAIT_FLAG(V, S, EVENT_ID2);
+            localTor = (half)(*(logNUb + (curBatch - startBatch)));
+        }
+        for (uint32_t nIdx = 0; nIdx < nLoop; nIdx += 2) {
+            int64_t numBlocksId0 = (int32_t)(*((__ubuf__ int32_t *)blockTablesUb + nIdx)); // 跨batch
+            int64_t kvOffset0 = numBlocksId0 * blockSize * kvHeads * embeddingSize + kvHeadOffset;
+            int64_t numBlocksId1 = 0;
+            int64_t kvOffset1 = 0;
+            if ((nIdx + 1) != nLoop) {
+                numBlocksId1 = (int32_t)(*((__ubuf__ int32_t *)blockTablesUb + (nIdx + 1))); // 跨batch
+                kvOffset1 = numBlocksId1 * blockSize * kvHeads * embeddingSize + kvHeadOffset;
+            }
+            int32_t warpO = (nIdx == (nLoop - 1) || (nIdx + 1) == (nLoop - 1)) ? 1 : 0;
+            int32_t initG = (nIdx == 0) ? 1 : 0;
+            int32_t n0_actual = (nIdx == nLoop - 1) ? tail : blockSize;
+            int32_t n1_actual = ((nIdx + 1) == nLoop - 1) ? tail : blockSize;
+            int32_t roundN0 = (n0_actual + 15) / 16 * 16;
+            int32_t roundN1 = (n1_actual + 15) / 16 * 16;
+            if ((nIdx + 1) == (nLoop)) {
+                n1_actual = -1;
+            }
+            int64_t qOffset = curBatch * 16 + headId * strideQO;
+            int64_t maskOffset = curBatch * batchMaskStride + nIdx * blockSize * 16 + headId * headMaskStride;
+            for (uint32_t headOffset = 0; headOffset < repeatLen; ++headOffset) {
+                uint32_t initKV = (headOffset == 0) ? 1 : 0; // kv move to L1 flag
+                uint32_t initKVE = (warpO && headOffset == repeatLen - 1) ? 1 : 0; // synchronization for head loop end
+                pa.Init(qOffset, kvOffset0, kvOffset0, kvOffset1, kvOffset1, maskOffset, qOffset, initG, warpO);
+                pa.Decode(roundM, roundN0, roundK, roundN1, m_actual, n0_actual, n1_actual, maskType, initKVE,
+                          headOffset, initKV, localTor, scaleType);
+                qOffset += strideQO;
+                maskOffset += headMaskStride;
+            }
+        }
+        taskId += repeatLen - 1;
+    }
+}
+
+__aicore__ inline void RunParallel(uint32_t startBlk, uint32_t endBlk, uint32_t numHeads, uint32_t startBatch, uint32_t endBatch, int32_t kvHeads,
+                           int64_t batchMaskStride, int64_t headMaskStride, int64_t strideKV, uint32_t groupNum,
+                           uint32_t blockSize, int64_t strideQO, int32_t maxNumBlocksPerQuery, uint32_t embeddingSize, uint32_t maskStride,
+                           uint32_t maskType,
+                           AscendC::GlobalTensor<int32_t> context_lens_gm_tensor,
+                           AscendC::GlobalTensor<int32_t> block_tables_gm_tensor,
+                           AscendC::GlobalTensor<int32_t> tiling_para_gm_tensor,
+                           PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>& pa,
+                           PagedAttentionDecoder<CalcMode::CALC_MODE_PREFILL>& paPrefill)
+{
+    // use left ub space to store tilingData
+    __ubuf__ int32_t *contextLenUb = (__ubuf__ int32_t *)get_imm(4 * UB_UINT8_BLOCK_SIZE + 9 * UB_UINT8_LINE_SIZE);
+    __ubuf__ int32_t *blockTablesUb = (__ubuf__ int32_t *)get_imm(4 * UB_UINT8_BLOCK_SIZE + 10 * UB_UINT8_LINE_SIZE);
+    __ubuf__ int32_t *batchTilingUb = (__ubuf__ int32_t *)get_imm(4 * UB_UINT8_BLOCK_SIZE + 30 * UB_UINT8_LINE_SIZE);
+    const uint32_t contextLenUb_offset = 4 * UB_UINT8_BLOCK_SIZE + 9 * UB_UINT8_LINE_SIZE;
+    const uint32_t blockTablesUb_offset = 4 * UB_UINT8_BLOCK_SIZE + 10 * UB_UINT8_LINE_SIZE;
+    const uint32_t batchTilingUb_offset = 4 * UB_UINT8_BLOCK_SIZE + 30 * UB_UINT8_LINE_SIZE;
+    const uint32_t contextLenUb_len = 2 * UB_UINT8_LINE_SIZE;
+    const uint32_t blockTablesUb_len = 20 * UB_UINT8_LINE_SIZE;
+    const uint32_t batchTilingUb_len = 2 * UB_UINT8_LINE_SIZE;
+
+    AscendC::LocalTensor<int32_t> contextLenUb_tensor;
+    AscendC::LocalTensor<int32_t> blockTablesUb_tensor;
+    AscendC::LocalTensor<int32_t> batchTilingUb_tensor;
+    contextLenUb_tensor.InitBuffer((const uint32_t)contextLenUb_offset, (const uint32_t)contextLenUb_len);
+    blockTablesUb_tensor.InitBuffer((const uint32_t)blockTablesUb_offset, (const uint32_t)blockTablesUb_len);
+    batchTilingUb_tensor.InitBuffer((const uint32_t)batchTilingUb_offset, (const uint32_t)batchTilingUb_len);
+
+    gm_to_ub<ArchType::ASCEND_V200, int32_t>(contextLenUb_tensor, context_lens_gm_tensor[startBatch], 0, 1,
+                                             (endBatch - startBatch + 1) * 4 / 32 + 1, 0,
+                                             0);
+    SET_FLAG(MTE2, S, EVENT_ID0);
+    WAIT_FLAG(MTE2, S, EVENT_ID0);
+    for (uint32_t taskId = startBlk; taskId < endBlk; taskId++) {
+        uint32_t curBatch = taskId / numHeads;
+        uint32_t headId = taskId % numHeads;
+        gm_to_ub<ArchType::ASCEND_V200, int32_t>(blockTablesUb_tensor, block_tables_gm_tensor[curBatch * maxNumBlocksPerQuery], 0, 1,
+            maxNumBlocksPerQuery * 4 / 32 + 1, // 搬对应batch的tables信息
+            0, 0);                                                           // 1024 * 20 空间可用
+        gm_to_ub<ArchType::ASCEND_V200, int32_t>(batchTilingUb_tensor, tiling_para_gm_tensor[curBatch * TILING_PARA_SIZE + TILING_HEAD_SIZE],
+            0, 1, 4, 0, 0);
+        SET_FLAG(MTE2, S, EVENT_ID0);
+        WAIT_FLAG(MTE2, S, EVENT_ID0);
+        uint32_t q_seqlen_real = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb));
+        uint32_t maskAddrHigh32 = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 5));
+        uint32_t maskAddrLow32 = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 6));
+        int64_t currMaskOffset = (int64_t)(((uint64_t)maskAddrHigh32) << 32 | maskAddrLow32);
+        uint32_t contextLen = (uint32_t)(*((__ubuf__ int32_t *)contextLenUb + curBatch - startBatch));
+        uint32_t nLoop = (contextLen + blockSize - 1) / blockSize;
+        uint32_t qAddrHigh32 = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 3));
+        uint32_t qAddrLow32 = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 4));
+        int64_t qOffset = (int64_t)(((uint64_t)qAddrHigh32) << 32 | qAddrLow32) + headId * strideQO;
+        int32_t tail = contextLen % blockSize == 0 ? blockSize : contextLen % blockSize;
+
+        for (uint32_t nIdx = 0; nIdx < nLoop; nIdx += 2) {
+            int32_t numBlocksId0 = (int32_t)(*((__ubuf__ int32_t *)blockTablesUb + nIdx)); // 跨batch
+            int64_t kvOffset0 = numBlocksId0 * blockSize * kvHeads * embeddingSize + (headId / groupNum) * strideKV;
+
+            int32_t numBlocksId1 = 0;
+            int64_t kvOffset1 = 0;
+            if ((nIdx + 1) != nLoop) {
+                numBlocksId1 = (int32_t)(*((__ubuf__ int32_t *)blockTablesUb + (nIdx + 1))); // 跨batch
+                kvOffset1 = numBlocksId1 * blockSize * kvHeads * embeddingSize + (headId / groupNum) * strideKV;
+            }
+            int32_t lastnLoop = (nIdx == (nLoop - 1) || (nIdx + 1) == (nLoop - 1)) ? 1 : 0;
+            int32_t wrapO = lastnLoop;
+            int32_t initG = (nIdx == 0) ? 1 : 0;
+
+            int32_t m_actual = q_seqlen_real;
+            int32_t n0_actual = (nIdx == nLoop - 1) ? tail : blockSize;
+            int32_t n1_actual = ((nIdx + 1) == nLoop - 1) ? tail : blockSize;
+            int32_t __k = embeddingSize;
+            int32_t roundM = (m_actual + 15) / 16 * 16;
+            int32_t roundN0 = (n0_actual + 15) / 16 * 16;
+            int32_t roundN1 = (n1_actual + 15) / 16 * 16;
+            int32_t roundK = (__k + 15) / 16 * 16;
+
+            int32_t is_ping = 0;
+            int32_t mask_n = 0;
+
+            int64_t maskOffset = currMaskOffset + nIdx * blockSize * maskStride;
+            if ((nIdx + 1) == (nLoop)) {
+                n1_actual = -1;
+            }
+            pa.Init(qOffset, kvOffset0, kvOffset0, kvOffset1, kvOffset1, maskOffset, qOffset, initG, wrapO);
+            if (m_actual == 1) {
+                pa.Decode(roundM, roundN0, roundK, roundN1, m_actual, n0_actual, n1_actual, maskType, wrapO);
+            } else if (m_actual <= 16) {
+                pa.DecodeParallel(roundM, roundN0, roundK, roundN1, m_actual, n0_actual, n1_actual, maskType, nIdx, mask_n, is_ping);
+            } else {
+                paPrefill.Init(qOffset, kvOffset0, kvOffset0, kvOffset1, kvOffset1, maskOffset, qOffset, initG, wrapO);
+                paPrefill.DecodeParallel(roundM, roundN0, roundK, roundN1, m_actual, n0_actual, n1_actual, maskType, nIdx, mask_n, is_ping);
+            }
+        }
+    }
+}
+
+__aicore__ inline void RunPrefill(uint32_t startBlk, uint32_t endBlk, uint32_t numHeads, uint32_t startBatch, uint32_t endBatch, int32_t kvHeads,
+                           int64_t batchMaskStride, int64_t headMaskStride, int64_t strideKV, uint32_t groupNum,
+                           uint32_t blockSize, int64_t strideQO, int32_t maxNumBlocksPerQuery, uint32_t embeddingSize, uint32_t maskStride,
+                           uint32_t maskType,
+                           AscendC::GlobalTensor<int32_t> context_lens_gm_tensor,
+                           AscendC::GlobalTensor<int32_t> block_tables_gm_tensor,
+                           AscendC::GlobalTensor<int32_t> tiling_para_gm_tensor,
+                           PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT>& pa,
+                           PagedAttentionDecoder<CalcMode::CALC_MODE_PREFILL>& paPrefill)
+{
+    // use left ub space to store tilingData
+    __ubuf__ int32_t *contextLenUb = (__ubuf__ int32_t *)get_imm(4 * UB_UINT8_BLOCK_SIZE + 9 * UB_UINT8_LINE_SIZE);
+    __ubuf__ int32_t *blockTablesUb = (__ubuf__ int32_t *)get_imm(4 * UB_UINT8_BLOCK_SIZE + 10 * UB_UINT8_LINE_SIZE);
+    __ubuf__ int32_t *batchTilingUb = (__ubuf__ int32_t *)get_imm(4 * UB_UINT8_BLOCK_SIZE + 30 * UB_UINT8_LINE_SIZE);
+    const uint32_t contextLenUb_offset = 4 * UB_UINT8_BLOCK_SIZE + 9 * UB_UINT8_LINE_SIZE;
+    const uint32_t blockTablesUb_offset = 4 * UB_UINT8_BLOCK_SIZE + 10 * UB_UINT8_LINE_SIZE;
+    const uint32_t batchTilingUb_offset = 4 * UB_UINT8_BLOCK_SIZE + 30 * UB_UINT8_LINE_SIZE;
+    const uint32_t contextLenUb_len = 2 * UB_UINT8_LINE_SIZE;
+    const uint32_t blockTablesUb_len = 20 * UB_UINT8_LINE_SIZE;
+    const uint32_t batchTilingUb_len = 2 * UB_UINT8_LINE_SIZE;
+
+    AscendC::LocalTensor<int32_t> contextLenUb_tensor;
+    AscendC::LocalTensor<int32_t> blockTablesUb_tensor;
+    AscendC::LocalTensor<int32_t> batchTilingUb_tensor;
+    contextLenUb_tensor.InitBuffer((const uint32_t)contextLenUb_offset, (const uint32_t)contextLenUb_len);
+    blockTablesUb_tensor.InitBuffer((const uint32_t)blockTablesUb_offset, (const uint32_t)blockTablesUb_len);
+    batchTilingUb_tensor.InitBuffer((const uint32_t)batchTilingUb_offset, (const uint32_t)batchTilingUb_len);
+
+    int32_t curBatch = startBatch;
+    gm_to_ub<ArchType::ASCEND_V200, int32_t>(contextLenUb_tensor, context_lens_gm_tensor[startBatch], 0, 1,
+                                             (endBatch - startBatch + 1) * 4 / 32 + 1, 0,
+                                             0);
+    gm_to_ub<ArchType::ASCEND_V200, int32_t>(blockTablesUb_tensor, block_tables_gm_tensor[startBatch * maxNumBlocksPerQuery], 0, 1,
+        maxNumBlocksPerQuery * 4 / 32 + 1, // 搬对应batch的tables信息
+        0, 0);                             // 1024 * 20 空间可用
+    gm_to_ub<ArchType::ASCEND_V200, int32_t>(batchTilingUb_tensor, tiling_para_gm_tensor[curBatch * TILING_PARA_SIZE + TILING_HEAD_SIZE],
+        0, 1, 4, 0, 0);
+    SET_FLAG(MTE2, S, EVENT_ID0);
+    WAIT_FLAG(MTE2, S, EVENT_ID0);
+
+    uint32_t maskAddrHigh32 = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 5));
+    uint32_t maskAddrLow32 = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 6));
+    int64_t curBatchMaskStride = (int64_t)(((uint64_t)maskAddrHigh32) << 32 | maskAddrLow32);
+    for (uint32_t curQblk = startBlk; curQblk < endBlk; curQblk++) {
+        // get tiling args
+        uint32_t q_seqlen_real = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb));
+        uint32_t q_seqlen_aligned = (q_seqlen_real + BLOCK_SIZE - 1) / BLOCK_SIZE * BLOCK_SIZE;
+        uint32_t kv_seqlen_real = (uint32_t)(*((__ubuf__ int32_t *)contextLenUb + curBatch - startBatch));
+        int32_t kv_seqlen_aligned = (kv_seqlen_real + BLOCK_SIZE - 1) / BLOCK_SIZE * BLOCK_SIZE;
+        int32_t pp_m_scalar = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 7));
+        uint32_t qAddrHigh32 = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 3));
+        uint32_t qAddrLow32 = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 4));
+        int64_t curQOffset = (int64_t)(((uint64_t)qAddrHigh32) << 32 | qAddrLow32); // batch offset
+        uint32_t maskAddrHigh32 = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 5));
+        uint32_t maskAddrLow32 = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 6));
+        int64_t curBatchMaskStride = (int64_t)(((uint64_t)maskAddrHigh32) << 32 | maskAddrLow32);
+        uint32_t cur_total_qblk = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 2));
+        uint32_t cur_proc_num = (uint32_t)(*((__ubuf__ int32_t *)batchTilingUb + 1));
+        uint32_t cur_q_blk_id = curQblk - (cur_total_qblk - cur_proc_num);
+        int32_t mLoop = (q_seqlen_aligned + pp_m_scalar - 1) / pp_m_scalar;
+        int32_t nLoop = (kv_seqlen_aligned + blockSize - 1) / blockSize;
+
+        int32_t start = cur_q_blk_id * nLoop;
+        int32_t end = start + nLoop;
+
+        int32_t prefix_size = (kv_seqlen_aligned - q_seqlen_aligned) / blockSize;
+
+
+        for (int32_t loop_idx = start; loop_idx < end; loop_idx += 2) {
+            int32_t headId = loop_idx / (mLoop * nLoop);
+            int32_t mIdx = loop_idx % (mLoop * nLoop) / nLoop;
+            int32_t nIdx = loop_idx % (mLoop * nLoop) % nLoop;
+            int32_t numBlocksId0 = (int32_t)(*((__ubuf__ int32_t *)blockTablesUb + nIdx)); // 跨batch
+            int64_t kvOffset0 = numBlocksId0 * blockSize * kvHeads * embeddingSize + (headId / groupNum) * strideKV;
+            int32_t numBlocksId1 = 0;
+            int64_t kvOffset1 = 0;
+            if ((nIdx + 1) != nLoop) {
+                numBlocksId1 = (int32_t)(*((__ubuf__ int32_t *)blockTablesUb + (nIdx + 1))); // 跨batch
+                kvOffset1 = numBlocksId1 * blockSize * kvHeads * embeddingSize + (headId / groupNum) * strideKV;
+            }
+            int64_t qOffset = curQOffset + headId * strideQO + mIdx * pp_m_scalar * BLOCK_SIZE;
+            int64_t maskOffset = curBatchMaskStride + mIdx * pp_m_scalar * BLOCK_SIZE + nIdx * maskStride * blockSize;
+            int32_t wrapO = (nIdx == (nLoop - 1) || (nIdx + 1) == (nLoop - 1)) ? 1 : 0;
+            int32_t initG = (nIdx == 0) ? 1 : 0;
+            int32_t m_actual = (mIdx == (mLoop - 1)) ? (q_seqlen_real - mIdx * pp_m_scalar) : pp_m_scalar;
+            int32_t n0_actual = (nIdx == (nLoop - 1)) ? (kv_seqlen_real - nIdx * blockSize) : blockSize;
+            int32_t n1_actual = ((nIdx + 1) == (nLoop - 1)) ? (kv_seqlen_real - (nIdx + 1) * blockSize) : blockSize;
+            int32_t __k0 = embeddingSize;
+            int32_t roundM = (m_actual + 15) / 16 * 16;
+            int32_t roundN0 = (n0_actual + 15) / 16 * 16;
+            int32_t roundK = (__k0 + 15) / 16 * 16;
+            int32_t roundN1 = (n1_actual + 15) / 16 * 16;
+
+            if (nIdx + 1 == nLoop) {
+                n1_actual = -1;
+            }
+
+            int32_t is_ping = 0;
+            int32_t mask_n = 0;
+            if (maskType == 4) {
+                maskOffset = 0;
+                if (prefix_size % 2 == 1) {
+                    mask_n = (prefix_size / 2) * 2 + ((mIdx + 1) / 2 ) *2;
+                } else {
+                    mask_n = (prefix_size / 2) * 2 + (mIdx / 2 ) *2;
+                }
+                if (nIdx > mask_n) {
+                    continue;
+                }
+                wrapO = nIdx == mask_n ? 1 : 0;
+                if (nIdx + 1 == mIdx + prefix_size +1) {
+                    n1_actual = -1;
+                }
+                is_ping = (prefix_size % 2 == mIdx % 2) ? 1 : 0;
+            }
+            paPrefill.Init(qOffset, kvOffset0, kvOffset0, kvOffset1, kvOffset1, maskOffset, qOffset, initG, wrapO);
+            paPrefill.DecodeParallel(roundM, roundN0, roundK, roundN1, m_actual, n0_actual, n1_actual, maskType, nIdx,  mask_n, is_ping);
+        }
+        if (cur_q_blk_id == cur_proc_num - 1) {
+            curBatch += 1;
+            SET_FLAG(S, MTE2, EVENT_ID0);
+            WAIT_FLAG(S, MTE2, EVENT_ID0);
+            gm_to_ub<ArchType::ASCEND_V200, int32_t>(blockTablesUb_tensor, block_tables_gm_tensor[curBatch * maxNumBlocksPerQuery], 0, 1,
+                maxNumBlocksPerQuery * 4 / 32 + 1, // 搬对应batch的tables信息
+                0, 0);                             // 1024 * 20 空间可用
+            gm_to_ub<ArchType::ASCEND_V200, int32_t>(batchTilingUb_tensor, tiling_para_gm_tensor[curBatch * TILING_PARA_SIZE + TILING_HEAD_SIZE],
+                0, 1, 4, 0, 0);
+            SET_FLAG(MTE2, S, EVENT_ID0);
+            WAIT_FLAG(MTE2, S, EVENT_ID0);
+        }
+    }
+};
+
+
+
+extern "C" __global__ __aicore__ void
+paged_attention_decoder_mask(__gm__ uint8_t *__restrict__ q_gm, __gm__ uint8_t *__restrict__ k_gm,
+                             __gm__ uint8_t *__restrict__ v_gm, __gm__ uint8_t *__restrict__ block_tables_gm,
+                             __gm__ uint8_t *__restrict__ context_lens_gm, __gm__ uint8_t *__restrict__ mask_gm,
+                             __gm__ uint8_t *__restrict__ logN_gm,
+                             __gm__ uint8_t *__restrict__ o_gm, __gm__ uint8_t *__restrict__ tiling_para_gm)
+{
+    SetMasknorm();
+    SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+    SetPadding<uint64_t>(uint16_t(0));
+    SetAtomicnone();
+
+    __ubuf__ int32_t *tilingParmUb = (__ubuf__ int32_t *)get_imm(0);
+    AscendC::GlobalTensor<int32_t> tiling_para_gm_tensor;
+    tiling_para_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(tiling_para_gm));
+
+    AscendC::GlobalTensor<int32_t> context_lens_gm_tensor;
+    context_lens_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(context_lens_gm));
+
+    AscendC::GlobalTensor<int32_t> block_tables_gm_tensor;
+    block_tables_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(block_tables_gm));
+
+    AscendC::GlobalTensor<half> logn_gm_tensor;
+    logn_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(logN_gm));
+
+    AscendC::LocalTensor<int32_t> tilingParmUb_tensor;
+    #if __CCE_AICORE__ == 100
+        tilingParmUb_tensor.InitBuffer(0, 192 * 4);
+        gm_to_ub<ArchType::ASCEND_V200, int32_t>(tilingParmUb_tensor, tiling_para_gm_tensor, 0, 1, 24, 0,
+                                             0); // 192 * 4 / 32 = 16
+    #else
+        tilingParmUb_tensor.InitBuffer(0, 128 * 4);
+        gm_to_ub<ArchType::ASCEND_V200, int32_t>(tilingParmUb_tensor, tiling_para_gm_tensor, 0, 1, 16, 0,
+                                                0); // 128 * 4 / 32 = 16
+    #endif
+
+    SET_FLAG(MTE2, S, EVENT_ID0);
+    WAIT_FLAG(MTE2, S, EVENT_ID0);
+
+    uint32_t numTokens = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb)); // 实际batch数
+    uint32_t numTokensPad = (numTokens + 15) / 16 * 16;
+    uint32_t numHeads = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 1));
+    uint32_t embeddingSize = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 2));
+    uint32_t numBlocks = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 3));
+    uint32_t blockSize = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 4));
+    uint32_t maxNumBlocksPerQuery = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 5));
+    half tor = (half)(*((__ubuf__ float *)tilingParmUb + 6));
+    uint32_t kvHeads = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 7)); // 外部处理0情况
+    uint32_t groupNum = numHeads / kvHeads;
+    uint32_t maxPromptLen = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 8));
+    #if __CCE_AICORE__ == 100
+        uint32_t scaleType = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 185));
+        uint32_t headSplit = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 186));
+        uint32_t maskType = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 187));
+        uint32_t maskStride = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 188));
+        uint32_t runMode = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 189));
+        int64_t headMaskStride = (int64_t)(*((__ubuf__ int32_t *)tilingParmUb + 190));
+        int64_t batchMaskStride = (int64_t)(*((__ubuf__ int32_t *)tilingParmUb + 191));
+    #else
+        uint32_t scaleType = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 121));
+        uint32_t headSplit = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 122));
+        uint32_t maskType = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 123));
+        uint32_t maskStride = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 124));
+        uint32_t runMode = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + 125));
+        int64_t headMaskStride = (int64_t)(*((__ubuf__ int32_t *)tilingParmUb + 126));
+        int64_t batchMaskStride = (int64_t)(*((__ubuf__ int32_t *)tilingParmUb + 127));
+    #endif
+
+    uint32_t startBlk = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + block_idx * 4 + 10));
+    uint32_t endBlk = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + block_idx * 4 + 11));
+    uint32_t startBatch = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + block_idx * 4 + 12));
+    uint32_t endBatch = (uint32_t)(*((__ubuf__ int32_t *)tilingParmUb + block_idx * 4 + 13));
+
+    uint64_t strideQO = numTokensPad * embeddingSize; // head之间偏移
+    uint64_t strideKV = blockSize * embeddingSize;
+
+    PagedAttentionDecoder<CalcMode::CALC_MODE_DEFAULT> pa(q_gm, k_gm, v_gm, mask_gm, o_gm, tor, maxPromptLen, numTokensPad, blockSize, maskStride);
+    PagedAttentionDecoder<CalcMode::CALC_MODE_PREFILL> paPrefill(q_gm, k_gm, v_gm, mask_gm, o_gm, tor, maxPromptLen, numTokensPad, blockSize, maskStride);
+    // block table, context len gm to ub
+    SET_FLAG(S, MTE2, EVENT_ID0);
+    WAIT_FLAG(S, MTE2, EVENT_ID0);
+
+    SyncStart();
+#if __CCE_AICORE__ == 100
+    RunDefault(startBlk, endBlk, numHeads, startBatch, endBatch, kvHeads,
+                batchMaskStride, headMaskStride, strideKV, groupNum, blockSize,
+                strideQO, maxNumBlocksPerQuery, embeddingSize, maskStride, maskType, headSplit,
+                context_lens_gm_tensor, block_tables_gm_tensor, tiling_para_gm_tensor, logn_gm_tensor,
+                pa, paPrefill, scaleType, tor);
+#else
+    switch (runMode) {
+        case 0: {
+            RunDefault(startBlk, endBlk, numHeads, startBatch, endBatch, kvHeads,
+                batchMaskStride, headMaskStride, strideKV, groupNum, blockSize,
+                strideQO, maxNumBlocksPerQuery, embeddingSize, maskStride, maskType, headSplit,
+                context_lens_gm_tensor, block_tables_gm_tensor, tiling_para_gm_tensor, logn_gm_tensor,
+                pa, paPrefill, scaleType, tor);
+            break;
+        }
+        case 1: {
+            RunParallel(startBlk, endBlk, numHeads, startBatch, endBatch, kvHeads,
+                batchMaskStride, headMaskStride, strideKV, groupNum,
+                blockSize, strideQO, maxNumBlocksPerQuery, embeddingSize, maskStride, maskType,
+                context_lens_gm_tensor, block_tables_gm_tensor, tiling_para_gm_tensor, pa, paPrefill);
+            break;
+        }
+        case 2: {
+            RunPrefill(startBlk, endBlk, numHeads, startBatch, endBatch, kvHeads,
+                batchMaskStride, headMaskStride, strideKV, groupNum,
+                blockSize, strideQO, maxNumBlocksPerQuery, embeddingSize, maskStride, maskType,
+                context_lens_gm_tensor, block_tables_gm_tensor, tiling_para_gm_tensor, pa, paPrefill);
+            break;
+        }
+        default: {
+            RunDefault(startBlk, endBlk, numHeads, startBatch, endBatch, kvHeads,
+                batchMaskStride, headMaskStride, strideKV, groupNum, blockSize,
+                strideQO, maxNumBlocksPerQuery, embeddingSize, maskStride, maskType, headSplit,
+                context_lens_gm_tensor, block_tables_gm_tensor, tiling_para_gm_tensor, logn_gm_tensor,
+                pa, paPrefill, scaleType, tor);
+        }
+    }
+#endif
+    SyncEnd();
+}

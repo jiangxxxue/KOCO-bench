@@ -1,0 +1,8 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|LinearOperation1|376.99|376.99
+2|LinearOperation2|534.27|534.27
+3|LinearOperation3|408.415|408.415
+4|LinearOperation4|339.545|339.545
+5|LinearOperation2|327.395|327.395
+6|LinearOperation3|515.535|515.535
+7|LinearOperation4|407.745|407.745

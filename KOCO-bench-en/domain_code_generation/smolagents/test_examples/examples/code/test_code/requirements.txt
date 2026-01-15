@@ -1,0 +1,17 @@
+# This file contains the Python packages required to run the tests.
+
+# Core agent framework
+smolagents[mcp]
+
+# For vector database example
+langchain-chroma
+langchain-huggingface
+
+# For async server examples
+starlette
+uvicorn
+python-multipart
+anyio
+
+# For testing
+unittest-xml-reporting

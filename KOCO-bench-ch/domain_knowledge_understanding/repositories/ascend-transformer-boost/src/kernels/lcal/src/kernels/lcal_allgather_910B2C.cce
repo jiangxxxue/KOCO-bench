@@ -1,0 +1,86 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include <cstdint>
+#include "collectives.cce"
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void LcalAllGather910B2C(ALLREDUCE_ARGS_FUN_16P(T))
+{
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, Op::COPYONLY);
+
+    const int64_t singleNodeRankSize = rankSize >> 1;
+    if (GetBlockIdx() >= singleNodeRankSize + 2) {
+        DumpLcclLogInfo(dumpAddr, LogId::INIT, Op::COPYONLY);
+        return;
+    }
+    const int64_t localNodeRankId = rank >= singleNodeRankSize ? rank - singleNodeRankSize : rank;
+    const int64_t nodeId = rank < singleNodeRankSize ? 0 : 1;
+
+    const int64_t peerRankId = rank < singleNodeRankSize ?  rank + singleNodeRankSize : rank - singleNodeRankSize;
+
+    const int64_t dataOffsetNum = GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM;
+    const int64_t flagOffset1st = MEM_DMA_UNIT_INT_NUM * GetBlockIdx();
+    const int64_t flagOffset2nd = MEM_DMA_UNIT_INT_NUM * GetLcalBlockNum() + flagOffset1st;
+    const int64_t corePerRank = 1;
+
+    __gm__ T* buff[16] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7,
+        buff8, buff9, buff10, buff11,
+        buff12, buff13, buff14, buff15
+    };
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t*)(0);
+    __ubuf__ T* inputUB[2] = {(__ubuf__ T*)(64), (__ubuf__ T*)(97312)};
+
+    int64_t dataSizeRemain = len * sizeof(T);
+
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, Op::COPYONLY);
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, Op::COPYONLY);
+
+    if (GetBlockIdx() >= singleNodeRankSize || GetBlockIdx() >= 8) {
+        int coreStep0Idx = 0;
+        if (GetBlockIdx() == 9 || GetBlockIdx() == singleNodeRankSize + 1) {
+            coreStep0Idx = 1;
+        }
+        int64_t sendBuffOffsetNum = 0;
+        int64_t revBuffOffsetNum = 0;
+        __gm__ T *receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[rank] + dataOffsetNum);
+        __gm__ int64_t* ctrlFlagsGM = (__gm__ int64_t*)buff[rank] + (nodeId + singleNodeRankSize) * MEM_DMA_UNIT_INT_NUM;
+        if ((rank < singleNodeRankSize && coreStep0Idx == 1) ||
+            (rank >= singleNodeRankSize && coreStep0Idx == 0)) {
+            receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[peerRankId] + dataOffsetNum);
+            ctrlFlagsGM = (__gm__ int64_t*)buff[peerRankId] + (nodeId + singleNodeRankSize) * MEM_DMA_UNIT_INT_NUM;
+        }
+        if (rank >= singleNodeRankSize) {
+            revBuffOffsetNum = len;
+        }
+
+        GM2GM(dataSizeRemain, inputUB[0], receiveBuff, revBuffOffsetNum, input, sendBuffOffsetNum);
+
+        SetFlag(ctrlFlagsUB, ctrlFlagsGM, magic);
+        DumpLcclLogInfo(dumpAddr, LogId::PROCESS, Op::COPYONLY);
+        return;
+    }
+
+    int64_t x = rank < singleNodeRankSize ? GetBlockIdx() : GetBlockIdx() + singleNodeRankSize;
+    __gm__ T *receiveBuff = output;
+    __gm__ T *sendBuff = (__gm__ T*)((__gm__ int64_t*)buff[x] + dataOffsetNum);
+
+    CheckFlag(ctrlFlagsUB, (__gm__ int64_t*)buff[x] + singleNodeRankSize * MEM_DMA_UNIT_INT_NUM, magic);
+    int64_t revBuffOffsetNum = GetBlockIdx() * len;
+    int64_t sendBuffOffsetNum = 0;
+    GM2GM(dataSizeRemain, inputUB[0], receiveBuff, revBuffOffsetNum, sendBuff, sendBuffOffsetNum);
+
+    CheckFlag(ctrlFlagsUB, (__gm__ int64_t*)buff[x] + (singleNodeRankSize + 1) * MEM_DMA_UNIT_INT_NUM, magic);
+    revBuffOffsetNum = (singleNodeRankSize + GetBlockIdx()) * len;
+    sendBuffOffsetNum = len;
+    GM2GM(dataSizeRemain, inputUB[0], receiveBuff, revBuffOffsetNum, sendBuff, sendBuffOffsetNum);
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, Op::COPYONLY);
+}

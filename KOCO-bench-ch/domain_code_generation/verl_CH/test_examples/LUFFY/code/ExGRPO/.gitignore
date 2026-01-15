@@ -1,0 +1,12 @@
+wandb-exp/*
+logs/*
+checkpoints/*
+tmp/*
+__pycache__/*
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+wandb/
+checkpoints/

@@ -1,0 +1,97 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include "collectives.cce"
+
+template<typename T>
+inline __aicore__ void GM2GMAndOutput(int64_t dataSizeRemain, __ubuf__ T *inputUB, __gm__ T *receiveBuff, int64_t revBuffOffsetNum,
+                             __gm__ T *sendBuff, int64_t sendBuffOffsetNum, bool needDMA2Output, __gm__ T *output, int64_t outputOffsetNum)
+{
+    int64_t times = 0;
+    while (dataSizeRemain >= UB_SINGLE_DMA_SIZE_MAX) {
+        CpGM2UB(inputUB, (__gm__ T*)sendBuff + sendBuffOffsetNum + UB_SINGLE_DMA_SIZE_MAX / sizeof(T) * times,
+                UB_SINGLE_DMA_SIZE_MAX);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+        CpUB2GM(
+            (__gm__ T*)receiveBuff + revBuffOffsetNum + UB_SINGLE_DMA_SIZE_MAX / sizeof(T) * times,
+            inputUB, UB_SINGLE_DMA_SIZE_MAX);
+
+        if (needDMA2Output) {
+            CpUB2GM(
+                (__gm__ T*)output + outputOffsetNum + UB_SINGLE_DMA_SIZE_MAX / sizeof(T) * times,
+                inputUB, UB_SINGLE_DMA_SIZE_MAX);
+        }
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(EVENT_ID1);
+        times += 1;
+        dataSizeRemain -= UB_SINGLE_DMA_SIZE_MAX;
+    }
+    if (dataSizeRemain <= 0) {
+        return;
+    }
+    CpGM2UB(inputUB, (__gm__ T*)sendBuff + sendBuffOffsetNum + times * UB_SINGLE_DMA_SIZE_MAX / sizeof(T),
+            dataSizeRemain);
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(EVENT_ID0);
+    CpUB2GM(
+        (__gm__ T*)receiveBuff + revBuffOffsetNum + times * UB_SINGLE_DMA_SIZE_MAX / sizeof(T),
+        inputUB, dataSizeRemain);
+    if (needDMA2Output) {
+        CpUB2GM(
+            (__gm__ T*)output + outputOffsetNum + times * UB_SINGLE_DMA_SIZE_MAX / sizeof(T),
+            inputUB, dataSizeRemain);
+    }
+    AscendC::PipeBarrier<PIPE_ALL>();
+}
+
+template<typename T>
+inline __aicore__ void LcalReduceScatterWrite(ALLREDUCE_ARGS_FUN(T))
+{
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, static_cast<Op>(op));
+    const int64_t corePerRank = GetLcalBlockNum() / rankSize;
+    const int64_t coreSegmentedIdx = GetBlockIdx() % corePerRank;
+    const int64_t inputNum = len * rankSize;
+    const int64_t x = GetBlockIdx() / corePerRank;
+
+    __gm__ T* buff[8] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7
+    };
+    __ubuf__ int64_t *ctrlFlagsUB = (__ubuf__ int64_t *)(0);
+    __ubuf__ T *inputUB[2] = {(__ubuf__ T *)(32), (__ubuf__ T *)(98304)};
+
+    const int64_t dataOffsetNum = GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM;
+    const int64_t flagOffset1st = (rank * corePerRank + coreSegmentedIdx) * MEM_DMA_UNIT_INT_NUM;
+    const int64_t flagOffset2nd = (x * corePerRank + coreSegmentedIdx) * MEM_DMA_UNIT_INT_NUM;
+
+    const int64_t dataDMAPerCore = CeilDiv(len, corePerRank);
+    int64_t buffDMAOffsetNum = coreSegmentedIdx * dataDMAPerCore;
+    int64_t dataNumDMARemain = dataDMAPerCore;
+    if (coreSegmentedIdx == corePerRank - 1) {
+        dataNumDMARemain = len - buffDMAOffsetNum;
+    }
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, static_cast<Op>(op));
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+    __gm__ T *receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[x] + dataOffsetNum);
+    GM2GMAndOutput(dataNumDMARemain * sizeof(T), inputUB[0], receiveBuff, rank * len + buffDMAOffsetNum,
+                   input, x * len + buffDMAOffsetNum, (x == rank), output, buffDMAOffsetNum);
+    SetFlag(ctrlFlagsUB, (__gm__ int64_t *)buff[x] + flagOffset1st, magic);
+    AscendC::PipeBarrier<PIPE_ALL>();
+
+    CheckFlag(ctrlFlagsUB, (__gm__ int64_t *)buff[rank] + flagOffset2nd, magic);
+    CheckFlag(ctrlFlagsUB, (__gm__ int64_t *)buff[rank] + flagOffset1st, magic);
+    const int64_t buffOffsetNum = x * len + buffDMAOffsetNum;
+    if (x == rank) {
+        DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+        return;
+    }
+    ProcessData<T>(dataNumDMARemain * sizeof(T), inputUB[0], buff[rank], dataOffsetNum, buffOffsetNum, output, buffDMAOffsetNum, op);
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+}

@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|SoftmaxOperation1|141.28|141.28
+2|SoftmaxOperation2|145.38|145.38
+3|SoftmaxOperation3|193.715|193.715
+4|SoftmaxOperation4|196.3|196.3

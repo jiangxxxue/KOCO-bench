@@ -1,0 +1,341 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#include <stdint.h>
+#include "collectives.cce"
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void LcalAllReduceBigData910B2COrigin(
+    ALLREDUCE_ARGS_FUN_16P_Origin(T), const int64_t singleNodeRankSize, const int64_t localNodeRankId,
+    const int64_t coreGroupIdx, const int64_t peerRankId, const int64_t dataOffsetNum, __ubuf__ int64_t* ctrlFlagsUB,
+    __ubuf__ int64_t* ctrlFlagsUB1, __ubuf__ int64_t* ctrlFlagsUB2, __ubuf__ int64_t* ctrlFlagsUB3,
+    __ubuf__ T* inputUB[2], const int64_t x, const int64_t xLocalNodeRankId,  __gm__ int64_t *ctrlFlagGMSet,
+    __gm__ int64_t *ctrlFlagGMCheck, __gm__ T *sendBuff, __gm__ T *receiveBuff
+)
+{
+    const int64_t oneNPUProcessDataAvgNum = len / singleNodeRankSize;
+    int64_t thisNPUProcessDataNum = oneNPUProcessDataAvgNum;
+    if (localNodeRankId == singleNodeRankSize - 1) {
+        thisNPUProcessDataNum = len - localNodeRankId * oneNPUProcessDataAvgNum;
+    }
+
+    int64_t xNPUProcessDataNum = oneNPUProcessDataAvgNum;
+    if (xLocalNodeRankId == singleNodeRankSize - 1) {
+        xNPUProcessDataNum = len - xLocalNodeRankId * oneNPUProcessDataAvgNum;
+    }
+
+    int64_t dataSizeRemain = xNPUProcessDataNum * sizeof(T);
+    *ctrlFlagsUB = 0;
+    if (coreGroupIdx == 0) {
+        const int64_t buffOffsetNum = xLocalNodeRankId * oneNPUProcessDataAvgNum;
+        AscendC::PipeBarrier<PIPE_ALL>();
+        input2BuffRankMagic(dataSizeRemain, inputUB[0], receiveBuff, buffOffsetNum, sendBuff, buffOffsetNum, ctrlFlagsUB, ctrlFlagGMSet, magic);
+    } else if (coreGroupIdx == 1) {
+        *ctrlFlagsUB1 = 0;
+        *ctrlFlagsUB2 = 0;
+        __gm__ int64_t *ctrlFlagGMCheckLocal = (__gm__ int64_t*)buff[rank] + localNodeRankId * MEM_DMA_UNIT_INT_NUM;
+
+        const int64_t buffOffsetNum = localNodeRankId * oneNPUProcessDataAvgNum;
+        const int64_t allDataSizeNeed2Add = thisNPUProcessDataNum * sizeof(T);
+        const int64_t multipleTimes = CeilDiv(allDataSizeNeed2Add, DMA_SIZE_PER_FLAG);
+        if (x == rank || multipleTimes == 0) {
+            SetFlag(ctrlFlagsUB3, ctrlFlagGMSet, ((magic & 0xfffffffffffffc00) | multipleTimes));
+            return;
+        }
+        AscendC::PipeBarrier<PIPE_ALL>();
+        while (true) {
+            if (*ctrlFlagsUB >= multipleTimes) {
+                break;
+            }
+
+            CpGM2UB(ctrlFlagsUB1, ctrlFlagGMCheckLocal, sizeof(int64_t));
+            CpGM2UB(ctrlFlagsUB2, ctrlFlagGMCheck, sizeof(int64_t));
+            AscendC::PipeBarrier<PIPE_ALL>();
+
+            if (*ctrlFlagsUB1 == 0 || *ctrlFlagsUB2 == 0 ||
+                ((*ctrlFlagsUB1 >> 10) != (magic >> 10)) || ((*ctrlFlagsUB2 >> 10) != (magic >> 10))) {
+                continue;
+            }
+
+            int64_t preparedDataGroupCount = ((*ctrlFlagsUB1 & 0x3FF) <= (*ctrlFlagsUB2 & 0x3FF)) ?
+                                             (*ctrlFlagsUB1 & 0x3FF) : (*ctrlFlagsUB2 & 0x3FF);
+            if (*ctrlFlagsUB >= preparedDataGroupCount) {
+                continue;
+            }
+
+            dataSizeRemain = (preparedDataGroupCount - *ctrlFlagsUB) * DMA_SIZE_PER_FLAG;
+            if (preparedDataGroupCount >= multipleTimes) {
+                dataSizeRemain = allDataSizeNeed2Add - *ctrlFlagsUB * DMA_SIZE_PER_FLAG;
+            }
+            ProcessDataNewNonBarrier(dataSizeRemain, inputUB, sendBuff, 0, buffOffsetNum + (*ctrlFlagsUB) * DMA_SIZE_PER_FLAG / sizeof(T),
+                           receiveBuff, buffOffsetNum + (*ctrlFlagsUB) * DMA_SIZE_PER_FLAG / sizeof(T), op);
+            SetFlag(ctrlFlagsUB3, ctrlFlagGMSet, ((*ctrlFlagsUB1 & 0xfffffffffffffc00) | preparedDataGroupCount));
+
+            *ctrlFlagsUB = preparedDataGroupCount;
+            AscendC::PipeBarrier<PIPE_ALL>();
+        }
+    } else if (coreGroupIdx == 3) {
+        if (GetBlockIdx() == singleNodeRankSize * 3) {
+            __gm__ int64_t *ctrlFlagGMSetLocal = (__gm__ int64_t *)buff[rank] + (rankSize + 1) * MEM_DMA_UNIT_INT_NUM;
+            *ctrlFlagsUB2 = 0;
+            const int64_t buffOffsetNum = localNodeRankId * oneNPUProcessDataAvgNum;
+            const int64_t allDataSizeNeed2Add = thisNPUProcessDataNum * sizeof(T);
+            const int64_t multipleTimes = CeilDiv(allDataSizeNeed2Add, DMA_SIZE_PER_FLAG);
+            int64_t processedDataGroupCount = 0;
+            int64_t preparedDataGroupCount = 0;
+            AscendC::PipeBarrier<PIPE_ALL>();
+            while (true) {
+                *ctrlFlagsUB1 = INT64_MAX;
+                if (processedDataGroupCount >= multipleTimes) {
+                    break;
+                }
+
+                for (int i = 0; i < singleNodeRankSize; i++) {
+                    if (i == localNodeRankId) {
+                        continue;
+                    }
+                    *ctrlFlagsUB2 = 0;
+
+                    do {
+                        SetFlag<HardEvent::S_MTE2>(EVENT_ID0);
+                        WaitFlag<HardEvent::S_MTE2>(EVENT_ID0);
+                        CpGM2UB(ctrlFlagsUB2, ctrlFlagGMCheck + i * MEM_DMA_UNIT_INT_NUM, sizeof(int64_t));
+                        SetFlag<HardEvent::MTE2_S>(EVENT_ID0);
+                        WaitFlag<HardEvent::MTE2_S>(EVENT_ID0);
+                    } while ((*ctrlFlagsUB2 >> 10) != (magic >> 10));
+
+                    if (*ctrlFlagsUB1 > *ctrlFlagsUB2) {
+                        *ctrlFlagsUB1 = *ctrlFlagsUB2;
+                    }
+                }
+
+                preparedDataGroupCount = (*ctrlFlagsUB1 & 0x3FF);
+                if (processedDataGroupCount >= preparedDataGroupCount) {
+                    continue;
+                }
+
+                dataSizeRemain = (preparedDataGroupCount - processedDataGroupCount) * DMA_SIZE_PER_FLAG;
+                if (preparedDataGroupCount >= multipleTimes) {
+                    dataSizeRemain = allDataSizeNeed2Add - processedDataGroupCount * DMA_SIZE_PER_FLAG;
+                }
+
+                AscendC::PipeBarrier<PIPE_ALL>();
+                GM2GMPingPongNonPipeBarrier<T>(dataSizeRemain, inputUB, receiveBuff,
+                         len + processedDataGroupCount * DMA_SIZE_PER_FLAG / sizeof(T),
+                         sendBuff,
+                         buffOffsetNum + processedDataGroupCount * DMA_SIZE_PER_FLAG / sizeof(T));
+                SetFlagNonPipeBarrier(ctrlFlagsUB3, ctrlFlagGMSet, ctrlFlagGMSetLocal,
+                        ((*ctrlFlagsUB1 & 0xfffffffffffffc00) | preparedDataGroupCount));
+
+                processedDataGroupCount = preparedDataGroupCount;
+            }
+        } else {
+            *ctrlFlagsUB1 = 0;
+            *ctrlFlagsUB2 = 0;
+            __gm__ int64_t *ctrlFlagGMCheckLocal = (__gm__ int64_t*)buff[rank] + (rankSize + 1) * MEM_DMA_UNIT_INT_NUM;
+
+            const int64_t buffOffsetNum = localNodeRankId * oneNPUProcessDataAvgNum;
+            const int64_t allDataSizeNeed2Add = thisNPUProcessDataNum * sizeof(T);
+            const int64_t multipleTimes = CeilDiv(allDataSizeNeed2Add, DMA_SIZE_PER_FLAG);
+            int64_t processedDataGroupCount = 0;
+            int64_t preparedDataGroupCount = 0;
+            while (true) {
+                AscendC::PipeBarrier<PIPE_ALL>();
+                if (processedDataGroupCount >= multipleTimes) {
+                    break;
+                }
+
+                CpGM2UB(ctrlFlagsUB1, ctrlFlagGMCheckLocal, sizeof(int64_t));
+                CpGM2UB(ctrlFlagsUB2, ctrlFlagGMCheck, sizeof(int64_t));
+                SetFlag<HardEvent::MTE2_S>(EVENT_ID0);
+                WaitFlag<HardEvent::MTE2_S>(EVENT_ID0);
+
+                if (*ctrlFlagsUB1 == 0 || *ctrlFlagsUB2 == 0 ||
+                    ((*ctrlFlagsUB1 >> 10) != (magic >> 10)) || ((*ctrlFlagsUB2 >> 10) != (magic >> 10))) {
+                    continue;
+                }
+
+                preparedDataGroupCount = ((*ctrlFlagsUB1 & 0x3FF) <= (*ctrlFlagsUB2 & 0x3FF)) ?
+                                              (*ctrlFlagsUB1 & 0x3FF) : (*ctrlFlagsUB2 & 0x3FF);
+                if (processedDataGroupCount >= preparedDataGroupCount) {
+                    continue;
+                }
+
+                dataSizeRemain = (preparedDataGroupCount - processedDataGroupCount) * DMA_SIZE_PER_FLAG;
+                if (preparedDataGroupCount >= multipleTimes) {
+                    dataSizeRemain = allDataSizeNeed2Add - processedDataGroupCount * DMA_SIZE_PER_FLAG;
+                }
+                AscendC::PipeBarrier<PIPE_ALL>();
+                ProcessDataNewNonBarrier(dataSizeRemain, inputUB, sendBuff, 0, buffOffsetNum + processedDataGroupCount * DMA_SIZE_PER_FLAG / sizeof(T),
+                            receiveBuff, len + processedDataGroupCount * DMA_SIZE_PER_FLAG / sizeof(T), op);
+                SetFlagNonPipeBarrier(ctrlFlagsUB3, ctrlFlagGMSet, ((magic & 0xfffffffffffffc00) | preparedDataGroupCount));
+
+                processedDataGroupCount = preparedDataGroupCount;
+            }
+        }
+    } else if (coreGroupIdx == 2) {
+        *ctrlFlagsUB1 = 0;
+        *ctrlFlagsUB2 = 0;
+        const int64_t buffOffsetNum = xLocalNodeRankId * oneNPUProcessDataAvgNum;
+        const int64_t allDataSizeNeed2Add = xNPUProcessDataNum * sizeof(T);
+        const int64_t multipleTimes = CeilDiv(allDataSizeNeed2Add, DMA_SIZE_PER_FLAG);
+        int64_t processedDataGroupCount = 0;
+        int64_t preparedDataGroupCount = 0;
+
+        if (thisNPUProcessDataNum != 0) {
+            CheckFlag(ctrlFlagsUB,
+                      (__gm__ int64_t*)buff[rank] + (singleNodeRankSize + xLocalNodeRankId) * MEM_DMA_UNIT_INT_NUM,
+                      CeilDiv(thisNPUProcessDataNum * sizeof(T), DMA_SIZE_PER_FLAG) + magic);
+        }
+
+        while (true) {
+            if (processedDataGroupCount >= multipleTimes) {
+                break;
+            }
+
+            SetFlag<HardEvent::S_MTE2>(EVENT_ID0);
+            WaitFlag<HardEvent::S_MTE2>(EVENT_ID0);
+            CpGM2UB(ctrlFlagsUB1, ctrlFlagGMCheck, sizeof(int64_t));
+            SetFlag<HardEvent::MTE2_S>(EVENT_ID0);
+            WaitFlag<HardEvent::MTE2_S>(EVENT_ID0);
+
+            if (*ctrlFlagsUB1 == 0 || ((*ctrlFlagsUB1 >> 10) != (magic >> 10))) {
+                continue;
+            }
+
+            preparedDataGroupCount = (*ctrlFlagsUB1 & 0x3FF);
+            if (processedDataGroupCount >= preparedDataGroupCount) {
+                continue;
+            }
+
+            dataSizeRemain = (preparedDataGroupCount - processedDataGroupCount) * DMA_SIZE_PER_FLAG;
+            if (preparedDataGroupCount >= multipleTimes) {
+                dataSizeRemain = allDataSizeNeed2Add - processedDataGroupCount * DMA_SIZE_PER_FLAG;
+            }
+            AscendC::PipeBarrier<PIPE_ALL>();
+            GM2GMPingPongNonPipeBarrier<T>(dataSizeRemain, inputUB, receiveBuff,
+                     buffOffsetNum + processedDataGroupCount * DMA_SIZE_PER_FLAG / sizeof(T),
+                     sendBuff, len + processedDataGroupCount * DMA_SIZE_PER_FLAG / sizeof(T));
+            processedDataGroupCount = preparedDataGroupCount;
+        }
+    }
+}
+
+template<typename T>
+__attribute__((always_inline)) inline __aicore__ void LcalAllReduceBigData910B2C(ALLREDUCE_ARGS_FUN_16P(T))
+{
+    DumpLcclLogInfo(dumpAddr, LogId::OVERALL, static_cast<Op>(op));
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, static_cast<Op>(op));
+    magic *= 1024;
+    __gm__ T* buff[16] = {
+        buff0, buff1, buff2, buff3,
+        buff4, buff5, buff6, buff7,
+        buff8, buff9, buff10, buff11,
+        buff12, buff13, buff14, buff15
+    };
+    __ubuf__ int64_t* ctrlFlagsUB = (__ubuf__ int64_t*)(0);
+    __ubuf__ int64_t* ctrlFlagsUB1 = (__ubuf__ int64_t*)(32);
+    __ubuf__ int64_t* ctrlFlagsUB2 = (__ubuf__ int64_t*)(64);
+    __ubuf__ int64_t* ctrlFlagsUB3 = (__ubuf__ int64_t*)(96);
+    __ubuf__ T* inputUB[2] = {(__ubuf__ T*)(128), (__ubuf__ T*)(98336)};
+
+    const int64_t singleNodeRankSize = rankSize >> 1;
+    const int64_t localNodeRankId = rank >= singleNodeRankSize ? rank - singleNodeRankSize : rank;
+
+    const int64_t coreGroupIdx = GetBlockIdx() / singleNodeRankSize;
+
+    const int64_t peerRankId = rank < singleNodeRankSize ?  rank + singleNodeRankSize : rank - singleNodeRankSize;
+
+    const int64_t dataOffsetNum = GetLcalBlockNum() * 2 * MEM_DMA_UNIT_INT_NUM;
+
+    const int64_t x =  (rank < singleNodeRankSize) ? (GetBlockIdx() % singleNodeRankSize) :
+                       ((GetBlockIdx() % singleNodeRankSize) + singleNodeRankSize);
+    const int64_t xLocalNodeRankId = x % singleNodeRankSize;
+
+    __gm__ T *sendBuff = input;
+    __gm__ T *receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[rank] + dataOffsetNum);
+    __gm__ int64_t *ctrlFlagGMSet = ((__gm__ int64_t*)buff[rank] + (GetBlockIdx()) * MEM_DMA_UNIT_INT_NUM);
+
+
+    __gm__ int64_t *ctrlFlagGMCheck = ((__gm__ int64_t*)buff[x] + (localNodeRankId) * MEM_DMA_UNIT_INT_NUM);
+    switch (coreGroupIdx) {
+        case 0:
+            break;
+        case 1:
+            sendBuff = (__gm__ T*)((__gm__ int64_t*)buff[x] + dataOffsetNum);
+            receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[rank] + dataOffsetNum);
+            ctrlFlagGMSet = ((__gm__ int64_t*)buff[rank] + GetBlockIdx() * MEM_DMA_UNIT_INT_NUM);
+            break;
+        case 2:
+            sendBuff = (__gm__ T*)((__gm__ int64_t*)buff[x] + dataOffsetNum);
+            receiveBuff = output;
+            ctrlFlagGMCheck = ((__gm__ int64_t*)buff[x] + (rankSize + 2) * MEM_DMA_UNIT_INT_NUM);
+            break;
+        case 3:
+        {
+            if (GetBlockIdx() == singleNodeRankSize * 3) {
+                sendBuff = (__gm__ T*)((__gm__ int64_t*)buff[rank] + dataOffsetNum);
+                receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[peerRankId] + dataOffsetNum);
+                ctrlFlagGMCheck = ((__gm__ int64_t*)buff[rank] + singleNodeRankSize * MEM_DMA_UNIT_INT_NUM);
+                ctrlFlagGMSet = ((__gm__ int64_t*)buff[peerRankId] + rankSize * MEM_DMA_UNIT_INT_NUM);
+            } else {
+                sendBuff = (__gm__ T*)((__gm__ int64_t*)buff[rank] + dataOffsetNum);
+                receiveBuff = (__gm__ T*)((__gm__ int64_t*)buff[rank] + dataOffsetNum);
+                ctrlFlagGMCheck = ((__gm__ int64_t*)buff[rank] + rankSize * MEM_DMA_UNIT_INT_NUM);
+                ctrlFlagGMSet = ((__gm__ int64_t*)buff[rank] + (rankSize + 2) * MEM_DMA_UNIT_INT_NUM);
+            }
+        }
+        default:
+            ;
+    }
+    DumpLcclLogInfo(dumpAddr, LogId::INIT, static_cast<Op>(op));
+
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+
+    const int64_t allreduceBuffSizePerParagraph910B2C =
+        IPC_BUFF_MAX_SIZE / (singleNodeRankSize + 1) / sizeof(T) * sizeof(T);
+
+    const int64_t ipcBuffMaxSizePerLoop = allreduceBuffSizePerParagraph910B2C * singleNodeRankSize;
+    const int64_t ipcBuffMaxNumPerLoop = ipcBuffMaxSizePerLoop / sizeof(T);
+    const int64_t loopTimes = CeilDiv(len, ipcBuffMaxNumPerLoop);
+    const int64_t ipcMaxNum = IPC_BUFF_MAX_SIZE / sizeof(T);
+    for (int64_t i = 0; i < loopTimes; i++) {
+        *ctrlFlagsUB = 0;
+        *ctrlFlagsUB1 = 0;
+        *ctrlFlagsUB2 = 0;
+        *ctrlFlagsUB3 = 0;
+        AscendC::PipeBarrier<PIPE_ALL>();
+
+        int64_t processedNum = i * ipcBuffMaxNumPerLoop;
+        int64_t remainNum = (len - processedNum < ipcBuffMaxNumPerLoop) ? len - processedNum : ipcBuffMaxNumPerLoop;
+
+        switch (coreGroupIdx) {
+            case 0:
+                sendBuff = input + processedNum;
+                break;
+            case 2:
+                receiveBuff = output + processedNum;
+                break;
+            default:
+                ;
+        }
+
+        PostSyncBigData910B2C(ctrlFlagsUB, buff, rank, rankSize, dataOffsetNum, ipcMaxNum, magic, i, peerRankId,
+                              singleNodeRankSize);
+        LcalAllReduceBigData910B2COrigin<T>(
+            MODIFIABLE_MAGIC_PROCESSED_NUM_ALLREDUCE_ARGS_CALL_16P_Origin(processedNum, remainNum, ((magic + i) * 1024)),
+            singleNodeRankSize, localNodeRankId, coreGroupIdx, peerRankId, dataOffsetNum, ctrlFlagsUB, ctrlFlagsUB1,
+            ctrlFlagsUB2, ctrlFlagsUB3, inputUB, x, xLocalNodeRankId, ctrlFlagGMSet, ctrlFlagGMCheck, sendBuff,
+            receiveBuff
+            );
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
+    DumpLcclLogInfo(dumpAddr, LogId::PROCESS, static_cast<Op>(op));
+    DumpLcclLogInfo(dumpAddr, LogId::OVERALL, static_cast<Op>(op));
+}

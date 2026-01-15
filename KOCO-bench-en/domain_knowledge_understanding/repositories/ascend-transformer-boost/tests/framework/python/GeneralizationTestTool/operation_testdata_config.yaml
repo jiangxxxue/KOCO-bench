@@ -1,0 +1,1201 @@
+#
+# Copyright (c) 2024 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+#
+
+# value must be provided
+op_name: FillOperation
+# default value: empty
+op_param:
+   - key: withMask
+     values: [true, false]
+   - key: value
+     values: [[0], [1]]
+   - key: outDim
+     values: [[2,3], []]
+# value must be provided
+in_num: [0, 2]
+# default value: all possible dtypes
+in_dtype: ["float16", "int32", "bool", "int8"]
+# default value: all possible formats
+in_format: ["nd"]
+in_shape:
+  # dim_numbers default value: [1, 2, 3, 4, 5, 6, 7, 8]
+  # dim_number_weights default value: [0.05, 0.2, 0.2, 0.2, 0.2, 0.01, 0.01, 0.01]
+  # dim_numbers and dim_number_weights are optional; they should have the same number of elements.
+  # dim_values default value:
+  # [ [1],
+  #   [7, 9],
+  #   [15, 17],
+  #   [19, 21],
+  #   [255, 257],
+  #   [131073],
+  #   [2147483648],
+  #   [1, 1024],
+  #   [1025, 10240],
+  #   [10241, 102400],
+  #   [102401, 1024000],
+  #   [1024001, 10240000],
+  #   [10240001, 102400000],
+  #   [102400001, 1024000000],
+  #   [1024000001, 2147483648] ]
+  #dim_value_weights default value:
+  # [ 0.05,
+  #   0.1,
+  #   0.1,
+  #   0.1,
+  #   0.01,
+  #   0.01,
+  #   0.001,
+  #   0.001,
+  #   0.001,
+  #   0.001,
+  #   0.001,
+  #   0.001,
+  #   0.001,
+  #   0.001,
+  #   0.001 ]
+  # dim_values and dim_value_weights are optional; they should have the same number of elements.
+  dim_numbers: [1, 2, 3, 4, 5]
+  dim_number_weights: [0.1, 0.1, 0.6, 0.1, 0.1]
+  dim_values: [[1], [7, 9], [15, 17], [19, 21]]
+  dim_value_weights: [0.5, 0.1, 0.1, 0.1]
+# default value: ["-5,5"]
+data_gen_range: ["-5,5"]
+# default value: ["customize"]
+data_gen_type: ["customize"]
+
+---
+
+op_name: CumsumOperation
+op_param:
+  - key: axes
+    values: [[0], [1], [2], [4], [5]]
+  - key: exclusive
+    values: [ false ]
+  - key: reverse
+    values: [ false ]
+in_num: [1]
+in_dtype: ["float16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3, 4, 5, 6]
+  dim_number_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+  dim_values: [[2, 3], [7, 9], [15, 17], [19, 21], [23, 30]]
+  dim_value_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+data_gen_range: ["0,1", "1,1"]
+
+---
+
+op_name: ConcatOperation
+op_param:
+  - key: concatDim
+    values: [-1, 0, 1, 2]
+in_num: [2]
+in_dtype: ["float16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [3, 2, 4, 5, 6]
+  dim_number_weights: [0.6, 0.1, 0.1, 0.1, 0.1]
+  dim_values: [[2], [3], [15, 17], [19, 21], [23, 30]]
+  dim_value_weights: [0.6, 0.1, 0.1, 0.1, 0.1]
+data_gen_range: ["0,1", "-100,100"]
+
+---
+
+op_name: SplitOperation
+op_param:
+   - key: splitDim
+     values: [-1, -2, 0, 1, 2]
+   - key: splitNum
+     values: [2, 3]
+in_num: [1]
+in_dtype: ["float16", "int64", "bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3, 4, 5, 6]
+  dim_number_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+  dim_values: [[2, 3], [7, 9], [15, 17], [19, 21], [23, 30]]
+  dim_value_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+data_gen_range: ["0,1", "-100,100"]
+
+---
+
+op_name: AsStridedOperation
+op_param:
+   - key: size
+     values: [[3,3], [3,3,3]]
+   - key: stride
+     values: [[1,0], [1,0,0]]
+   - key: offset
+     values: [[0]]
+in_num: [1]
+in_dtype: ["float16", "int64"]
+in_format: ["nd"]
+in_shape:
+  dim_values: [[3, 16]]
+  dim_value_weights: [0.05]
+data_gen_range: ["0,1"]
+
+---
+
+op_name: MultinomialOperation
+op_param:
+   - key: numSamples
+     values: [2, 4]
+   - key: randSeed
+     values: [0, 1, 2]
+in_num: [1]
+in_dtype: ["float16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2]
+  dim_number_weights: [0.1]
+  dim_values: [[5,50]]
+  dim_value_weights: [0.2]
+data_gen_range: ["0,1"]
+
+---
+
+op_name: ReduceOperation
+op_param:
+   - key: reduceType
+     values: [1, 2]
+   - key: axis
+     values: [[1], [2], [3], [1, 2], [2, 3], [1, 3]]
+in_num: [1]
+in_dtype: ["int32", "bf16", "float16"]
+in_format: ["nd"]
+in_shape:
+  dim_values: [[1, 20], [1, 100]]
+  dim_value_weights: [0.2, 0.2]
+data_gen_range: ["-100,100"]
+
+
+---
+
+op_name: RopeOperation
+op_param:
+   - key: rotaryCoeff
+     values: [2, 4, 64]
+   - key: cosFormat
+     values: [0]
+in_num: [5]
+in_dtype: ["float16", "int32"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [1, 2]
+  dim_number_weights: [0.1, 0.1]
+  dim_values: [[128], [1024]]
+  dim_value_weights: [0.2, 0.2]
+data_gen_range: ["1,100"]
+data_gen_type: ["random"]
+
+---
+
+op_name: SliceOperation
+op_param:
+   - key: offsets
+     values: [[0, 0, 0], [0, -1, 0], [-1, 2, 8], [0, 0, 0, 0]]
+   - key: size
+     values: [[1,-1,-1], [-1,1,-1], [10, 10, 100], [-1, -1, -1, 24]]
+in_num: [1]
+in_dtype: ["float16", "float", "int8", "bf16", "bool", "int32"]
+in_format: ["nd"]
+in_shape:
+  dim_values: [[1, 100]]
+  dim_value_weights: [0.2]
+data_gen_range: ["0,1"]
+
+---
+
+op_name: SoftmaxOperation
+op_param:
+   - key: axes
+     values: [[0], [1], [-1], [2], [0, 1], [1, 2], [0, 1, 2]]
+in_num: [1]
+in_dtype: ["float", "bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3]
+  dim_number_weights: [0.5, 0.5]
+  dim_values: [[1, 30], [1, 20], [1, 100]]
+  dim_value_weights: [0.2, 0.2, 0.2]
+data_gen_range: ["0, 30"]
+
+---
+
+op_name: ReshapeAndCacheOperation
+in_num: [5]
+in_dtype: ["float", "int32", "int8"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [1, 3, 4]
+  dim_number_weights: [0.1, 0.1, 0.1]
+  dim_values: [[2], [16], [32], [64], [128]]
+  dim_value_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+data_gen_range: ["0,1"]
+
+
+---
+
+op_name: OnehotOperation
+op_param:
+   - key: axis
+     values: [1, -1]
+   - key: depth
+     values: [10]
+in_num: [3]
+in_dtype: ["int64", "int32"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [1]
+  dim_number_weights: [0.1]
+  dim_values: [[1 , 30]]
+  dim_value_weights: [0.2]
+data_gen_range: ["0,10"]
+
+---
+
+op_name: NonzeroOperation
+in_num: [1]
+in_dtype: ["int64"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2]
+  dim_number_weights: [1]
+  dim_values: [[1, 20]]
+  dim_value_weights: [1]
+data_gen_range: ["0,0", "1,1"]
+
+---
+
+op_name: IndexAddOperation
+op_param:
+   - key: axis
+     values: [0, 1, 2]
+   - key: indexType
+     values: [1, 2]
+in_num: [4]
+in_dtype: ["float16", "int32", "float16", "float16"]
+in_format: ["nd", "nd", "nd", "nd"]
+in_shape:
+  dim_numbers: [1, 2, 3, 4]
+  dim_number_weights: [0.2, 0.5, 0.2, 0.1]
+  dim_values: [[1],[16],[128],[256]]
+  dim_value_weights: [0.2,0.2,0.2,0.2]
+data_gen_range: ["1, 10"]
+
+---
+op_name: TransposeOperation
+op_param:
+    - key: perm
+      values: [[0,1,2], [1,0,2], [1,2,0], [0,2,1], [2,0,1], [2,1,0],
+             [0,1,2,3], [1,0,2,3], [1,2,0,3], [0,2,1,3], [2,0,1,3], [2,1,0,3],
+             [0,1,2,3,4], [1,0,2,3,4], [1,2,0,3,4], [0,2,1,3,4], [2,0,1,3,4], [2,1,0,3,4],
+             [0,1,2,3,4,5], [1,0,2,3,4,5], [1,2,0,3,4,5], [0,2,1,3,4,5], [2,0,1,3,4,5], [2,1,0,3,4,5],
+             [0,1,2,3,4,5,6], [1,0,2,3,4,5,6], [1,2,0,3,4,5,6], [0,2,1,3,4,5,6], [2,0,1,3,4,5,6], [2,1,0,3,4,5,6],
+             [0,1,2,3,4,5,6,7], [1,0,2,3,4,5,6,7], [1,2,0,3,4,5,6,7], [0,2,1,3,4,5,6,7], [2,0,1,3,4,5,6,7], [2,1,0,3,4,5,6,7]]
+in_num: [1]
+in_dtype: ["float16", "int64"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [3, 4, 5, 6, 7, 8]
+  dim_number_weights: [0.2, 0.2, 0.2, 0.2, 0.01, 0.01]
+  dim_values: [[1,8], [8,32], [32, 64], [64, 2048], [2048, 4096]]
+  dim_value_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+data_gen_range: ["0,1", "-100,100"]
+
+
+---
+
+
+op_name: KvCacheOperation
+op_param: []
+in_num: [5]
+in_dtype: ["float16"]
+in_format: ["nd", "fractal_nz"]
+in_shape:
+  dim_numbers: [1, 2, 4, 5]
+  dim_number_weights: [0.1, 0.1, 0.1, 0.1]
+  dim_values: [[2], [16], [32], [64], [128]]
+  dim_value_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+data_gen_range: ["0,1", "-100,100"]
+
+
+---
+
+
+op_name: GatherOperation
+op_param:
+   - key: axis
+     values: [0, 1]
+   - key: batchDims
+     values: [0, 1]
+in_num: [2]
+in_dtype: ["float16", "int64"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2]
+  dim_number_weights: [1]
+  dim_values: [[10, 200], [2, 3],[2, 3]]
+  dim_value_weights: [0.4, 0.4, 0.2]
+data_gen_range: ["-100,100"]
+
+---
+
+op_name: SetValueOperation
+op_param:
+   - key: starts
+     values: [[0,0],[0,0,0]]
+   - key: ends
+     values: [[13,1024],[13,12,1024]]
+   - key: strides
+     values: [[1, 1],[1, 1, 1]]
+in_num: [2]
+in_dtype: ["float16", "int64", "int32", "float"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2,3]
+  dim_number_weights: [0.5,0.5]
+  dim_values: [[4, 15], [24,4096]]
+  dim_value_weights: [0.4, 0.4]
+data_gen_range: ["-100,100"]
+
+---
+
+op_name: UnpadOperation
+in_num: [4]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2]
+  dim_number_weights: [1]
+  dim_values: [[20,30], [30,64]]
+  dim_value_weights: [0.5,0.5]
+data_gen_range: ["-100,100"]
+
+---
+
+op_name: PadOperation
+in_num: [4]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2]
+  dim_number_weights: [1]
+  dim_values: [[20,30], [30,64]]
+  dim_value_weights: [0.5,0.5]
+data_gen_range: ["-100,100"]
+
+---
+
+op_name: AllReduceOperation
+op_param:
+   - key: rank
+     values: [0,1]
+   - key: rankSize
+     values: [2]
+   - key: rankRoot
+     values: [0,1]
+   - key: allReduceType
+     values: ["sum","prod","max","min"]
+   - key: backend
+     values: ["hccl","lccl"]
+in_num: [1]
+in_dtype: ["float16", "int32", "float", "int8","int16","int64","bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2,3,4]
+  dim_number_weights: [0.2, 0.4, 0.4]
+  dim_values: [[100,200], [20,30]]
+  dim_value_weights: [0.5, 0.5]
+data_gen_range: ["-100,100"]
+data_gen_type: ["random"]
+
+---
+
+op_name: AllGatherOperation
+op_param:
+   - key: rank
+     values: [0,1]
+   - key: rankSize
+     values: [2]
+   - key: rankRoot
+     values: [0,1]
+   - key: backend
+     values: ["hccl","lccl"]
+in_num: [1]
+in_dtype: ["float16", "int32", "float","int16","int64","bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2,3,4]
+  dim_number_weights: [0.3, 0.4, 0.3]
+  dim_values: [[512,514], [20,30]]
+  dim_value_weights: [0.5, 0.5]
+data_gen_range: ["-100,100"]
+data_gen_type: ["random"]
+
+---
+
+op_name: ReduceScatterOperation
+op_param:
+   - key: rank
+     values: [0,1]
+   - key: rankSize
+     values: [2]
+   - key: rankRoot
+     values: [0,1]
+   - key: reduceType
+     values: ["sum","max","min"]
+   - key: backend
+     values: ["lccl"]
+in_num: [1]
+in_dtype: ["float16" ,"float" ,"int8" ,"int16" ,"int32" ,"bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2,3,4]
+  dim_number_weights: [0.2, 0.4, 0.4]
+  dim_values: [[100,200], [20,30]]
+  dim_value_weights: [0.5, 0.5]
+data_gen_range: ["-100,100"]
+data_gen_type: ["random"]
+
+---
+
+op_name: DynamicNTKOperation
+op_param:
+   - key: outputType
+     values: [1, 27]
+in_num: [3]
+in_dtype: ["int32"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [1, 2]
+  dim_number_weights: [ 0.5, 0.5]
+  dim_values: [[16, 23], [4, 7568], [2,20001], [1,25600]]
+  dim_value_weights: [0.25,0.25,0.25,0.25]
+
+---
+
+op_name: BroadcastOperation
+op_param:
+   - key: rank
+     values: [0,1]
+   - key: rankSize
+     values: [2]
+   - key: rankRoot
+     values: [0,1]
+in_num: [1]
+in_dtype: ["float16", "int32", "float", "int8","int16","int64"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2,3,4]
+  dim_number_weights: [0.3, 0.4, 0.3]
+  dim_values: [[40,50], [20,30]]
+  dim_value_weights: [0.5, 0.5]
+data_gen_range: ["-100,100"]
+data_gen_type: ["random"]
+
+---
+
+op_name: ElewiseOperation
+op_param:
+   - key: elewiseType
+     values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+   - key: varAttr
+     values: [1.0, 2.0, 2.5]
+   - key: inputScale
+     values: [1.0]
+   - key: inputOffset
+     values: [0]
+   - key: outTensorType
+     values: [0, 1, 3, 9, 27]
+   - key: asymmetric
+     values: [false]
+in_num: [1, 2, 3]
+in_dtype: ["float16", "int64", "int32", "float", "int8", "bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3]
+  dim_number_weights: [0.5, 0.5]
+  dim_values: [[2, 3], [7, 9], [15, 17], [19, 21], [23, 30]]
+  dim_value_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+
+---
+
+op_name: SelfAttentionOperation
+op_param:
+   - key: headNum
+     values: [4, 8, 32]
+   - key: qScale
+     values: [0.2, 0.3, 0.4]
+   - key: kvHeadNum
+     values: [0, 32]
+   - key: qkScale
+     values: [0.08838834764831843, 1]
+   - key: calcType
+     values: [0, 3]
+   - key: clampMin
+     values: [0.111, 0.333]
+   - key: clampMax
+     values: [0.444, 0.555]
+   - key: clampType
+     values: [0, 1]
+in_num: [4, 9]
+in_dtype: ["float16", "int32"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [1, 2, 3, 4]
+  dim_number_weights: [0.25, 0.25, 0.25, 0.25]
+  dim_values: [[1, 3, 4, 32, 128, 2048, 4096], [1, 3, 4, 32, 128, 2048, 4096], [1, 3, 4, 32, 128, 2048, 4096], [1, 3, 4, 32, 128, 2048, 4096]]
+  dim_value_weights: [0.25, 0.25, 0.25, 0.25]
+
+
+---
+
+op_name: PagedAttentionOperation
+op_param:
+   - key: headNum
+     values: [16, 32, 64]
+   - key: qkScale
+     values: [0.08838834764831843]
+   - key: kvHeadNum
+     values: [2, 4, 8, 16]
+   - key: scaleType
+     values: [0]
+   - key: calcType
+     values: [0]
+   - key: compressType
+     values: [0]
+   - key: maskType
+     values: [0]
+   - key: quantType
+     values: [0]
+in_num: [5]
+in_dtype: ["float16", "int32"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [1, 2, 3, 4]
+  dim_number_weights: [0.25, 0.25, 0.25, 0.25]
+  dim_values: [[4, 32, 256]]
+  dim_value_weights: [1.0]
+
+---
+
+op_name: ActivationOperation
+op_param:
+   - key: activationType
+     values: [1, 2, 3, 4, 5, 6, 7, 8]
+   - key: scale
+     values: [1.0, 2.0, 2.5, -5.0, 10.1]
+   - key: dim
+     values: [-1]
+in_num: [1, 2]
+in_dtype: ["float16", "float", "bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3, 4, 5, 6]
+  dim_number_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+  dim_values: [[2, 3], [7, 9], [15, 17], [19, 21], [23, 30]]
+  dim_value_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+data_gen_range: ["-100,100", "0.1,100", "-2,2"]
+
+---
+
+op_name: RepeatOperation
+op_param:
+   - key: multiples
+     values: [[2, 3], [21, 1, 14], [3, 1, 33, 1], [46, 1, 13, 1, 1], [30, 1, 1, 41, 1, 1]]
+in_num: [1]
+in_dtype: ["float16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3, 4]
+  dim_number_weights: [0.3, 0.3, 0.4]
+  dim_values: [[2, 3], [7, 9], [15, 17], [19, 21], [23, 30]]
+  dim_value_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+data_gen_range: ["-100,100"]
+
+---
+
+op_name: WhereOperation
+op_param: []
+in_num: [3]
+in_dtype: ["float16", "int8"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3, 4, 5, 6]
+  dim_number_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+  dim_values: [[1], [2, 16]]
+  dim_value_weights: [0.6, 0.4]
+data_gen_range: ["0,1"]
+
+---
+
+op_name: TopkToppSamplingOperation
+op_param:
+   - key: topkToppSamplingType
+     values: [0, 1, 2, 3, 4]
+   - key: randSeed
+     values: [190, 1, 0]
+   - key: topk
+     values: [2, 5, 10, 30]
+   - key: randSeeds
+     values: [[0], [0, 1], [0, 1, 2], [0, 1, 2, 3], [0, 1, 2, 3, 4], [0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5, 6]]
+   - key: logProbsSize
+     values: [1, 4]
+in_num: [2, 3, 4]
+in_dtype: ["float16", "int32", "float"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2]
+  dim_number_weights: [1]
+  dim_values: [[1, 7], [100, 1000]]
+  dim_value_weights: [0.5, 0.5]
+data_gen_range: ["-100,100"]
+data_gen_type: ["customize", "random"]
+
+---
+
+op_name: TransdataOperation
+op_param:
+   - key: transdataType
+     values: [1, 2]
+   - key: outCrops
+     values: [[32, 32]]
+in_num: [1]
+in_dtype: ["float16"]
+in_format: ["nd", "fractal_nz"]
+in_shape:
+  dim_numbers: [2, 3, 4]
+  dim_number_weights: [0.3, 0.3, 0.4]
+  dim_values: [[1, 8], [17, 32]]
+  dim_value_weights: [0.7, 0.3]
+data_gen_range: ["-100,100"]
+
+---
+
+op_name: LinearOperation
+op_param:
+  - key: transposeA
+    values: [false, true]
+  - key: transposeB
+    values: [false, true]
+  - key: hasBias
+    values: [false, true]
+  - key: outDataType
+    values: [-1, 1 ,27]
+  - key: enAccum
+    values: [false, true]
+  - key: matmulType
+    values: [0, 1]
+in_num: [2, 3, 4]
+in_dtype: ["float16", "bf16", "float"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [1]
+  dim_number_weights: [1]
+  dim_values: [[1]]
+  dim_value_weights: [1]
+data_gen_range: ["-2, 2"]
+
+---
+
+op_name: LinearParallelOperation
+op_param:
+  - key: transWeight
+    values: [false, true]
+  - key: rank
+    values: [0, 1]
+  - key: rankSize
+    values: [2]
+  - key: rankRoot
+    values: [0, 1]
+  - key: hasResidual
+    values: [true, false]
+  - key: backend
+    values: [ "hccl", "lccl", "lcoc" ]
+  - key: quantType
+    values: [ 1 ]
+  - key: quantGroupSize
+    values: [ 2, 4 ]
+  - key: outDataType
+    values: [ 1, 27 ]
+
+in_num: [2, 3, 4, 5]
+in_dtype: ["float16", "bf16", "int8"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [ 2 ]
+  dim_number_weights: [ 1 ]
+  dim_values: [ [ 2, 3 ], [ 7, 9 ], [ 15, 17 ], [ 19, 21 ], [ 23, 30 ] ]
+  dim_value_weights: [ 0.2, 0.2, 0.2, 0.2, 0.2 ]
+data_gen_range: ["0,1", "-10,10"]
+
+---
+
+op_name: LinearSparseOperation
+op_param:
+  - key: transposeA
+    values: [false]
+  - key: transposeB
+    values: [true]
+  - key: tilingK
+    values: [8]
+  - key: tilingN
+    values: [8]
+in_num: [5]
+in_dtype: ["int8"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [1]
+  dim_number_weights: [1]
+  dim_values: [[1]]
+  dim_value_weights: [1]
+data_gen_range: ["0,0"]
+
+---
+
+op_name: LayerNormOperation
+op_param:
+   - key: layerType
+     values: [1, 2, 3]
+   - key: quantType
+     values: [0, 2]
+   - key: beginNormAxis
+     values: [0, 1, 2, 3]
+   - key: beginParamsAxis
+     values: [0]
+   - key: epsilon
+     values: [0.00001, 0.000005]
+   - key: opMode
+     values: [0]
+   - key: zoomScaleValue
+     values: [0.3, 1, 10]
+   - key: dynamicQuantType
+     values: [0, 1]
+in_num: [3, 4, 5, 6]
+in_dtype: ["float16", "float"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3, 4]
+  dim_number_weights: [0.3, 0.3, 0.4]
+  dim_values: [[1], [32], [64]]
+  dim_value_weights: [0.3, 0.3, 0.4]
+data_gen_range: ["-5,5"]
+
+---
+
+op_name: RmsNormOperation
+op_param:
+   - key: layerType
+     values: [1, 2, 3]
+   - key: quantType
+     values: [0, 2]
+   - key: epsilon
+     values: [0.00001, 0.000000001]
+   - key: modelType
+     values: [0, 1]
+   - key: precisionMode
+     values: [0, 1]
+   - key: rstd
+     values: [false, true]
+   - key: hasBias
+     values: [false, true]
+   - key: dynamicQuantType
+     values: [0, 1]
+in_num: [2, 3, 4, 5, 6]
+in_dtype: ["float16", "bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3, 4, 5, 6]
+  dim_number_weights: [0.2, 0.2, 0.2, 0.2, 0.2]
+  dim_values: [[1], [32], [64]]
+  dim_value_weights: [0.3, 0.3, 0.4]
+data_gen_range: ["-2,2"]
+
+---
+
+op_name: RmsNormBackwardOperation
+op_param:
+in_num: [4]
+in_dtype: ["float16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [3, 4, 5]
+  dim_number_weights: [0.4, 0.3, 0.3]
+  dim_values: [[32], [48]]
+  dim_value_weights: [0.5, 0.5]
+data_gen_range: ["0, 1"]
+
+---
+
+op_name: StridedBatchMatmulOperation
+op_param:
+   - key: transA
+     values: [false]
+   - key: transB
+     values: [true]
+   - key: batch
+     values: [2]
+   - key: headNum
+     values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+   - key: m
+     values: [[16, 32]]
+   - key: n
+     values: [[16, 32]]
+   - key: k
+     values: [[16, 16]]
+   - key: lda
+     values: [[16, 16]]
+   - key: ldb
+     values: [[16, 16]]
+   - key: ldc
+     values: [[16, 32]]
+   - key: strideA
+     values: [[16, 16]]
+   - key: strideB
+     values: [[16, 16]]
+   - key: strideC
+     values: [[256, 1024]]
+in_num: [2]
+in_dtype: ["float16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2]
+  dim_number_weights: [1]
+  dim_values: [[16, 16]]
+  dim_value_weights: [1]
+data_gen_range: ["-10,10"]
+
+---
+op_name: GenAttentionMaskOperation
+op_param:
+   - key: headNum
+     values: [2]
+   - key: seqLen
+     values: [[2, 1]]
+in_num: [1]
+in_dtype: ["float16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [4]
+  dim_number_weights: [1]
+  dim_values: [[1, 4]]
+  dim_value_weights: [1]
+data_gen_range: ["0,1", "-100,100"]
+
+---
+op_name: RopeGradOperation
+op_param:
+   - key: qSeqLen
+     values: [[2, 1, 4, 4]]
+in_num: [4]
+in_dtype: ["float16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2]
+  dim_number_weights: [1]
+  dim_values: [[11, 128]]
+  dim_value_weights: [1]
+data_gen_range: ["0,1", "-100,100"]
+
+---
+op_name: SortOperation
+op_param:
+  - key: num
+    values: [[300], [10], [4000], [1]]
+in_num: [1]
+in_dtype: ["float16", "bf16", "float"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3, 4]
+  dim_number_weights: [0.2, 0.4, 0.4]
+  dim_values: [[7, 9], [300,400],[3000,5000]]
+  dim_value_weights: [0.2, 0.4, 0.4]
+data_gen_range: ["0,1", "-100,100"]
+
+
+---
+
+op_name: UnpadWithHiddenStateOperation
+op_param:
+  - key: qSeqLen
+    values: [[903, 1692, 719, 140, 401, 823], [211, 1685, 589, 894, 1770], [886, 1365, 731, 277, 1603, 1658, 1459],
+             [1862, 783, 154, 1586, 581, 530, 1336], [916, 485, 713, 869, 15, 1978, 1708], [883, 1082],
+             [1324, 1879, 867, 1784, 1916], [749, 1100, 1437, 703, 1236, 89, 2045], [162, 1757, 383, 8],
+             [485, 2039, 1837, 190, 1002, 646, 720, 1875], [33, 1340, 784, 681, 2018], [754, 597, 884, 1445],
+             [945, 40], [993, 1068], [1987, 1513, 1812], [1491, 985], [561, 1898, 1874, 682],
+             [1552, 1255, 628, 835, 730, 523, 1319, 1963], [209, 1300, 405, 1170, 1969, 875, 385], [1986, 778, 402, 1744]]
+  - key: maxSeqLen
+    values: [2048, 4096]
+in_num: [1]
+in_dtype: ["float16"]
+in_format: ["nd"]
+data_gen_range: ["-100,100"]
+in_shape:
+  dim_numbers: [3]
+  dim_number_weights: [1]
+  dim_values: [[2, 8], [2048], [4096]]
+  dim_value_weights: [0.2, 0.4, 0.4]
+
+---
+
+op_name: PadWithHiddenStateOperation
+op_param:
+  - key: qSeqLen
+    values: [[903, 1692, 719, 140, 401, 823], [211, 1685, 589, 894, 1770], [886, 1365, 731, 277, 1603, 1658, 1459],
+             [1862, 783, 154, 1586, 581, 530, 1336], [916, 485, 713, 869, 15, 1978, 1708], [883, 1082],
+             [1324, 1879, 867, 1784, 1916], [749, 1100, 1437, 703, 1236, 89, 2045], [162, 1757, 383, 8],
+             [485, 2039, 1837, 190, 1002, 646, 720, 1875], [33, 1340, 784, 681, 2018], [754, 597, 884, 1445],
+             [945, 40], [993, 1068], [1987, 1513, 1812], [1491, 985], [561, 1898, 1874, 682],
+             [1552, 1255, 628, 835, 730, 523, 1319, 1963], [209, 1300, 405, 1170, 1969, 875, 385], [1986, 778, 402, 1744]]
+  - key: maxSeqLen
+    values: [2048, 4096]
+in_num: [1]
+in_dtype: ["float16"]
+in_format: ["nd"]
+data_gen_range: ["-100,100"]
+in_shape:
+  dim_numbers: [2]
+  dim_number_weights: [1]
+  dim_values: [[0], [2048], [4096]]
+  dim_value_weights: [0.5, 0.25, 0.25]
+
+---
+
+op_name: FastSoftMaxOperation
+op_param:
+  - key: qSeqLen
+    values: [[903, 1692, 719, 140, 401, 823], [211, 1685, 589, 894, 1770], [886, 1365, 731, 277, 1603, 1658, 1459],
+             [1862, 783, 154, 1586, 581, 530, 1336], [916, 485, 713, 869, 15, 1978, 1708], [883, 1082],
+             [1324, 1879, 867, 1784, 1916], [749, 1100, 1437, 703, 1236, 89, 2045], [162, 1757, 383, 8],
+             [485, 2039, 1837, 190, 1002, 646, 720, 1875], [33, 1340, 784, 681, 2018], [754, 597, 884, 1445],
+             [945, 40], [993, 1068], [1987, 1513, 1812], [1491, 985], [561, 1898, 1874, 682],
+             [1552, 1255, 628, 835, 730, 523, 1319, 1963], [209, 1300, 405, 1170, 1969, 875, 385], [1986, 778, 402, 1744]]
+  - key: headNum
+    values: [2, 4, 8, 16]
+in_num: [1]
+in_dtype: ["float16"]
+in_format: ["nd"]
+data_gen_range: ["-10,10"]
+in_shape:
+  dim_numbers: [1]
+  dim_number_weights: [1]
+  dim_values: [[0]]
+  dim_value_weights: [1]
+
+---
+
+op_name: FastSoftMaxGradOperation
+op_param:
+  - key: qSeqLen
+    values: [[903, 1692, 719, 140, 401, 823], [211, 1685, 589, 894, 1770], [886, 1365, 731, 277, 1603, 1658, 1459],
+             [1862, 783, 154, 1586, 581, 530, 1336], [916, 485, 713, 869, 15, 1978, 1708], [883, 1082],
+             [1324, 1879, 867, 1784, 1916], [749, 1100, 1437, 703, 1236, 89, 2045], [162, 1757, 383, 8],
+             [485, 2039, 1837, 190, 1002, 646, 720, 1875], [33, 1340, 784, 681, 2018], [754, 597, 884, 1445],
+             [945, 40], [993, 1068], [1987, 1513, 1812], [1491, 985], [561, 1898, 1874, 682],
+             [1552, 1255, 628, 835, 730, 523, 1319, 1963], [209, 1300, 405, 1170, 1969, 875, 385], [1986, 778, 402, 1744]]
+  - key: headNum
+    values: [2, 4, 8, 16]
+in_num: [2]
+in_dtype: ["float16"]
+in_format: ["nd"]
+data_gen_range: ["0,1"]
+in_shape:
+  dim_numbers: [1]
+  dim_number_weights: [1]
+  dim_values: [[0]]
+  dim_value_weights: [1]
+
+---
+
+op_name: GroupedMatmulWithRoutingOperation
+op_param:
+   - key: groupedMatmulType
+     values: [0, 1]
+   - key: topK
+     values: [2, 3, 4, 5, 6, 7, 8, 9, 10]
+   - key: outDataType
+     values: [-1, 1, 27]
+   - key: transposeB
+     values: [true,false]
+in_num: [4, 6]
+in_dtype: ["bf16", "float16"]
+in_format: ["nd","fractal_nz"]
+in_shape:
+  dim_numbers: [1, 2, 3]
+  dim_number_weights: [0.3, 0.3, 0.4]
+  dim_values: [[32], [64], [128], [192], [256], [512], [1024], [2048], [5120]]
+  dim_value_weights: [0.1, 0.1, 0.2, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+data_gen_range: ["-5,5"]
+data_gen_type: ["customize"]
+
+---
+
+op_name: GroupTopkOperation
+op_param:
+  - key: groupNum
+    values: [1, 2, 4, 8, 16, 64, 128, 512, 1024]
+  - key: k
+    values: [1, 2, 4, 8, 16, 64, 128, 512, 1024]
+  - key: groupMultiFlag
+    values: [0, 1]
+  - key: n
+    values: [1, 2, 4]
+in_num: [2]
+in_dtype: ["float16","bf16","int32"]
+in_format: ["nd"]
+data_gen_range: ["0,1"]
+in_shape:
+  dim_numbers: [1,2]
+  dim_number_weights: [0.5,0.5]
+  dim_values: [[10],[16],[32],[64],[1024]]
+  dim_value_weights: [0.2,0.2,0.2,0.2,0.2]
+
+---
+
+op_name: BlockCopyOperation
+in_num: [5]
+in_dtype: ["float16","bf16","int8"]
+in_format: ["nd","fractal_nz"]
+in_shape:
+  dim_numbers: [1,4]
+  dim_number_weights: [0.5,0.5]
+  dim_values: [ [ 2 ],[ 16 ],[ 30 ],[ 64 ],[ 100 ]]
+  dim_value_weights: [ 0.2,0.2,0.2,0.2,0.2 ]
+data_gen_range: ["0,1"]
+
+---
+
+op_name: GroupedMatmulInplaceAddOperation
+op_param:
+  - key: transposeA
+    values: [false, true]
+  - key: transposeB
+    values: [false]
+in_num: [4]
+in_dtype: ["float16","bf16","int64","float"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [1,2]
+  dim_number_weights: [0.5,0.5]
+  dim_values: [[10],[16],[32],[64],[1024]]
+  dim_value_weights: [0.2,0.2,0.2,0.2,0.2]
+
+---
+
+op_name: AllToAllOperation
+op_param:
+   - key: rank
+     values: [0,1]
+   - key: rankSize
+     values: [2]
+   - key: rankRoot
+     values: [0,1]
+   - key: backend
+     values: ["hccl","lccl"]
+   - key: transpose
+     values: [false, true]
+in_num: [1]
+in_dtype: ["float16", "int32", "float", "int8","int16","int64","bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [ 2,3,4,5,6,7,8 ]
+  dim_number_weights: [ 0.2, 0.2, 0.2, 0.1,0.1,0.1, 0.1 ]
+  dim_values: [ [ 100,200 ], [ 20,30 ],[1,10]]
+  dim_value_weights: [ 0.3, 0.4, 0.3]
+data_gen_range: ["-100,100"]
+data_gen_type: ["random"]
+
+
+---
+
+op_name: CohereLayerNormOperation
+op_param:
+   - key: epsilon
+     values: [1e-5,1e-4,1e-3,1e-6,1e-7, 10, 223]
+in_num: [2]
+in_dtype: ["float16","bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [ 2,3,4]
+  dim_number_weights: [ 0.5,0.25,0.25 ]
+  dim_values: [ [ 1,10 ], [ 1,10 ], [1, 100], [128, 51520]]
+  dim_value_weights: [ 0.25, 0.25, 0.25, 0.25 ]
+data_gen_range: ["-2,2"]
+data_gen_type: ["random"]
+
+
+---
+
+op_name: RopeQConcatOperation
+in_num: [4]
+in_dtype: ["float16","bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2]
+  dim_number_weights: [1]
+  dim_values: [[16],[32],[64],[128],[256],[320],[512],[768],[1024],[5120]]
+  dim_value_weights: [0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1]
+
+
+---
+
+op_name: SwigluQuantOperation
+op_param:
+  - key: quantType
+    values: [0]
+in_num: [1]
+in_dtype: ["float16","bf16"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2]
+  dim_number_weights: [1]
+  dim_values: [ [ 1 ],[ 2 ],[ 16 ],[ 128 ],[ 2048 ],[ 4096 ],[5120]]
+  dim_value_weights: [ 0.1,0.1,0.2,0.2,0.2,0.1,0.1]
+data_gen_range: ["-100,100"]
+
+
+---
+
+op_name: FaUpdateOperation
+op_param:
+  - key: faUpdateType
+    values: [0]
+  - key: sp
+    values: [2, 4, 8]
+in_num: [2]
+in_dtype: ["float"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3]
+  dim_number_weights: [0.5,0.5]
+  dim_values: [[16],[32],[64],[128],[256],[320],[512],[768],[1024],[5120]]
+  dim_value_weights: [0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1]
+
+
+
+---
+ 
+ 
+op_name: ScatterElementsV2Operation
+op_param:
+  - key: axis
+    values: [-1]
+  - key: reduction
+    values: [0,1]
+in_num: [3]
+in_dtype: ["float16","bf16","int32","float","int8","uint8"]
+in_format: ["nd"]
+in_shape:
+  dim_numbers: [2, 3, 4]
+  dim_number_weights: [0.1, 0.1, 0.1]
+  dim_values: [[16], [32], [64], [128]]
+  dim_value_weights: [0.2, 0.2, 0.2, 0.2]
+data_gen_range: ["0,100", "0,100", "0,100"]
+data_gen_type: ["random"]

@@ -1,0 +1,7 @@
+{
+  "model": "openai/o4-mini",
+  "total": 107,
+  "correct": 51,
+  "incorrect": 56,
+  "accuracy_percent": 47.66
+}

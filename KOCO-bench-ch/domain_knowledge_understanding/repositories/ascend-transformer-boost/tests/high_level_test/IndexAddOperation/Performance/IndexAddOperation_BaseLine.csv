@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|IndexAddOperation1|494.985|494.985
+2|IndexAddOperation2|584.25|584.25
+3|IndexAddOperation3|749.315|749.315
+4|IndexAddOperation4|511.8|511.8

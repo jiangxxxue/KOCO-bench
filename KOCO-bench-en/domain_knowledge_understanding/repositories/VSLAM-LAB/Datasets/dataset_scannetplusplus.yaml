@@ -1,0 +1,7 @@
+dataset_name: scannetplusplus
+
+rgb_hz: 60.0
+url_download_root: ""
+
+sequence_names:
+  - 56a0ec536c

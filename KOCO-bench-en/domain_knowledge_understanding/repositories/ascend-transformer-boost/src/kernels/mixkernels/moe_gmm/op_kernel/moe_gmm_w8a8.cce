@@ -1,0 +1,1812 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#ifdef __CCE_KT_TEST__
+#include "stub_def.h"
+#include "stub_fun.h"
+using __bf16 = bfloat16_t;
+#else
+#define __aicore__ [aicore]
+#endif
+
+#include "mixkernels/moe_gmm/tiling/tiling_data.h"
+#include "kernels/utils/kernel/common.h"
+#include "kernels/utils/kernel/common_func.h"
+#include "kernels/utils/kernel/mem.h"
+#include "kernels/utils/kernel/iterator.h"
+#include "kernels/utils/kernel/mma.h"
+#include "kernels/utils/kernel/simd.h"
+#include "kernels/utils/kernel/utils.h"
+
+// 同步信号
+constexpr int AIC2AIVFLAGID_PING = 2;
+constexpr int AIC2AIVFLAGID_PONG = 3;
+constexpr int AIV2AICFLAGID_PING = 4;
+constexpr int AIV2AICFLAGID_PONG = 5;
+constexpr uint32_t L0_PINGPONG_BUFFER_LEN = 16384;          // 16KB
+constexpr uint32_t L0_PINGPONG_BUFFER_LEN_INT8 = 16384 * 2; // 32KB
+constexpr uint32_t L1_PINGPONG_BUFFER_LEN = 131072;
+constexpr uint64_t L1_PINGPONG_BUFFER_LEN_INT8 = 262144; // 256 KB
+constexpr uint32_t CONST_16 = 16;
+constexpr uint32_t CONST_32 = 32;
+constexpr uint64_t CONST_64 = 64;
+constexpr uint32_t CONST_256 = 256;
+constexpr uint32_t CONST_512 = 512;
+constexpr uint64_t CONST_128 = 128;
+constexpr uint64_t ND2NZ_STRIDE_LIMIT = 65536;
+constexpr int32_t BLOCK_SIZE_16 = 16;
+constexpr int32_t BLOCK_SIZE_32 = 32;
+constexpr uint32_t CUBE_MATRIX_SIZE_512 = 16 * 32; // 16 * 23
+constexpr int AIVFLAGID = 1;
+
+#ifdef __DAV_C220_CUBE__
+template <uint32_t SwizzleDir,
+          bool TA,
+          bool TB,
+          typename InDtype = half,
+          typename OutDtype = half,
+          DataFormat WeightFormat = DataFormat::NZ>
+class MoeGmmW8a8Aic {
+public:
+    __aicore__ explicit MoeGmmW8a8Aic(){};
+
+    __aicore__ void InitCube(__gm__ uint8_t *__restrict__ sync,
+                             __gm__ uint8_t *__restrict__ a,
+                             __gm__ uint8_t *__restrict__ b,
+                             __gm__ uint8_t *__restrict__ flag,
+                             __gm__ uint8_t *__restrict__ index,
+                             __gm__ uint8_t *__restrict__ c,
+                             __gm__ uint8_t *__restrict__ workspace,
+                             __gm__ uint8_t *__restrict__ workspace_hp,
+                             __gm__ uint8_t *__restrict__ tiling_data)
+    {
+        auto gm_tiling_data = reinterpret_cast<__gm__ AtbOps::MoeGmmTilingData *>(tiling_data);
+        batch_size = gm_tiling_data->batch;
+        m = gm_tiling_data->m * gm_tiling_data->batch;
+        k = gm_tiling_data->k;
+        n = gm_tiling_data->n;
+        m0 = gm_tiling_data->m0;
+        k0 = gm_tiling_data->k0;
+        n0 = gm_tiling_data->n0;
+        m_loop = gm_tiling_data->mLoop;
+        k_loop = gm_tiling_data->kLoop;
+        n_loop = gm_tiling_data->nLoop;
+        core_loop = gm_tiling_data->coreLoop;
+        swizzle_cnt = gm_tiling_data->swizzlCount;
+        en_shuffle_k = gm_tiling_data->enShuffleK;
+        allM = gm_tiling_data->allM;
+        moeUp = gm_tiling_data->moeUp;
+        num_core = AscendC::GetBlockNum();
+        core_idx = AscendC::GetBlockIdx();
+        ping_flag = 1;
+
+        gmA_.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(a));
+        gmB_.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(b));
+        gmFlag_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(flag));
+        gmWorkspace_.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(workspace));
+        gmWorkspaceDeq_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(workspace_hp));
+        gmWorkspaceGmm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(workspace));
+
+        AsdopsBuffer<ArchType::ASCEND_V220> buf;
+        l1BaseA_ = buf.GetBuffer<BufferType::ASCEND_CB, InDtype>(0);
+        l1BaseB_ = buf.GetBuffer<BufferType::ASCEND_CB, InDtype>(RoundUp<CONST_256>(m0 * k0 * sizeof(InDtype)));
+        l0BaseA_ = buf.GetBuffer<BufferType::ASCEND_L0A, InDtype>(0);
+        l0BaseB_ = buf.GetBuffer<BufferType::ASCEND_L0B, InDtype>(0);
+        l0C_ = buf.GetBuffer<BufferType::ASCEND_L0C, int32_t>(0);
+    }
+
+    __force_inline__ __aicore__ void
+    GetBlockIdx(uint32_t index, uint32_t &m_idx, uint32_t &n_idx, const uint32_t &mm_loop)
+    {
+        uint32_t in_batch_idx = index % (mm_loop * n_loop);
+        if constexpr (SwizzleDir == 0) { // Zn
+            uint32_t tile_block_loop = (mm_loop + swizzle_cnt - 1) / swizzle_cnt;
+            uint32_t tile_block_idx = in_batch_idx / (swizzle_cnt * n_loop);
+            uint32_t in_tile_block_idx = in_batch_idx % (swizzle_cnt * n_loop);
+
+            uint32_t n_row = swizzle_cnt;
+            if (tile_block_idx == tile_block_loop - 1) {
+                n_row = mm_loop - swizzle_cnt * tile_block_idx;
+            }
+            m_idx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_row;
+            n_idx = in_tile_block_idx / n_row;
+            if (tile_block_idx % 2 != 0) {
+                n_idx = n_loop - n_idx - 1;
+            }
+        } else if constexpr (SwizzleDir == 1) { // Nz
+            uint32_t tile_block_loop = (n_loop + swizzle_cnt - 1) / swizzle_cnt;
+            uint32_t tile_block_idx = in_batch_idx / (swizzle_cnt * mm_loop);
+            uint32_t in_tile_block_idx = in_batch_idx % (swizzle_cnt * mm_loop);
+
+            uint32_t n_col = swizzle_cnt;
+            if (tile_block_idx == tile_block_loop - 1) {
+                n_col = n_loop - swizzle_cnt * tile_block_idx;
+            }
+            m_idx = in_tile_block_idx / n_col;
+            n_idx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_col;
+            if (tile_block_idx % 2 != 0) {
+                m_idx = mm_loop - m_idx - 1;
+            }
+        }
+    }
+
+    __aicore__ void Process()
+    {
+        if (!moeUp) {
+            ProcessMoeDownCube();
+        } else {
+            ProcessMoeUpCube();
+        }
+    }
+
+    // Cube_run
+    __aicore__ void ProcessMoeDownCube()
+    {
+        using LocalTensor = AscendC::LocalTensor<InDtype>;
+        using LocalTensor = AscendC::LocalTensor<InDtype>;
+        using CopyGmToCbuf = gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::ND>;
+        using CopyGmToCbufNd2Nz = gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::NZ>;
+        using CopyWeightGmToCbuf = gm_to_l1<ArchType::ASCEND_V220, InDtype, WeightFormat, DataFormat::NZ>;
+        using LoadCbufToCa = l1_to_l0_a<ArchType::ASCEND_V220, InDtype, TA, DataFormat::ZN, DataFormat::ZZ>;
+        using LoadCbufToCb = l1_to_l0_b<ArchType::ASCEND_V220, InDtype, TB, DataFormat::ZN, DataFormat::NZ>;
+        using Mad = mmad<ArchType::ASCEND_V220, InDtype, InDtype, int32_t, false>;
+        using CopyCcToGm = l0c_to_gm<ArchType::ASCEND_V220, DataFormat::ND, int32_t, int32_t>;
+
+        SET_FLAG(MTE1, MTE2, EVENT_ID0);
+        SET_FLAG(MTE1, MTE2, EVENT_ID1);
+        SET_FLAG(MTE1, MTE2, EVENT_ID2);
+        SET_FLAG(MTE1, MTE2, EVENT_ID3);
+        SET_FLAG(M, MTE1, EVENT_ID0);
+        SET_FLAG(M, MTE1, EVENT_ID1);
+        SET_FLAG(FIX, M, EVENT_ID0);
+        uint32_t read_flag{1};
+        int32_t ping_flag_gm = 1;
+        uint32_t loop_count = 0;
+        core_loop = 0;
+        uint32_t loop_idx = core_idx;
+        uint32_t expert_cumsum = 0;
+        uint32_t expert_num = 0;
+        uint32_t mm_loop_batch = 0;
+        uint32_t n_org_up = RoundUp<CONST_32>(n);
+        uint32_t k_org_up = RoundUp<CONST_16>(k);
+        if constexpr (TB) {
+            n_org_up = RoundUp<CONST_16>(n);
+            k_org_up = RoundUp<CONST_32>(k);
+        }
+        for (uint32_t batch_idx = 0; batch_idx < batch_size; batch_idx += 1) {
+            expert_num = gmFlag_.GetValue(batch_idx) - expert_cumsum;
+            mm_loop_batch = (expert_num + m0 - 1) / m0; // 当前group要分给多少个核
+
+            for (; loop_idx < core_loop + mm_loop_batch; loop_idx += num_core) {
+                uint32_t m_idx = loop_idx - core_loop;
+                uint32_t n_idx = 0;
+                if (loop_count > 1) {
+                    WaitFlagDev(AIV2AICFLAGID_PONG);
+                }
+                loop_count += 1;
+                for (n_idx = 0; n_idx < n_loop; n_idx += 1) {
+                    // Cube等待Vector发送运行指令
+                    uint32_t m_batch = expert_num;
+                    uint64_t offset_a, offset_b, offset_a_next, offset_b_next;
+                    uint64_t offset_c = expert_cumsum * n + m_idx * m0 * n + n_idx * n0;
+                    uint32_t m_actual = (m_idx == (mm_loop_batch - 1)) ? (m_batch - m_idx * m0) : m0;
+                    uint32_t n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+                    uint32_t m_round = 0;
+                    uint32_t n_round = RoundUp<CONST_32>(n_actual);
+                    m_round = RoundUp<CONST_16>(m_actual);
+                    if (TB) {
+                        n_round = RoundUp<CONST_16>(n_actual);
+                    }
+                    uint32_t mn_max = m_round > n_round ? m_round : n_round;
+                    uint32_t k_part_len = L0_PINGPONG_BUFFER_LEN_INT8 / mn_max / BLOCK_SIZE_32 * BLOCK_SIZE_32;
+                    uint64_t shuffle_k = en_shuffle_k ? core_idx % k_loop : 0;
+
+                    offset_a = expert_cumsum * k + m_idx * m0 * k + shuffle_k * k0;
+
+                    if constexpr (TB) {
+                        if constexpr (WeightFormat == DataFormat::NZ) {
+                            offset_b = batch_idx * k_org_up * n_org_up + shuffle_k * k0 * n_org_up +
+                                       n_idx * n0 * BLOCK_SIZE_32;
+                        } else {
+                            offset_b = batch_idx * k * n + n_idx * n0 * k + shuffle_k * k0;
+                        }
+                    } else {
+                        if constexpr (WeightFormat == DataFormat::NZ) {
+                            offset_b = batch_idx * k_org_up * n_org_up + shuffle_k * k0 * BLOCK_SIZE_32 +
+                                       n_idx * n0 * k_org_up;
+                        } else {
+                            offset_b = batch_idx * k * n + shuffle_k * k0 * n + n_idx * n0;
+                        }
+                    }
+                    uint32_t k_actual = (shuffle_k == k_loop - 1) ? k - shuffle_k * k0 : k0;
+                    uint32_t k_round = (k_actual + BLOCK_SIZE_16 - 1) / BLOCK_SIZE_16 * BLOCK_SIZE_16;
+                    if (TB) {
+                        k_round = (k_actual + BLOCK_SIZE_32 - 1) / BLOCK_SIZE_32 * BLOCK_SIZE_32;
+                    }
+
+                    LocalTensor l1_buf_a = ping_flag ? l1BaseA_ : l1BaseA_[L1_PINGPONG_BUFFER_LEN_INT8];
+                    LocalTensor l1_buf_b = ping_flag ? l1BaseB_ : l1BaseB_[L1_PINGPONG_BUFFER_LEN_INT8];
+                    event_t event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+                    if (read_flag) {
+                        WAIT_FLAG(MTE1, MTE2, event_id);
+                        // *** load matrix A to L1
+                        if ((m_batch == 1) || (m_actual == 1)) {
+                            CopyGmToCbuf(l1_buf_a,       // dst
+                                         gmA_[offset_a], // src
+                                         1,              // nTileActual
+                                         16,             // nTileCeil
+                                         1,              // nVal
+                                         k_actual,       // dTileActual
+                                         k_round,        // dTileCeil
+                                         k);             // dVal
+                        } else {
+                            CopyGmToCbufNd2Nz(l1_buf_a,       // dst
+                                              gmA_[offset_a], // src
+                                              m_actual,       // nTileActual
+                                              m_round,        // nTileCeil
+                                              m_batch,        // nVal
+                                              k_actual,       // dTileActual
+                                              k_round,        // dTileCeil
+                                              k);             // dVal
+                        }
+                        SET_FLAG(MTE2, MTE1, event_id);
+                        // *** load matrix B to L1
+                        WAIT_FLAG(MTE1, MTE2, event_id + 2);
+                        if constexpr (TB) {
+                            if constexpr (WeightFormat == DataFormat::ND) {
+                                CopyWeightGmToCbuf(l1_buf_b,       // dst
+                                                   gmB_[offset_b], // src
+                                                   n_actual,       // nTileActual
+                                                   n_round,        // nTileCeil
+                                                   n_org_up,       // nVal
+                                                   k_actual,       // dTileActual
+                                                   k_round,        // dTileCeil
+                                                   k_org_up);      // dVal
+                            } else if constexpr (WeightFormat == DataFormat::NZ) {
+                                CopyWeightGmToCbuf(l1_buf_b,       // dst
+                                                   gmB_[offset_b], // src
+                                                   n_round,
+                                                   n_round,        // nTileActual
+                                                   n_org_up,       // nTileCeil
+                                                   k_round,        // dTileActual
+                                                   k_round,              // unused
+                                                   0);             // unused
+                            }
+                        } else {
+                            if constexpr (WeightFormat == DataFormat::ND) {
+                                CopyWeightGmToCbuf(l1_buf_b,       // dst
+                                                   gmB_[offset_b], // src
+                                                   k_actual,       // nTileActual
+                                                   k_round,        // nTileCeil
+                                                   k_org_up,       // nVal
+                                                   n_actual,       // dTileActual
+                                                   n_round,        // dTileCeil
+                                                   n_org_up);      // dVal
+                            } else if constexpr (WeightFormat == DataFormat::NZ) {
+                                CopyWeightGmToCbuf(l1_buf_b,       // dst
+                                                   gmB_[offset_b], // src
+                                                   k_round,
+                                                   k_round,        // nTileActual
+                                                   k_org_up,       // nTileCeil
+                                                   n_round,        // dTileActual
+                                                   n_round,              // unused
+                                                   0);             // unused
+                            }
+                        }
+                        SET_FLAG(MTE2, MTE1, event_id + 2);
+                        read_flag = 0;
+                    }
+
+                    for (uint64_t k_idx = 0; k_idx < k_loop; k_idx++) {
+                        shuffle_k = en_shuffle_k ? (k_idx + core_idx) % k_loop : k_idx;
+                        uint32_t k_actual = (shuffle_k == (k_loop - 1)) ? (k - shuffle_k * k0) : k0;
+                        uint32_t k_round = (k_actual + BLOCK_SIZE_16 - 1) / BLOCK_SIZE_16 * BLOCK_SIZE_16;
+                        if (TB) {
+                            k_round = (k_actual + BLOCK_SIZE_32 - 1) / BLOCK_SIZE_32 * BLOCK_SIZE_32;
+                        }
+
+                        uint32_t k_part_loop = (k_actual + k_part_len - 1) / k_part_len;
+
+                        LocalTensor l1_buf_a = ping_flag ? l1BaseA_ : l1BaseA_[L1_PINGPONG_BUFFER_LEN_INT8];
+                        LocalTensor l1_buf_b = ping_flag ? l1BaseB_ : l1BaseB_[L1_PINGPONG_BUFFER_LEN_INT8];
+                        auto event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+                        if (k_idx < k_loop - 1) {
+                            uint64_t shuffle_k_next = en_shuffle_k ? (core_idx + k_idx + 1) % k_loop : k_idx + 1;
+                            offset_a_next = expert_cumsum * k + m_idx * m0 * k + shuffle_k_next * k0;
+
+                            if (TB) {
+                                if constexpr (WeightFormat == DataFormat::NZ) {
+                                    offset_b_next = batch_idx * k_org_up * n_org_up + shuffle_k_next * k0 * n_org_up +
+                                                    n_idx * n0 * BLOCK_SIZE_32;
+                                } else {
+                                    offset_b_next = batch_idx * k * n + n_idx * n0 * k + shuffle_k_next * k0;
+                                }
+                            } else {
+                                if constexpr (WeightFormat == DataFormat::NZ) {
+                                    offset_b_next = batch_idx * k_org_up * n_org_up +
+                                                    shuffle_k_next * k0 * BLOCK_SIZE_32 + n_idx * n0 * k_org_up;
+                                } else {
+                                    offset_b_next = batch_idx * k * n + shuffle_k_next * k0 * n + n_idx * n0;
+                                }
+                            }
+                            uint32_t k_actual_next = (shuffle_k_next == (k_loop - 1)) ? (k - shuffle_k_next * k0) : k0;
+                            uint32_t k_round_next = (k_actual_next + BLOCK_SIZE_16 - 1) / BLOCK_SIZE_16 * BLOCK_SIZE_16;
+                            if (TB) {
+                                k_round_next = (k_actual_next + BLOCK_SIZE_32 - 1) / BLOCK_SIZE_32 * BLOCK_SIZE_32;
+                            }
+
+                            LocalTensor l1_buf_a_next =
+                                (1 - ping_flag) ? l1BaseA_ : l1BaseA_[L1_PINGPONG_BUFFER_LEN_INT8];
+                            LocalTensor l1_buf_b_next =
+                                (1 - ping_flag) ? l1BaseB_ : l1BaseB_[L1_PINGPONG_BUFFER_LEN_INT8];
+                            event_t event_id_next = (1 - ping_flag) ? EVENT_ID0 : EVENT_ID1;
+
+                            WAIT_FLAG(MTE1, MTE2, event_id_next);
+                            // *** load matrix A to L1
+                            if ((m_batch == 1) || (m_actual == 1)) {
+                                CopyGmToCbuf(l1_buf_a_next,       // dst
+                                             gmA_[offset_a_next], // src
+                                             1,                   // nTileActual
+                                             16,                  // nTileCeil
+                                             1,                   // nVal
+                                             k_actual_next,       // kTileActual
+                                             k_round_next,        // kTileCeil
+                                             k);                  // dVal
+                            } else {
+                                CopyGmToCbufNd2Nz(l1_buf_a_next,       // dst
+                                                  gmA_[offset_a_next], // src
+                                                  m_actual,            // nTileActual
+                                                  m_round,             // nTileCeil
+                                                  m_batch,             // nVal
+                                                  k_actual_next,       // dTileActual
+                                                  k_round_next,        // dTileCeil
+                                                  k);                  // dVal
+                            }
+                            SET_FLAG(MTE2, MTE1, event_id_next);
+
+                            // *** load matrix B to L1
+                            WAIT_FLAG(MTE1, MTE2, event_id_next + 2);
+                            if constexpr (TB) {
+                                if constexpr (WeightFormat == DataFormat::ND) {
+                                    CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                       gmB_[offset_b_next], // src
+                                                       n_actual,            // nTileActual
+                                                       n_round,             // nTileCeil
+                                                       n,                   // nVal
+                                                       k_actual_next,       // dTileActual
+                                                       k_round_next,        // dTileCeil
+                                                       k);                  // dVal
+                                } else if constexpr (WeightFormat == DataFormat::NZ) {
+                                    CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                       gmB_[offset_b_next], // src
+                                                       n_round,
+                                                       n_round,             // nTileActual
+                                                       n_org_up,            // nTileCeil
+                                                       k_round_next,        // dTileActual
+                                                       k_round_next,                   // unused
+                                                       0);                  // unused
+                                }
+                            } else {
+                                if constexpr (WeightFormat == DataFormat::ND) {
+                                    CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                       gmB_[offset_b_next], // src
+                                                       k_actual_next,       // nTileActual
+                                                       k_round_next,        // nTileCeil
+                                                       k,                   // nVal
+                                                       n_actual,            // dTileActual
+                                                       n_round,             // dTileCeil
+                                                       n);                  // dVal
+                                } else if constexpr (WeightFormat == DataFormat::NZ) {
+                                    CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                       gmB_[offset_b_next], // src
+                                                       k_round_next,
+                                                       k_round_next,        // nTileActual
+                                                       k_org_up,            // nTileCeil
+                                                       n_round,             // dTileActual
+                                                       n_round,             
+                                                       0);                  // unused
+                                }
+                            }
+                            SET_FLAG(MTE2, MTE1, event_id_next + 2);
+                        } else if (n_idx + 1 < n_loop) {
+                            uint32_t m_idx_next = m_idx, n_idx_next = n_idx + 1;
+                            uint32_t b_idx_next = batch_idx;
+                            uint32_t mm_loop_batch_next = mm_loop_batch;
+                            uint32_t m_batch_next = m_batch;
+                            uint64_t shuffle_k_next = en_shuffle_k ? core_idx % k_loop : 0;
+                            uint32_t m_actual_next =
+                                (m_idx_next == (mm_loop_batch_next - 1)) ? (m_batch_next - m_idx_next * m0) : m0;
+
+                            uint32_t n_actual_next = (n_idx_next == (n_loop - 1)) ? (n - n_idx_next * n0) : n0;
+                            uint32_t m_round_next = (m_actual_next + CONST_16 - 1) / CONST_16 * CONST_16;
+                            uint32_t n_round_next = RoundUp<CONST_32>(n_actual_next);
+                            if (TB) {
+                                n_round_next = RoundUp<CONST_16>(n_actual_next);
+                            }
+                            uint32_t k_actual_next = (shuffle_k_next == k_loop - 1) ? k - shuffle_k_next * k0 : k0;
+                            uint32_t k_round_next = RoundUp<CONST_16>(k_actual_next);
+                            if (TB) {
+                                k_round_next = RoundUp<CONST_32>(k_actual_next);
+                            }
+                            offset_a_next = expert_cumsum * k + m_idx_next * m0 * k + shuffle_k_next * k0;
+                            if (TB) {
+                                if constexpr (WeightFormat == DataFormat::NZ) {
+                                    offset_b_next = b_idx_next * n_org_up * k_org_up + shuffle_k_next * k0 * n_org_up +
+                                                    n_idx_next * n0 * BLOCK_SIZE_32;
+                                } else {
+                                    offset_b_next = b_idx_next * k * n + n_idx_next * n0 * k + shuffle_k_next * k0;
+                                }
+                            } else {
+                                if constexpr (WeightFormat == DataFormat::NZ) {
+                                    offset_b_next = b_idx_next * n_org_up * k_org_up +
+                                                    shuffle_k_next * k0 * BLOCK_SIZE_32 + n_idx_next * n0 * k_org_up;
+                                } else {
+                                    offset_b_next = b_idx_next * k * n + shuffle_k_next * k0 * n + n_idx_next * n0;
+                                }
+                            }
+
+                            LocalTensor l1_buf_a_next =
+                                (1 - ping_flag) ? l1BaseA_ : l1BaseA_[L1_PINGPONG_BUFFER_LEN_INT8];
+                            LocalTensor l1_buf_b_next =
+                                (1 - ping_flag) ? l1BaseB_ : l1BaseB_[L1_PINGPONG_BUFFER_LEN_INT8];
+                            event_t event_id_next = (1 - ping_flag) ? EVENT_ID0 : EVENT_ID1;
+
+                            WAIT_FLAG(MTE1, MTE2, event_id_next);
+                            // *** load matrix A to L1
+                            if (m_batch_next == 1 || m_actual_next == 1) {
+                                CopyGmToCbuf(l1_buf_a_next,       // dst
+                                             gmA_[offset_a_next], // src
+                                             1,                   // nTileActual
+                                             16,                  // nTileCeil
+                                             1,                   // nVal
+                                             k_actual_next,       // kTileActual
+                                             k_round_next,        // kTileCeil
+                                             k);                  // dVal
+                            } else {
+                                CopyGmToCbufNd2Nz(l1_buf_a_next,       // dst
+                                                  gmA_[offset_a_next], // src
+                                                  m_actual_next,       // nTileActual
+                                                  m_round_next,        // nTileCeil
+                                                  m_batch_next,        // nVal
+                                                  k_actual_next,       // dTileActual
+                                                  k_round_next,        // dTileCeil
+                                                  k);                  // dVal
+                            }
+                            SET_FLAG(MTE2, MTE1, event_id_next);
+
+                            // *** load matrix B to L1
+                            WAIT_FLAG(MTE1, MTE2, event_id_next + 2);
+                            if constexpr (TB) {
+                                if constexpr (WeightFormat == DataFormat::ND) {
+                                    CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                       gmB_[offset_b_next], // src
+                                                       n_actual_next,       // nTileActual
+                                                       n_round_next,        // nTileCeil
+                                                       n,                   // nVal
+                                                       k_actual_next,       // dTileActual
+                                                       k_round_next,        // dTileCeil
+                                                       k);                  // dVal
+                                } else if constexpr (WeightFormat == DataFormat::NZ) {
+                                    CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                       gmB_[offset_b_next], // src
+                                                       n_round_next,
+                                                       n_round_next,        // nTileActual
+                                                       n_org_up,            // nTileCeil
+                                                       k_round_next,        // dTileActual
+                                                       k_round_next,                   // dTileCeil
+                                                       0);                  // dVal
+                                }
+                            } else {
+                                if constexpr (WeightFormat == DataFormat::ND) {
+                                    CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                       gmB_[offset_b_next], // src
+                                                       k_actual_next,       // nTileActual
+                                                       k_round_next,        // nTileCeil
+                                                       k,                   // nVal
+                                                       n_actual_next,       // dTileActual
+                                                       n_round_next,        // dTileCeil
+                                                       n);                  // dVal
+                                } else if constexpr (WeightFormat == DataFormat::NZ) {
+                                    CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                       gmB_[offset_b_next], // src
+                                                       k_round_next,
+                                                       k_round_next,        // nTileActual
+                                                       k_org_up,            // nTileCeil
+                                                       n_round_next,        // dTileActual
+                                                       n_round_next,                   // dTileCeil
+                                                       0);                  // dVal
+                                }
+                            }
+                            SET_FLAG(MTE2, MTE1, event_id_next + 2);
+                        } else {
+                            read_flag = 1;
+                        }
+
+                        for (uint32_t k_part_idx = 0; k_part_idx < k_part_loop; k_part_idx++) {
+                            uint32_t k0_round =
+                                (k_part_idx < k_part_loop - 1) ? k_part_len : k_round - k_part_idx * k_part_len;
+                            uint32_t k0_actual =
+                                (k_part_idx < k_part_loop - 1) ? k_part_len : k_actual - k_part_idx * k_part_len;
+
+                            auto mte1_mad_ping_flag = 1 - k_part_idx % 2;
+                            auto mte1_mad_event_id = mte1_mad_ping_flag ? EVENT_ID0 : EVENT_ID1;
+                            LocalTensor l0a_buf = l0BaseA_[(k_part_idx % 2) * L0_PINGPONG_BUFFER_LEN_INT8];
+                            LocalTensor l0b_buf = l0BaseB_[(k_part_idx % 2) * L0_PINGPONG_BUFFER_LEN_INT8];
+
+                            // *** load matrix A from L1 to L0A
+                            if (k_part_idx == 0) {
+                                WAIT_FLAG(MTE2, MTE1, event_id);
+                            }
+                            WAIT_FLAG(M, MTE1, mte1_mad_event_id);
+                            if ((m_batch == 1) || (m_actual == 1)) {
+                                l1_to_l0_a<ArchType::ASCEND_V220, InDtype, false, DataFormat::VECTOR,
+                                           DataFormat::VECTOR>(l0a_buf,                           // dst
+                                                               l1_buf_a[k_part_idx * k_part_len], // src
+                                                               0,
+                                                               CeilDiv<CONST_512>(k0_round), // repeat
+                                                               0,
+                                                               1, // srcStride
+                                                               0,
+                                                               0); // dstStride
+                            } else {
+                                LoadCbufToCa(l0a_buf,                                     // l0Tensor
+                                             l1_buf_a[k_part_idx * k_part_len * m_round], // l1Tensor
+                                             m_round,                                     // mTileCeil
+                                             k0_round,                                    // kPartCeil
+                                             1,                                           // mSrcStride
+                                             m_round / CONST_16,                          // kSrcStride
+                                             k0_round / CONST_32,                         // mDstStride
+                                             1);                                          // kDstStride
+                            }
+                            if (k_part_idx == k_part_loop - 1) {
+                                SET_FLAG(MTE1, MTE2, event_id);
+                            }
+
+                            // *** load matrix B from L1 to L0B
+                            if (k_part_idx == 0) {
+                                WAIT_FLAG(MTE2, MTE1, event_id + 2);
+                            }
+                            if constexpr (TB) {
+                                LoadCbufToCb(l0b_buf,                                     // l0Tensor
+                                             l1_buf_b[k_part_idx * k_part_len * n_round], // l1Tensor
+                                             n_round,                                     // nTileCeil
+                                             k0_round,                                    // kPartCeil
+                                             1,                                           // nSrcStride
+                                             n_round / CONST_32,                          // kSrcStride
+                                             1,                                           // nDstStride
+                                             k0_round / CONST_32);                        // kDstStride
+                            } else {
+                                for (uint64_t i = 0; i < k0_round / BLOCK_SIZE_32; i++) {
+                                    AscendC::LoadDataWithTranspose(
+                                        l0b_buf[i * RoundUp<CONST_16>(n_actual) * BLOCK_SIZE_32],
+                                        l1_buf_b[(k_part_idx * k_part_len + i * BLOCK_SIZE_32) * BLOCK_SIZE_32],
+                                        AscendC::LoadData2dTransposeParams(0,                       // baseIdx
+                                                                           n_round / BLOCK_SIZE_32, // repeat
+                                                                           k_round / BLOCK_SIZE_32, // srcStride
+                                                                           1,                       // dstStride
+                                                                           0,                       // addrmode
+                                                                           0));                     // dstFracStride
+                                }
+                            }
+                            if (k_part_idx == k_part_loop - 1) {
+                                SET_FLAG(MTE1, MTE2, event_id + 2);
+                            }
+
+                            SET_FLAG(MTE1, M, mte1_mad_event_id);
+                            WAIT_FLAG(MTE1, M, mte1_mad_event_id);
+
+                            bool init_c = (k_idx == 0 && k_part_idx == 0);
+                            if (init_c) {
+                                WAIT_FLAG(FIX, M, EVENT_ID0);
+                            }
+
+                            Mad(l0C_,      // c
+                                l0a_buf,   // a
+                                l0b_buf,   // b
+                                m_actual,  // m
+                                n_actual,  // n
+                                k0_actual, // k
+                                init_c);   // cmatrixInitVal
+
+                            PIPE_BARRIER(M);
+                            SET_FLAG(M, MTE1, mte1_mad_event_id);
+                        }
+
+                        ping_flag = 1 - ping_flag;
+                    }
+
+                    SET_FLAG(M, FIX, EVENT_ID0);
+                    WAIT_FLAG(M, FIX, EVENT_ID0);
+                    offset_c = (ping_flag_gm * m0 + core_idx * m0 * 2) * n + n_idx * n0;
+                    // copy from L0C to gm
+                    CopyCcToGm(gmWorkspaceGmm_[offset_c], // dst
+                               l0C_,                      // src
+                               m_actual,                  // mTileActual
+                               n_actual,                  // nTileActual
+                               m_round,                   // mTileCeil
+                               n);                        // nActual
+
+                    SET_FLAG(FIX, M, EVENT_ID0);
+                }
+                // Cube给Vector发送同步指令
+                FftsCrossCoreSync<PIPE_FIX, 2>(AIC2AIVFLAGID_PONG);
+                ping_flag_gm = 1 - ping_flag_gm;
+            }
+            core_loop += mm_loop_batch;
+            expert_cumsum = gmFlag_.GetValue(batch_idx);
+        }
+
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID0);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID1);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID2);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID3);
+        WAIT_FLAG(M, MTE1, EVENT_ID0);
+        WAIT_FLAG(M, MTE1, EVENT_ID1);
+        WAIT_FLAG(FIX, M, EVENT_ID0);
+        PIPE_BARRIER(ALL);
+    }
+
+    // Cube_run
+    __aicore__ void ProcessMoeUpCube()
+    {
+        using LocalTensor = AscendC::LocalTensor<InDtype>;
+        using CopyGmToCbuf = gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::ND>;
+        using CopyGmToCbufNd2Nz = gm_to_l1<ArchType::ASCEND_V220, InDtype, DataFormat::ND, DataFormat::NZ>;
+        using CopyWeightGmToCbuf = gm_to_l1<ArchType::ASCEND_V220, InDtype, WeightFormat, DataFormat::NZ>;
+        using LoadCbufToCa = l1_to_l0_a<ArchType::ASCEND_V220, InDtype, TA, DataFormat::ZN, DataFormat::ZZ>;
+        using LoadCbufToCb = l1_to_l0_b<ArchType::ASCEND_V220, InDtype, TB, DataFormat::ZN, DataFormat::NZ>;
+        using Mad = mmad<ArchType::ASCEND_V220, InDtype, InDtype, int32_t, false>;
+        using CopyCcToGm = l0c_to_gm<ArchType::ASCEND_V220, DataFormat::ND, int32_t, int32_t>;
+
+        SET_FLAG(MTE1, MTE2, EVENT_ID0);
+        SET_FLAG(MTE1, MTE2, EVENT_ID1);
+        SET_FLAG(MTE1, MTE2, EVENT_ID2);
+        SET_FLAG(MTE1, MTE2, EVENT_ID3);
+        SET_FLAG(M, MTE1, EVENT_ID0);
+        SET_FLAG(M, MTE1, EVENT_ID1);
+        SET_FLAG(FIX, M, EVENT_ID0);
+        uint32_t read_flag{1};
+        int32_t ping_flag_gm = 1;
+        uint32_t loop_count = 0;
+        uint32_t n_org_up = RoundUp<CONST_32>(n);
+        uint32_t k_org_up = RoundUp<CONST_16>(k);
+        if constexpr (TB) {
+            n_org_up = RoundUp<CONST_16>(n);
+            k_org_up = RoundUp<CONST_32>(k);
+        }
+        core_loop = 0;
+        uint32_t loop_idx = core_idx;
+        uint32_t expert_cumsum = 0;
+        uint32_t expert_num = 0;
+        uint32_t mm_loop_batch = 0;
+        for (uint32_t batch_idx = 0; batch_idx < batch_size; batch_idx += 1) {
+            expert_num = gmFlag_.GetValue(batch_idx) - expert_cumsum;
+            mm_loop_batch = (expert_num + m0 - 1) / m0; // 当前group要分给多少个核
+            uint32_t core_loop_end = core_loop + mm_loop_batch * n_loop;
+            for (; loop_idx < core_loop_end; loop_idx += num_core) {
+                uint32_t m_idx, n_idx;
+                GetBlockIdx(loop_idx - core_loop, m_idx, n_idx, mm_loop_batch);
+
+                uint32_t m_batch = expert_num;
+                uint64_t offset_a, offset_b, offset_a_next, offset_b_next;
+                uint64_t offset_c = expert_cumsum * n + m_idx * m0 * n + n_idx * n0;
+                uint32_t m_actual = (m_idx == (mm_loop_batch - 1)) ? (m_batch - m_idx * m0) : m0;
+                uint32_t n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+
+                uint32_t m_round = RoundUp<CONST_16>(m_actual);
+                uint32_t n_round = RoundUp<CONST_32>(n_actual);
+                if (TB) {
+                    n_round = RoundUp<CONST_16>(n_actual);
+                }
+                uint32_t mn_max = m_round > n_round ? m_round : n_round;
+                uint32_t k_part_len = L0_PINGPONG_BUFFER_LEN_INT8 / mn_max / BLOCK_SIZE_32 * BLOCK_SIZE_32;
+                uint64_t shuffle_k = en_shuffle_k ? core_idx % k_loop : 0;
+                offset_a = (ping_flag_gm * m0 + core_idx * m0 * 2) * k + shuffle_k * k0;
+
+                if constexpr (TB) {
+                    if constexpr (WeightFormat == DataFormat::NZ) {
+                        offset_b =
+                            batch_idx * k_org_up * n_org_up + shuffle_k * k0 * n_org_up + n_idx * n0 * BLOCK_SIZE_32;
+                    } else {
+                        offset_b = batch_idx * k * n + n_idx * n0 * k + shuffle_k * k0;
+                    }
+                } else {
+                    if constexpr (WeightFormat == DataFormat::NZ) {
+                        offset_b =
+                            batch_idx * k_org_up * n_org_up + shuffle_k * k0 * BLOCK_SIZE_32 + n_idx * n0 * k_org_up;
+                    } else {
+                        offset_b = batch_idx * k * n + shuffle_k * k0 * n + n_idx * n0;
+                    }
+                }
+                uint32_t k_actual = (shuffle_k == k_loop - 1) ? k - shuffle_k * k0 : k0;
+                uint32_t k_round = (k_actual + BLOCK_SIZE_16 - 1) / BLOCK_SIZE_16 * BLOCK_SIZE_16;
+                if constexpr (TB) {
+                    k_round = (k_actual + BLOCK_SIZE_32 - 1) / BLOCK_SIZE_32 * BLOCK_SIZE_32;
+                }
+                // Cube等待Vector发送运行指令
+                uint64_t AIV2AICFLAGID = ping_flag_gm == 0 ? AIV2AICFLAGID_PING : AIV2AICFLAGID_PONG;
+                WaitFlagDev(AIV2AICFLAGID);
+
+                LocalTensor l1_buf_a = ping_flag ? l1BaseA_ : l1BaseA_[L1_PINGPONG_BUFFER_LEN_INT8];
+                LocalTensor l1_buf_b = ping_flag ? l1BaseB_ : l1BaseB_[L1_PINGPONG_BUFFER_LEN_INT8];
+                event_t event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+                WAIT_FLAG(MTE1, MTE2, event_id);
+                // *** load matrix A to L1
+                if ((m_batch == 1) || (m_actual == 1)) {
+                    CopyGmToCbuf(l1_buf_a,               // dst
+                                 gmWorkspace_[offset_a], // src
+                                 1,                      // nTileActual
+                                 16,                     // nTileCeil
+                                 1,                      // nVal
+                                 k_actual,               // dTileActual
+                                 k_round,                // dTileCeil
+                                 k);                     // dVal
+                } else {
+                    CopyGmToCbufNd2Nz(l1_buf_a,               // dst
+                                      gmWorkspace_[offset_a], // src
+                                      m_actual,               // nTileActual
+                                      m_round,                // nTileCeil
+                                      m0,                     // nVal
+                                      k_actual,               // dTileActual
+                                      k_round,                // dTileCeil
+                                      k);                     // dVal
+                }
+                SET_FLAG(MTE2, MTE1, event_id);
+                if (read_flag) {
+                    // *** load matrix B to L1
+                    WAIT_FLAG(MTE1, MTE2, event_id + 2);
+                    if constexpr (TB) {
+                        if constexpr (WeightFormat == DataFormat::ND) {
+                            CopyWeightGmToCbuf(l1_buf_b,       // dst
+                                               gmB_[offset_b], // src
+                                               n_actual,       // nTileActual
+                                               n_round,        // nTileCeil
+                                               n,              // nVal
+                                               k_actual,       // dTileActual
+                                               k_round,        // dTileCeil
+                                               k);             // dVal
+                        } else if constexpr (WeightFormat == DataFormat::NZ) {
+                            CopyWeightGmToCbuf(l1_buf_b,       // dst
+                                               gmB_[offset_b], // src
+                                               n_round,
+                                               n_round,        // nTileActual
+                                               n_org_up,       // nTileCeil
+                                               k_round,        // dTileActual
+                                               k_round,              // unused
+                                               0);             // unused
+                        }
+                    } else {
+                        if constexpr (WeightFormat == DataFormat::ND) {
+                            CopyWeightGmToCbuf(l1_buf_b,       // dst
+                                               gmB_[offset_b], // src
+                                               k_actual,       // nTileActual
+                                               k_round,        // nTileCeil
+                                               k,              // nVal
+                                               n_actual,       // dTileActual
+                                               n_round,        // dTileCeil
+                                               n);             // dVal
+                        } else if constexpr (WeightFormat == DataFormat::NZ) {
+                            CopyWeightGmToCbuf(l1_buf_b,       // dst
+                                               gmB_[offset_b], // src
+                                               k_round,
+                                               k_round,        // nTileActual
+                                               k_org_up,       // nTileCeil
+                                               n_round,        // dTileActual
+                                               n_round,              // unused
+                                               0);             // unused
+                        }
+                    }
+                    SET_FLAG(MTE2, MTE1, event_id + 2);
+                    read_flag = 0;
+                }
+
+                for (uint64_t k_idx = 0; k_idx < k_loop; k_idx++) {
+                    shuffle_k = en_shuffle_k ? (k_idx + core_idx) % k_loop : k_idx;
+                    uint32_t k_actual = (shuffle_k == (k_loop - 1)) ? (k - shuffle_k * k0) : k0;
+                    uint32_t k_round = (k_actual + BLOCK_SIZE_16 - 1) / BLOCK_SIZE_16 * BLOCK_SIZE_16;
+                    if constexpr (TB) {
+                        k_round = (k_actual + BLOCK_SIZE_32 - 1) / BLOCK_SIZE_32 * BLOCK_SIZE_32;
+                    }
+                    uint32_t k_part_loop = (k_actual + k_part_len - 1) / k_part_len;
+
+                    LocalTensor l1_buf_a = ping_flag ? l1BaseA_ : l1BaseA_[L1_PINGPONG_BUFFER_LEN_INT8];
+                    LocalTensor l1_buf_b = ping_flag ? l1BaseB_ : l1BaseB_[L1_PINGPONG_BUFFER_LEN_INT8];
+                    auto event_id = ping_flag ? EVENT_ID0 : EVENT_ID1;
+
+                    if (k_idx < k_loop - 1) {
+                        uint64_t shuffle_k_next = en_shuffle_k ? (core_idx + k_idx + 1) % k_loop : k_idx + 1;
+                        offset_a_next = core_idx * m0 * 2 * k + ping_flag_gm * m0 * k + shuffle_k_next * k0;
+
+                        if constexpr (TB) {
+                            if constexpr (WeightFormat == DataFormat::NZ) {
+                                offset_b_next = batch_idx * k_org_up * n_org_up + shuffle_k_next * k0 * n_org_up +
+                                                n_idx * n0 * BLOCK_SIZE_32;
+                            } else {
+                                offset_b_next = batch_idx * k * n + n_idx * n0 * k + shuffle_k_next * k0;
+                            }
+                        } else {
+                            if constexpr (WeightFormat == DataFormat::NZ) {
+                                offset_b_next = batch_idx * k_org_up * n_org_up + shuffle_k_next * k0 * BLOCK_SIZE_32 +
+                                                n_idx * n0 * k_org_up;
+                            } else {
+                                offset_b_next = batch_idx * k * n + shuffle_k_next * k0 * n + n_idx * n0;
+                            }
+                        }
+
+                        uint32_t k_actual_next = (shuffle_k_next == (k_loop - 1)) ? (k - shuffle_k_next * k0) : k0;
+                        uint32_t k_round_next = RoundUp<CONST_16>(k_actual_next);
+                        if constexpr (TB) {
+                            k_round_next = RoundUp<CONST_32>(k_actual_next);
+                        }
+
+                        LocalTensor l1_buf_a_next = (1 - ping_flag) ? l1BaseA_ : l1BaseA_[L1_PINGPONG_BUFFER_LEN_INT8];
+                        LocalTensor l1_buf_b_next = (1 - ping_flag) ? l1BaseB_ : l1BaseB_[L1_PINGPONG_BUFFER_LEN_INT8];
+                        event_t event_id_next = (1 - ping_flag) ? EVENT_ID0 : EVENT_ID1;
+
+                        WAIT_FLAG(MTE1, MTE2, event_id_next);
+                        // *** load matrix A to L1
+                        if ((m_batch == 1) || (m_actual == 1)) {
+                            CopyGmToCbuf(l1_buf_a_next,               // dst
+                                         gmWorkspace_[offset_a_next], // src
+                                         1,                           // nTileActual
+                                         16,                          // nTileCeil
+                                         1,                           // nVal
+                                         k_actual_next,               // kTileActual
+                                         k_round_next,                // kTileCeil
+                                         k);                          // dVal
+                        } else {
+                            CopyGmToCbufNd2Nz(l1_buf_a_next,               // dst
+                                              gmWorkspace_[offset_a_next], // src
+                                              m_actual,                    // nTileActual
+                                              m_round,                     // nTileCeil
+                                              m0,                          // nVal
+                                              k_actual_next,               // dTileActual
+                                              k_round_next,                // dTileCeil
+                                              k);                          // dVal
+                        }
+                        SET_FLAG(MTE2, MTE1, event_id_next);
+
+                        // *** load matrix B to L1
+                        WAIT_FLAG(MTE1, MTE2, event_id_next + 2);
+                        if constexpr (TB) {
+                            if constexpr (WeightFormat == DataFormat::ND) {
+                                CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                   gmB_[offset_b_next], // src
+                                                   n_actual,            // nTileActual
+                                                   n_round,             // nTileCeil
+                                                   n,                   // nVal
+                                                   k_actual_next,       // dTileActual
+                                                   k_round_next,        // dTileCeil
+                                                   k);                  // dVal
+                            } else if constexpr (WeightFormat == DataFormat::NZ) {
+                                CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                   gmB_[offset_b_next], // src
+                                                   n_round,
+                                                   n_round,             // nTileActual
+                                                   n_org_up,            // nTileCeil
+                                                   k_round_next,        // dTileActual
+                                                   k_round_next,                   // unused
+                                                   0);                  // unused
+                            }
+                        } else {
+                            if constexpr (WeightFormat == DataFormat::ND) {
+                                CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                   gmB_[offset_b_next], // src
+                                                   k_actual_next,       // nTileActual
+                                                   k_round_next,        // nTileCeil
+                                                   k,                   // nVal
+                                                   n_actual,            // dTileActual
+                                                   n_round,             // dTileCeil
+                                                   n);                  // dVal
+                            } else if constexpr (WeightFormat == DataFormat::NZ) {
+                                CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                   gmB_[offset_b_next], // src
+                                                   k_round_next,
+                                                   k_round_next,        // nTileActual
+                                                   k_org_up,            // nTileCeil
+                                                   n_round,             // dTileActual
+                                                   n_round,            
+                                                   0);                  // unused
+                            }
+                        }
+                        SET_FLAG(MTE2, MTE1, event_id_next + 2);
+                    } else if (loop_idx + num_core < core_loop_end) {
+                        uint32_t m_idx_next = 0, n_idx_next = 0;
+                        GetBlockIdx(loop_idx + num_core - core_loop, m_idx_next, n_idx_next, mm_loop_batch);
+                        uint32_t b_idx_next = batch_idx;
+                        uint64_t shuffle_k_next = en_shuffle_k ? core_idx % k_loop : 0;
+                        uint32_t n_actual_next = (n_idx_next == (n_loop - 1)) ? (n - n_idx_next * n0) : n0;
+                        uint32_t k_actual_next = (shuffle_k_next == k_loop - 1) ? k - shuffle_k_next * k0 : k0;
+                        uint32_t n_round_next = RoundUp<CONST_16>(n_actual_next);
+                        uint32_t k_round_next = RoundUp<CONST_16>(k_actual_next);
+                        if constexpr (TB) {
+                            k_round_next = RoundUp<CONST_32>(k_actual_next);
+                        }
+
+                        if constexpr (TB) {
+                            if constexpr (WeightFormat == DataFormat::NZ) {
+                                offset_b_next = b_idx_next * n_org_up * k_org_up + shuffle_k_next * k0 * n_org_up +
+                                                n_idx_next * n0 * BLOCK_SIZE_32;
+                            } else {
+                                offset_b_next = b_idx_next * k * n + n_idx_next * n0 * k + shuffle_k_next * k0;
+                            }
+                        } else {
+                            if constexpr (WeightFormat == DataFormat::NZ) {
+                                offset_b_next = b_idx_next * k_org_up * n_org_up + shuffle_k_next * k0 * BLOCK_SIZE_32 +
+                                                n_idx_next * n0 * k_org_up;
+                            } else {
+                                offset_b_next = b_idx_next * k * n + shuffle_k_next * k0 * n + n_idx_next * n0;
+                            }
+                        }
+
+                        LocalTensor l1_buf_b_next = (1 - ping_flag) ? l1BaseB_ : l1BaseB_[L1_PINGPONG_BUFFER_LEN_INT8];
+                        event_t event_id_next = (1 - ping_flag) ? EVENT_ID0 : EVENT_ID1;
+                        // *** load matrix B to L1
+                        WAIT_FLAG(MTE1, MTE2, event_id_next + 2);
+                        if constexpr (TB) {
+                            if constexpr (WeightFormat == DataFormat::ND) {
+                                CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                   gmB_[offset_b_next], // src
+                                                   n_actual_next,       // nTileActual
+                                                   n_round_next,        // nTileCeil
+                                                   n,                   // nVal
+                                                   k_actual_next,       // dTileActual
+                                                   k_round_next,        // dTileCeil
+                                                   k);                  // dVal
+                            } else if constexpr (WeightFormat == DataFormat::NZ) {
+                                CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                   gmB_[offset_b_next], // src
+                                                   n_round_next,
+                                                   n_round_next,        // nTileActual
+                                                   n_org_up,            // nTileCeil
+                                                   k_round_next,        // dTileActual
+                                                   k_round_next,                   // unused
+                                                   0);                  // unused
+                            }
+                        } else {
+                            if constexpr (WeightFormat == DataFormat::ND) {
+                                CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                   gmB_[offset_b_next], // src
+                                                   k_actual_next,       // nTileActual
+                                                   k_round_next,        // nTileCeil
+                                                   k,                   // nVal
+                                                   n_actual_next,       // dTileActual
+                                                   n_round_next,        // dTileCeil
+                                                   n);                  // dVal
+                            } else if constexpr (WeightFormat == DataFormat::NZ) {
+                                CopyWeightGmToCbuf(l1_buf_b_next,       // dst
+                                                   gmB_[offset_b_next], // src
+                                                   k_round_next,
+                                                   k_round_next,        // nTileActual
+                                                   k_org_up,            // nTileCeil
+                                                   n_round_next,        // dTileActual
+                                                   n_round_next,                   // unused
+                                                   0);                  // unused
+                            }
+                        }
+                        SET_FLAG(MTE2, MTE1, event_id_next + 2);
+                    } else {
+                        read_flag = 1;
+                    }
+
+                    for (uint32_t k_part_idx = 0; k_part_idx < k_part_loop; k_part_idx++) {
+                        uint32_t k0_round =
+                            (k_part_idx < k_part_loop - 1) ? k_part_len : k_round - k_part_idx * k_part_len;
+                        uint32_t k0_actual =
+                            (k_part_idx < k_part_loop - 1) ? k_part_len : k_actual - k_part_idx * k_part_len;
+
+                        auto mte1_mad_ping_flag = 1 - k_part_idx % 2;
+                        auto mte1_mad_event_id = mte1_mad_ping_flag ? EVENT_ID0 : EVENT_ID1;
+                        LocalTensor l0a_buf = l0BaseA_[(k_part_idx % 2) * L0_PINGPONG_BUFFER_LEN_INT8];
+                        LocalTensor l0b_buf = l0BaseB_[(k_part_idx % 2) * L0_PINGPONG_BUFFER_LEN_INT8];
+
+                        // *** load matrix A from L1 to L0A
+                        if (k_part_idx == 0) {
+                            WAIT_FLAG(MTE2, MTE1, event_id);
+                        }
+                        WAIT_FLAG(M, MTE1, mte1_mad_event_id);
+                        if ((m_batch == 1) || (m_actual == 1)) {
+                            l1_to_l0_a<ArchType::ASCEND_V220, InDtype, false, DataFormat::VECTOR,
+                                       DataFormat::VECTOR>(l0a_buf,                           // dst
+                                                           l1_buf_a[k_part_idx * k_part_len], // src
+                                                           0,
+                                                           CeilDiv<CONST_512>(k0_round), // repeat
+                                                           0,
+                                                           1, // srcStride
+                                                           0,
+                                                           0); // dstStride
+                        } else {
+                            LoadCbufToCa(l0a_buf,                                     // l0Tensor
+                                         l1_buf_a[k_part_idx * k_part_len * m_round], // l1Tensor
+                                         m_round,                                     // mTileCeil
+                                         k0_round,                                    // kPartCeil
+                                         1,                                           // mSrcStride
+                                         m_round / CONST_16,                          // kSrcStride
+                                         k0_round / CONST_32,                         // mDstStride
+                                         1);                                          // kDstStride
+                        }
+                        if (k_part_idx == k_part_loop - 1) {
+                            SET_FLAG(MTE1, MTE2, event_id);
+                        }
+
+                        // *** load matrix B from L1 to L0B
+                        if (k_part_idx == 0) {
+                            WAIT_FLAG(MTE2, MTE1, event_id + 2);
+                        }
+                        if constexpr (TB) {
+                            LoadCbufToCb(l0b_buf,                                     // l0Tensor
+                                         l1_buf_b[k_part_idx * k_part_len * n_round], // l1Tensor
+                                         n_round,                                     // nTileCeil
+                                         k0_round,                                    // kPartCeil
+                                         1,                                           // nSrcStride
+                                         n_round / CONST_32,                          // kSrcStride
+                                         1,                                           // nDstStride
+                                         k0_round / CONST_32);                        // kDstStride
+                        } else {
+                            for (uint64_t i = 0; i < k0_round / BLOCK_SIZE_32; i++) {
+                                AscendC::LoadDataWithTranspose(
+                                    l0b_buf[i * RoundUp<CONST_16>(n_actual) * BLOCK_SIZE_32],
+                                    l1_buf_b[(k_part_idx * k_part_len + i * BLOCK_SIZE_32) * BLOCK_SIZE_32],
+                                    AscendC::LoadData2dTransposeParams(0,                       // baseIdx
+                                                                       n_round / BLOCK_SIZE_32, // repeat
+                                                                       k_round / BLOCK_SIZE_32, // srcStride
+                                                                       1,                       // dstStride
+                                                                       0,                       // addrmode
+                                                                       0));                     // dstFracStride
+                            }
+                        }
+                        if (k_part_idx == k_part_loop - 1) {
+                            SET_FLAG(MTE1, MTE2, event_id + 2);
+                        }
+
+                        SET_FLAG(MTE1, M, mte1_mad_event_id);
+                        WAIT_FLAG(MTE1, M, mte1_mad_event_id);
+
+                        bool init_c = (k_idx == 0 && k_part_idx == 0);
+                        if (init_c) {
+                            WAIT_FLAG(FIX, M, EVENT_ID0);
+                        }
+
+                        Mad(l0C_,      // c
+                            l0a_buf,   // a
+                            l0b_buf,   // b
+                            m_actual,  // m
+                            n_actual,  // n
+                            k0_actual, // k
+                            init_c);   // cmatrixInitVal
+
+                        PIPE_BARRIER(M);
+                        SET_FLAG(M, MTE1, mte1_mad_event_id);
+                    }
+                    ping_flag = 1 - ping_flag;
+                }
+
+                SET_FLAG(M, FIX, EVENT_ID0);
+                WAIT_FLAG(M, FIX, EVENT_ID0);
+                // copy from L0C to gm
+                CopyCcToGm(gmWorkspaceDeq_[offset_c], // dst
+                           l0C_,                      // src
+                           m_actual,                  // mTileActual
+                           n_actual,                  // nTileActual
+                           m_round,                   // mTileCeil
+                           n);                        // nActual
+
+                SET_FLAG(FIX, M, EVENT_ID0);
+                // Cube给Vector发送同步指令
+                uint64_t AIC2AIVFLAGID = ping_flag_gm == 0 ? AIC2AIVFLAGID_PING : AIC2AIVFLAGID_PONG;
+                FftsCrossCoreSync<PIPE_FIX, 2>(AIC2AIVFLAGID);
+                ping_flag_gm = 1 - ping_flag_gm;
+            }
+            core_loop += mm_loop_batch * n_loop;
+            expert_cumsum = gmFlag_.GetValue(batch_idx);
+        }
+
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID0);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID1);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID2);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID3);
+        WAIT_FLAG(M, MTE1, EVENT_ID0);
+        WAIT_FLAG(M, MTE1, EVENT_ID1);
+        WAIT_FLAG(FIX, M, EVENT_ID0);
+        PIPE_BARRIER(ALL);
+    }
+
+private:
+    AscendC::GlobalTensor<InDtype> gmA_;
+    AscendC::GlobalTensor<InDtype> gmB_;
+    AscendC::GlobalTensor<int32_t> gmFlag_;
+    AscendC::GlobalTensor<InDtype> gmWorkspace_;
+    AscendC::GlobalTensor<int32_t> gmWorkspaceDeq_;
+    AscendC::GlobalTensor<int32_t> gmWorkspaceGmm_;
+
+    AscendC::LocalTensor<InDtype> l1BaseA_;
+    AscendC::LocalTensor<InDtype> l1BaseB_;
+    AscendC::LocalTensor<InDtype> l0BaseA_;
+    AscendC::LocalTensor<InDtype> l0BaseB_;
+    AscendC::LocalTensor<int32_t> l0C_;
+
+    uint32_t num_core{0};
+    uint32_t batch_size{0};
+    uint32_t m{0};
+    uint32_t k{0};
+    uint32_t n{0};
+    uint32_t m0{0};
+    uint32_t k0{0};
+    uint32_t n0{0};
+    uint32_t m_loop{0};
+    uint32_t n_loop{0};
+    uint32_t k_loop{0};
+    uint32_t core_loop{0};
+    uint32_t core_idx{0};
+    uint32_t swizzle_cnt{1};
+    uint32_t ping_flag{0};
+    uint32_t en_shuffle_k{0};
+    uint32_t allM{0};
+    uint32_t moeUp{0};
+};
+#endif
+
+#if __DAV_C220_VEC__
+template <typename Dtype>
+using CopyGmToUb = gm_to_ub<ArchType::ASCEND_V220, Dtype>;
+
+template <typename Dtype>
+using CopyUbToGm = ub_to_gm<ArchType::ASCEND_V220, Dtype, DataFormat::ND, DataFormat::ND>;
+
+template <uint32_t SwizzleDir, bool TA, bool TB, typename InDtype = half, typename OutDtype = half>
+class MoeGmmW8a8Aiv {
+public:
+    __aicore__ explicit MoeGmmW8a8Aiv(){};
+
+    __aicore__ void SetArgs(__gm__ uint8_t *__restrict__ sync,
+                            __gm__ uint8_t *__restrict__ a,
+                            __gm__ uint8_t *__restrict__ b,
+                            __gm__ uint8_t *__restrict__ flag,
+                            __gm__ uint8_t *__restrict__ index,
+                            __gm__ uint8_t *__restrict__ nscale,
+                            __gm__ uint8_t *__restrict__ mscale,
+                            __gm__ uint8_t *__restrict__ c,
+                            __gm__ uint8_t *__restrict__ workspace,
+                            __gm__ uint8_t *__restrict__ workspace_hp,
+                            __gm__ uint8_t *__restrict__ tiling_data)
+    {
+        auto gm_tiling_data = reinterpret_cast<__gm__ AtbOps::MoeGmmTilingData *>(tiling_data);
+        batch_size = gm_tiling_data->batch;
+        m = gm_tiling_data->m * gm_tiling_data->batch;
+        k = gm_tiling_data->k;
+        n = gm_tiling_data->n;
+        m0 = gm_tiling_data->m0;
+        k0 = gm_tiling_data->k0;
+        n0 = gm_tiling_data->n0;
+        m_loop = gm_tiling_data->mLoop;
+        k_loop = gm_tiling_data->kLoop;
+        n_loop = gm_tiling_data->nLoop;
+        core_loop = gm_tiling_data->coreLoop;
+        swizzle_cnt = gm_tiling_data->swizzlCount;
+        en_shuffle_k = gm_tiling_data->enShuffleK;
+        moeUp = gm_tiling_data->moeUp;
+        allM = gm_tiling_data->allM;
+        num_core = AscendC::GetBlockNum();
+        core_idx = AscendC::GetBlockIdx() / AscendC::GetTaskRation();
+        ping_flag = 1;
+        gmA_.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(a));
+        gmB_.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(b));
+        gmFlag_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(flag));
+        gmC_.SetGlobalBuffer(reinterpret_cast<__gm__ OutDtype *>(c));
+        gmScaleM_.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(mscale));
+        gmScaleN_.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(nscale));
+        gmIndex_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(index));
+        gmWorkspace_.SetGlobalBuffer(reinterpret_cast<__gm__ InDtype *>(workspace));
+        gmWorkspaceDeq_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(workspace_hp));
+        gmWorkspaceGmm_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(workspace));
+        gmWorkspaceHp_.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspace_hp));
+    }
+
+    __force_inline__ __aicore__ void
+    GetBlockIdx(uint32_t index, uint32_t &m_idx, uint32_t &n_idx, const uint32_t &mm_loop)
+    {
+        uint32_t in_batch_idx = index % (mm_loop * n_loop);
+        if constexpr (SwizzleDir == 0) { // Zn
+            uint32_t tile_block_loop = (mm_loop + swizzle_cnt - 1) / swizzle_cnt;
+            uint32_t tile_block_idx = in_batch_idx / (swizzle_cnt * n_loop);
+            uint32_t in_tile_block_idx = in_batch_idx % (swizzle_cnt * n_loop);
+
+            uint32_t n_row = swizzle_cnt;
+            if (tile_block_idx == tile_block_loop - 1) {
+                n_row = mm_loop - swizzle_cnt * tile_block_idx;
+            }
+            m_idx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_row;
+            n_idx = in_tile_block_idx / n_row;
+            if (tile_block_idx % 2 != 0) {
+                n_idx = n_loop - n_idx - 1;
+            }
+        } else if constexpr (SwizzleDir == 1) { // Nz
+            uint32_t tile_block_loop = (n_loop + swizzle_cnt - 1) / swizzle_cnt;
+            uint32_t tile_block_idx = in_batch_idx / (swizzle_cnt * mm_loop);
+            uint32_t in_tile_block_idx = in_batch_idx % (swizzle_cnt * mm_loop);
+
+            uint32_t n_col = swizzle_cnt;
+            if (tile_block_idx == tile_block_loop - 1) {
+                n_col = n_loop - swizzle_cnt * tile_block_idx;
+            }
+            m_idx = in_tile_block_idx / n_col;
+            n_idx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_col;
+            if (tile_block_idx % 2 != 0) {
+                m_idx = mm_loop - m_idx - 1;
+            }
+        }
+    }
+
+    __aicore__ void run()
+    {
+        if (!moeUp) {
+            ProcessMoeDownVector();
+        } else {
+            ProcessMoeUpVector();
+        }
+    }
+
+    __aicore__ void ProcessMoeDownVector()
+    {
+        uint32_t sub_block_id = AscendC::GetSubBlockIdx();
+        uint32_t sub_block_dim = AscendC::GetTaskRation();
+        AsdopsBuffer<ArchType::ASCEND_V220> buf;
+        auto ubBuf = buf.GetBuffer<BufferType::ASCEND_UB, OutDtype>((uintptr_t)0);
+        auto ubBufHp = buf.GetBuffer<BufferType::ASCEND_UB, float>((uintptr_t)n * sizeof(float) * 2);
+        auto ubBufScale = buf.GetBuffer<BufferType::ASCEND_UB, float>((uintptr_t)n * sizeof(float) * 4);
+        auto ubBufI32 = buf.GetBuffer<BufferType::ASCEND_UB, int32_t>((uintptr_t)n * sizeof(float) * 6);
+        uint32_t num_blocks = n * sizeof(OutDtype) / BLOCK_SIZE_32; // fp16
+        uint32_t num_blocks_16 = n * sizeof(half) / BLOCK_SIZE_32;  // fp16
+        uint32_t num_blocks_hp = n * sizeof(float) / BLOCK_SIZE_32; // float
+        uint32_t fp32_total_burst_num = (n + 63) / 64;              // float
+
+        int32_t ping_flag_gm = 1;
+        int32_t vcore_num = num_core * sub_block_dim;
+        int32_t vcore_loop = allM;
+        if (core_idx * sub_block_dim + sub_block_id < vcore_loop) {
+            uint64_t mask[] = {(uint64_t)-1, (uint64_t)-1};
+            AscendC::Duplicate<float>(ubBufHp, 0.0f, mask, CeilDiv<CONST_64>(n), 1, 8);
+        }
+        SET_FLAG(V, MTE3, EVENT_ID0);
+        WAIT_FLAG(V, MTE3, EVENT_ID0);
+        for (int loop_idx = core_idx * sub_block_dim + sub_block_id; loop_idx < vcore_loop; loop_idx += vcore_num) {
+            CopyUbToGm<float>(gmWorkspaceHp_[loop_idx * n], // dst
+                              ubBufHp,                      // src
+                              0,                            // sid
+                              1,                            // nBurst
+                              num_blocks_hp,                // lenBurst
+                              0,                            // srcGap
+                              0);                           // dstGap
+        }
+        FftsCrossCoreSync<PIPE_MTE3, 0>(AIVFLAGID);
+        WaitFlagDev(AIVFLAGID);
+
+        core_loop = m_loop * batch_size;
+        AscendC::SetAtomicAdd<float>();
+
+        core_loop = 0;
+        uint32_t loop_idx = core_idx;
+        uint32_t expert_cumsum = 0;
+        uint32_t expert_num = 0;
+        uint32_t mm_loop_batch = 0;
+        uint32_t ping_flag_ub = 0;
+        for (uint32_t batch_idx = 0; batch_idx < batch_size; batch_idx += 1) {
+            expert_num = gmFlag_.GetValue(batch_idx) - expert_cumsum;
+            mm_loop_batch = (expert_num + m0 - 1) / m0;
+            uint32_t m_start = expert_cumsum;
+            for (; loop_idx < core_loop + mm_loop_batch; loop_idx += num_core) {
+                uint32_t m_idx = loop_idx - core_loop;
+                int32_t output_start = ping_flag_gm * m0 + core_idx * m0 * 2;
+                uint32_t m_batch = expert_num;
+                uint32_t m_actual = (m_idx == (mm_loop_batch - 1)) ? (m_batch - m_idx * m0) : m0;
+                // 等待 cube 计算
+                WaitFlagDev(AIC2AIVFLAGID_PONG);
+
+                for (int j = sub_block_id; j < m_actual; j += sub_block_dim) {
+                    // 执行准备数据
+                    uint32_t cache_start = (uint32_t)(j + output_start) * n;
+                    CopyGmToUb<int32_t>(ubBufI32[ping_flag_ub * n],   // dst
+                                        gmWorkspaceGmm_[cache_start], // src
+                                        0,                            // sid
+                                        1,                            // nBurst
+                                        num_blocks_hp,                // lenBurst
+                                        0,                            // srcGap
+                                        0);                           // dstGap
+                    CopyGmToUb<float>(ubBufScale[ping_flag_ub * n],   // dst
+                                      gmScaleN_[batch_idx * n],       // src
+                                      0,                              // sid
+                                      1,                              // nBurst
+                                      num_blocks_hp,                  // lenBurst
+                                      0,                              // srcGap
+                                      0);                             // dstGap
+                    SET_FLAG(MTE2, V, EVENT_ID0 + ping_flag_ub);
+                    WAIT_FLAG(MTE2, V, EVENT_ID0 + ping_flag_ub);
+                    conv_v<ArchType::ASCEND_V220, int32_t, float>(ubBufHp[ping_flag_ub * n],  // dst
+                                                                  ubBufI32[ping_flag_ub * n], // src
+                                                                  fp32_total_burst_num, 1, 1, 8, 8);
+                    PIPE_BARRIER(V);
+                    mul_v<ArchType::ASCEND_V220, float>(ubBufHp[ping_flag_ub * n],    // dst
+                                                        ubBufHp[ping_flag_ub * n],    // src0
+                                                        ubBufScale[ping_flag_ub * n], // src1
+                                                        fp32_total_burst_num, 1, 1, 1, 8, 8, 8);
+                    PIPE_BARRIER(V);
+                    uint32_t sstart = m_start + j + m_idx * m0;
+                    float scale_tokens = gmScaleM_.GetValue(sstart);
+                    muls_v<ArchType::ASCEND_V220, float>(ubBufHp[ping_flag_ub * n], // dst
+                                                         ubBufHp[ping_flag_ub * n], // src0
+                                                         scale_tokens,              // src1
+                                                         fp32_total_burst_num, 1, 1, 8, 8);
+                    SET_FLAG(V, MTE3, EVENT_ID0 + ping_flag_ub);
+                    WAIT_FLAG(V, MTE3, EVENT_ID0 + ping_flag_ub);
+                    uint32_t start = gmIndex_.GetValue(m_start + j + m_idx * m0) * n;
+                    CopyUbToGm<float>(gmWorkspaceHp_[start],     // dst
+                                      ubBufHp[ping_flag_ub * n], // src
+                                      0,                         // sid
+                                      1,                         // nBurst
+                                      num_blocks_hp,             // lenBurst
+                                      0,                         // srcGap
+                                      0);                        // dstGap
+                    SET_FLAG(MTE3, MTE2, EVENT_ID0 + ping_flag_ub);
+                    WAIT_FLAG(MTE3, MTE2, EVENT_ID0 + ping_flag_ub);
+                    ping_flag_ub = 1 - ping_flag_ub;
+                }
+                // Vector给Cube发送同步指令
+                FftsCrossCoreSync<PIPE_MTE3, 2>(AIV2AICFLAGID_PONG);
+                // 切换GM上的double buffer
+                ping_flag_gm = 1 - ping_flag_gm;
+            }
+            core_loop += mm_loop_batch;
+            expert_cumsum = gmFlag_.GetValue(batch_idx);
+        }
+
+        // Vector同步信号
+        FftsCrossCoreSync<PIPE_MTE3, 0>(AIVFLAGID);
+        WaitFlagDev(AIVFLAGID);
+        AscendC::SetAtomicNone();
+        for (int loop_idx = core_idx * sub_block_dim + sub_block_id; loop_idx < vcore_loop; loop_idx += vcore_num) {
+            // 执行准备数据
+            uint32_t cache_start = (uint32_t)loop_idx * n;
+            CopyGmToUb<float>(ubBufHp[ping_flag_ub * n],   // dst
+                              gmWorkspaceHp_[cache_start], // src
+                              0,                           // sid
+                              1,                           // nBurst
+                              num_blocks_hp,               // lenBurst
+                              0,                           // srcGap
+                              0);                          // dstGap
+            SET_FLAG(MTE2, V, EVENT_ID0 + ping_flag_ub);
+            WAIT_FLAG(MTE2, V, EVENT_ID0 + ping_flag_ub);
+
+            conv_v<ArchType::ASCEND_V220, float, OutDtype>(ubBuf[ping_flag_ub * n],   // dst
+                                                           ubBufHp[ping_flag_ub * n], // src
+                                                           fp32_total_burst_num, 1, 1, 4, 8);
+
+            SET_FLAG(V, MTE3, EVENT_ID0 + ping_flag_ub);
+            WAIT_FLAG(V, MTE3, EVENT_ID0 + ping_flag_ub);
+            CopyUbToGm<OutDtype>(gmC_[cache_start],       // dst
+                                 ubBuf[ping_flag_ub * n], // src
+                                 0,                       // sid
+                                 1,                       // nBurst
+                                 num_blocks,              // lenBurst
+                                 0,                       // srcGap
+                                 0                        // dstGap
+            );
+            SET_FLAG(MTE3, MTE2, EVENT_ID0 + ping_flag_ub);
+            WAIT_FLAG(MTE3, MTE2, EVENT_ID0 + ping_flag_ub);
+            ping_flag_ub = 1 - ping_flag_ub;
+        }
+        PIPE_BARRIER(ALL);
+    }
+
+    // Vector_run
+    __aicore__ void ProcessMoeUpVector()
+    {
+        uint32_t sub_block_id = AscendC::GetSubBlockIdx();
+        uint32_t sub_block_dim = AscendC::GetTaskRation();
+        uint32_t loop_count = 0;
+        AsdopsBuffer<ArchType::ASCEND_V220> buf;
+        auto ubBufF32 = buf.GetBuffer<BufferType::ASCEND_UB, float>((uintptr_t)0);
+        auto ubBufScale = buf.GetBuffer<BufferType::ASCEND_UB, float>((uintptr_t)n0 * sizeof(float) * 2);
+        auto ubBufOut = buf.GetBuffer<BufferType::ASCEND_UB, OutDtype>((uintptr_t)n0 * sizeof(float) * 4);
+        auto ubBuf = buf.GetBuffer<BufferType::ASCEND_UB, InDtype>((uintptr_t)n0 * sizeof(float) * 6);
+        auto ubBufI32 =
+            buf.GetBuffer<BufferType::ASCEND_UB, int32_t>((uintptr_t)n0 * sizeof(float) * 12 + k * sizeof(InDtype) * 2);
+        uint32_t num_blocks = k * sizeof(InDtype) / BLOCK_SIZE_32;    // int8
+        uint32_t num_blocks_32 = n * sizeof(int32_t) / BLOCK_SIZE_32; // fp32
+        uint32_t num_blocks_o = n * sizeof(OutDtype) / BLOCK_SIZE_32; // fp16
+        uint32_t fp32_total_burst_num = (n + 63) / 64;                // float
+
+        int32_t ping_flag_gm = 1;
+        core_loop = 0;
+        uint32_t loop_idx = core_idx;
+        uint32_t expert_cumsum = 0;
+        uint32_t expert_num = 0;
+        uint32_t mm_loop_batch = 0;
+        int32_t ping_flag_ub = 0;
+        SetVectorMask<uint8_t>((uint64_t)-1, (uint64_t)-1);
+        for (uint32_t batch_idx = 0; batch_idx < batch_size; batch_idx += 1) {
+            expert_num = gmFlag_.GetValue(batch_idx) - expert_cumsum;
+            mm_loop_batch = (expert_num + m0 - 1) / m0;
+            uint32_t m_start = expert_cumsum;
+
+            uint32_t core_loop_end = core_loop + mm_loop_batch * n_loop;
+            for (; loop_idx < core_loop_end; loop_idx += num_core) {
+                uint32_t m_idx, n_idx;
+                GetBlockIdx(loop_idx - core_loop, m_idx, n_idx, mm_loop_batch);
+                int32_t output_start = ping_flag_gm * m0 + core_idx * m0 * 2;
+                uint32_t m_batch = expert_num;
+                uint32_t m_actual = (m_idx == (mm_loop_batch - 1)) ? (m_batch - m_idx * m0) : m0;
+                // gather
+                for (int j = sub_block_id; j < m_actual; j += sub_block_dim) {
+                    uint32_t start = gmIndex_.GetValue(expert_cumsum + j + m_idx * m0) * k;
+                    uint32_t cache_start = (uint32_t)(j + output_start) * k;
+                    // 执行准备数据
+                    CopyGmToUb<InDtype>(ubBuf[ping_flag_ub * k], // dst
+                                        gmA_[start],             // src
+                                        0,                       // sid
+                                        1,                       // nBurst
+                                        num_blocks,              // lenBurst
+                                        0,                       // srcGap
+                                        0);                      // dstGap
+                    SET_FLAG(MTE2, MTE3, EVENT_ID0 + ping_flag_ub);
+                    WAIT_FLAG(MTE2, MTE3, EVENT_ID0 + ping_flag_ub);
+                    CopyUbToGm<InDtype>(gmWorkspace_[cache_start], // dst
+                                        ubBuf[ping_flag_ub * k],   // src
+                                        0,                         // sid
+                                        1,                         // nBurst
+                                        num_blocks,                // lenBurst
+                                        0,                         // srcGap
+                                        0);                        // dstGap
+                    SET_FLAG(MTE3, MTE2, EVENT_ID0 + ping_flag_ub);
+                    WAIT_FLAG(MTE3, MTE2, EVENT_ID0 + ping_flag_ub);
+                    ping_flag_ub = 1 - ping_flag_ub;
+                }
+                // Vector给Cube发送同步指令
+                uint64_t AIV2AICFLAGID = ping_flag_gm == 0 ? AIV2AICFLAGID_PING : AIV2AICFLAGID_PONG;
+                FftsCrossCoreSync<PIPE_MTE3, 2>(AIV2AICFLAGID);
+                // 等待cube计算
+                uint64_t AIC2AIVFLAGID = ping_flag_gm == 0 ? AIC2AIVFLAGID_PING : AIC2AIVFLAGID_PONG;
+                WaitFlagDev(AIC2AIVFLAGID);
+                uint64_t offset_c = expert_cumsum * n + m_idx * m0 * n + n_idx * n0;
+                // dequant
+                uint32_t n_actual = (n_idx == (n_loop - 1)) ? (n - n_idx * n0) : n0;
+                uint32_t n_round = RoundUp<CONST_16>(n_actual);
+                num_blocks_32 = n_round * sizeof(int32_t) / BLOCK_SIZE_32; // fp32
+                num_blocks_o = n_round * sizeof(OutDtype) / BLOCK_SIZE_32; // fp16
+                fp32_total_burst_num = (n_round + 63) / 64;                // float
+                for (int j = sub_block_id; j < m_actual; j += sub_block_dim) {
+                    uint32_t start = gmIndex_.GetValue(expert_cumsum + j + m_idx * m0);
+                    // 执行准备数据
+                    CopyGmToUb<int32_t>(ubBufI32[ping_flag_ub * n0],         // dst
+                                        gmWorkspaceDeq_[offset_c + j * n],   // src
+                                        0,                                   // sid
+                                        1,                                   // nBurst
+                                        num_blocks_32,                       // lenBurst
+                                        0,                                   // srcGap
+                                        0);                                  // dstGap
+                    CopyGmToUb<float>(ubBufScale[ping_flag_ub * n0],         // dst
+                                      gmScaleN_[batch_idx * n + n_idx * n0], // src
+                                      0,                                     // sid
+                                      1,                                     // nBurst
+                                      num_blocks_32,                         // lenBurst
+                                      0,                                     // srcGap
+                                      0);                                    // dstGap
+                    SET_FLAG(MTE2, V, EVENT_ID0 + ping_flag_ub);
+                    WAIT_FLAG(MTE2, V, EVENT_ID0 + ping_flag_ub);
+                    conv_v<ArchType::ASCEND_V220, int32_t, float>(ubBufF32[ping_flag_ub * n0], // dst
+                                                                  ubBufI32[ping_flag_ub * n0], // src
+                                                                  fp32_total_burst_num, 1, 1, 8, 8);
+                    PIPE_BARRIER(V);
+                    mul_v<ArchType::ASCEND_V220, float>(ubBufF32[ping_flag_ub * n0],   // dst
+                                                        ubBufF32[ping_flag_ub * n0],   // src0
+                                                        ubBufScale[ping_flag_ub * n0], // src1
+                                                        fp32_total_burst_num, 1, 1, 1, 8, 8, 8);
+                    PIPE_BARRIER(V);
+                    float scale_tokens = gmScaleM_.GetValue(start);
+                    muls_v<ArchType::ASCEND_V220, float>(ubBufF32[ping_flag_ub * n0], // dst
+                                                         ubBufF32[ping_flag_ub * n0], // src0
+                                                         scale_tokens,                // src1
+                                                         fp32_total_burst_num, 1, 1, 8, 8);
+                    PIPE_BARRIER(V);
+                    conv_v<ArchType::ASCEND_V220, float, OutDtype>(ubBufOut[ping_flag_ub * n0], // dst
+                                                                   ubBufF32[ping_flag_ub * n0], // src
+                                                                   fp32_total_burst_num, 1, 1, sizeof(OutDtype) * 2, 8);
+                    SET_FLAG(V, MTE3, EVENT_ID0 + ping_flag_ub);
+                    WAIT_FLAG(V, MTE3, EVENT_ID0 + ping_flag_ub);
+                    CopyUbToGm<OutDtype>(gmC_[offset_c + j * n],      // dst
+                                         ubBufOut[ping_flag_ub * n0], // src
+                                         0,                           // sid
+                                         1,                           // nBurst
+                                         num_blocks_o,                // lenBurst
+                                         0,                           // srcGap
+                                         0);                          // dstGap
+                    SET_FLAG(MTE3, MTE2, EVENT_ID0 + ping_flag_ub);
+                    WAIT_FLAG(MTE3, MTE2, EVENT_ID0 + ping_flag_ub);
+                    ping_flag_ub = 1 - ping_flag_ub;
+                }
+                // dequantF
+                loop_count += 1;
+                // 切换GM上的double buffer
+                ping_flag_gm = 1 - ping_flag_gm;
+            }
+            core_loop += mm_loop_batch * n_loop;
+            expert_cumsum = gmFlag_.GetValue(batch_idx);
+        }
+        PIPE_BARRIER(ALL);
+    }
+
+private:
+    AscendC::GlobalTensor<InDtype> gmA_;
+    AscendC::GlobalTensor<InDtype> gmB_;
+    AscendC::GlobalTensor<float> gmScaleN_;
+    AscendC::GlobalTensor<float> gmScaleM_;
+    AscendC::GlobalTensor<int32_t> gmFlag_;
+    AscendC::GlobalTensor<int32_t> gmWorkspaceDeq_;
+    AscendC::GlobalTensor<OutDtype> gmC_;
+    AscendC::GlobalTensor<int32_t> gmIndex_;
+    AscendC::GlobalTensor<InDtype> gmWorkspace_;
+    AscendC::GlobalTensor<int32_t> gmWorkspaceGmm_;
+    AscendC::GlobalTensor<float> gmWorkspaceHp_;
+
+    uint32_t num_core{0};
+    uint32_t batch_size{0};
+    uint32_t m{0};
+    uint32_t k{0};
+    uint32_t n{0};
+    uint32_t m0{0};
+    uint32_t k0{0};
+    uint32_t n0{0};
+    uint32_t m_loop{0};
+    uint32_t n_loop{0};
+    uint32_t k_loop{0};
+    uint32_t core_loop{0};
+    uint32_t core_idx{0};
+    uint32_t swizzle_cnt{1};
+    uint32_t ping_flag{0};
+    uint32_t en_shuffle_k{0};
+    uint32_t allM{0};
+    uint32_t moeUp{0};
+};
+#endif
+
+extern "C" __global__ __aicore__ void moe_gmm_w8a8(__gm__ uint8_t *__restrict__ sync,
+                                                   __gm__ uint8_t *__restrict__ gm_a,
+                                                   __gm__ uint8_t *__restrict__ gm_b,
+                                                   __gm__ uint8_t *__restrict__ gm_flag,
+                                                   __gm__ uint8_t *__restrict__ gm_index,
+                                                   __gm__ uint8_t *__restrict__ gm_nscale,
+                                                   __gm__ uint8_t *__restrict__ gm_mscale,
+                                                   __gm__ uint8_t *__restrict__ gm_c,
+                                                   __gm__ uint8_t *__restrict__ workspace,
+                                                   __gm__ uint8_t *__restrict__ workspace_hp,
+                                                   __gm__ uint8_t *__restrict__ tiling_data)
+{
+    set_ffts_base_addr((uint64_t)sync);
+#ifdef __DAV_C220_VEC__
+    MoeGmmW8a8Aiv<0, false, false, int8_t, half> kernel_aiv_0000; // swizzleDir[0] transB[0] half[0] ND[0]
+    MoeGmmW8a8Aiv<0, false, true, int8_t, half> kernel_aiv_0100;  // swizzleDir[0] transB[1] half[0] ND[0]
+    MoeGmmW8a8Aiv<1, false, false, int8_t, half> kernel_aiv_1000; // swizzleDir[1] transB[0] half[0] ND[0]
+    MoeGmmW8a8Aiv<1, false, true, int8_t, half> kernel_aiv_1100;  // swizzleDir[1] transB[1] half[0] ND[0]
+
+    MoeGmmW8a8Aiv<0, false, false, int8_t, half> kernel_aiv_0001; // swizzleDir[0] transB[0] half[0] NZ[1]
+    MoeGmmW8a8Aiv<0, false, true, int8_t, half> kernel_aiv_0101;  // swizzleDir[0] transB[1] half[0] NZ[1]
+    MoeGmmW8a8Aiv<1, false, false, int8_t, half> kernel_aiv_1001; // swizzleDir[1] transB[0] half[0] NZ[1]
+    MoeGmmW8a8Aiv<1, false, true, int8_t, half> kernel_aiv_1101;  // swizzleDir[1] transB[1] half[0] NZ[1]
+
+    MoeGmmW8a8Aiv<0, false, false, int8_t, __bf16> kernel_aiv_0010; // swizzleDir[0] transB[0] bf16[1] ND[0]
+    MoeGmmW8a8Aiv<0, false, true, int8_t, __bf16> kernel_aiv_0110;  // swizzleDir[0] transB[1] bf16[1] ND[0]
+    MoeGmmW8a8Aiv<1, false, false, int8_t, __bf16> kernel_aiv_1010; // swizzleDir[1] transB[0] bf16[1] ND[0]
+    MoeGmmW8a8Aiv<1, false, true, int8_t, __bf16> kernel_aiv_1110;  // swizzleDir[1] transB[1] bf16[1] ND[0]
+
+    MoeGmmW8a8Aiv<0, false, false, int8_t, __bf16> kernel_aiv_0011; // swizzleDir[0] transB[0] bf16[1] NZ[1]
+    MoeGmmW8a8Aiv<0, false, true, int8_t, __bf16> kernel_aiv_0111;  // swizzleDir[0] transB[1] bf16[1] NZ[1]
+    MoeGmmW8a8Aiv<1, false, false, int8_t, __bf16> kernel_aiv_1011; // swizzleDir[1] transB[0] bf16[1] NZ[1]
+    MoeGmmW8a8Aiv<1, false, true, int8_t, __bf16> kernel_aiv_1111;  // swizzleDir[1] transB[1] bf16[1] NZ[1]
+
+    AscendC::SetMaskNorm();
+    SetVectorMask<uint8_t>((uint64_t)-1, (uint64_t)-1);
+#endif
+#if __DAV_C220_CUBE__
+    MoeGmmW8a8Aic<0, false, false, int8_t, half, DataFormat::ND> kernel_aic_0000; // swizzleDir[0] transB[0] half[0] ND[0]
+    MoeGmmW8a8Aic<0, false, true, int8_t, half, DataFormat::ND> kernel_aic_0100;  // swizzleDir[0] transB[1] half[0] ND[0]
+    MoeGmmW8a8Aic<1, false, false, int8_t, half, DataFormat::ND> kernel_aic_1000; // swizzleDir[1] transB[0] half[0] ND[0]
+    MoeGmmW8a8Aic<1, false, true, int8_t, half, DataFormat::ND> kernel_aic_1100;  // swizzleDir[1] transB[1] half[0] ND[0]
+
+    MoeGmmW8a8Aic<0, false, false, int8_t, half, DataFormat::NZ> kernel_aic_0001; // swizzleDir[0] transB[0] half[0] NZ[1]
+    MoeGmmW8a8Aic<0, false, true, int8_t, half, DataFormat::NZ> kernel_aic_0101;  // swizzleDir[0] transB[1] half[0] NZ[1]
+    MoeGmmW8a8Aic<1, false, false, int8_t, half, DataFormat::NZ> kernel_aic_1001; // swizzleDir[1] transB[0] half[0] NZ[1]
+    MoeGmmW8a8Aic<1, false, true, int8_t, half, DataFormat::NZ> kernel_aic_1101;  // swizzleDir[1] transB[1] half[0] NZ[1]
+
+    MoeGmmW8a8Aic<0, false, false, int8_t, __bf16, DataFormat::ND> kernel_aic_0010; // swizzleDir[0] transB[0] bf16[1] ND[0]
+    MoeGmmW8a8Aic<0, false, true, int8_t, __bf16, DataFormat::ND> kernel_aic_0110;  // swizzleDir[0] transB[1] bf16[1] ND[0]
+    MoeGmmW8a8Aic<1, false, false, int8_t, __bf16, DataFormat::ND> kernel_aic_1010; // swizzleDir[1] transB[0] bf16[1] ND[0]
+    MoeGmmW8a8Aic<1, false, true, int8_t, __bf16, DataFormat::ND> kernel_aic_1110;  // swizzleDir[1] transB[1] bf16[1] ND[0]
+
+    MoeGmmW8a8Aic<0, false, false, int8_t, __bf16, DataFormat::NZ> kernel_aic_0011; // swizzleDir[0] transB[0] bf16[1] NZ[1]
+    MoeGmmW8a8Aic<0, false, true, int8_t, __bf16, DataFormat::NZ> kernel_aic_0111;  // swizzleDir[0] transB[1] bf16[1] NZ[1]
+    MoeGmmW8a8Aic<1, false, false, int8_t, __bf16, DataFormat::NZ> kernel_aic_1011; // swizzleDir[1] transB[0] bf16[1] NZ[1]
+    MoeGmmW8a8Aic<1, false, true, int8_t, __bf16, DataFormat::NZ> kernel_aic_1111;  // swizzleDir[1] transB[1] bf16[1] NZ[1]
+
+    SetPadding<uint64_t>((uint64_t)0);
+    SetNdpara(1, 0, 0);
+#endif
+    AscendC::SetAtomicNone();
+
+    // get tiling args
+    auto gm_tiling_data = reinterpret_cast<__gm__ AtbOps::MoeGmmTilingData *>(tiling_data);
+    uint32_t masked_key = gm_tiling_data->tilingKey & 0b101101;
+
+    switch (masked_key) {
+        case 0b000000: // swizzleDir[0] transA[0] transB[0]
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_0000.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_0000.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_0000.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_0000.run();
+#endif
+            break;
+        case 0b001000: // swizzleDir[0] transA[0] transB[1]
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_0100.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_0100.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_0100.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_0100.run();
+#endif
+            break;
+        case 0b100000: // swizzleDir[1] transA[0] transB[0]
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_1000.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_1000.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_1000.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_1000.run();
+#endif
+            break;
+        case 0b101000: // swizzleDir[1] transA[0] transB[1]
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_1100.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_1100.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_1100.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_1100.run();
+#endif
+            break;
+
+        case 0b000001: // swizzleDir[0] transA[0] transB[0] nz
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_0001.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_0001.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_0001.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_0001.run();
+#endif
+            break;
+        case 0b001001: // swizzleDir[0] transA[0] transB[1]  nz
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_0101.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_0101.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_0101.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_0101.run();
+#endif
+            break;
+        case 0b100001: // swizzleDir[1] transA[0] transB[0]  nz
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_1001.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_1001.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_1001.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_1001.run();
+#endif
+            break;
+        case 0b101001: // swizzleDir[1] transA[0] transB[1]  nz
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_1101.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_1101.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_1101.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_1101.run();
+#endif
+            break;
+        case 0b000100:
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_0010.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_0010.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_0010.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_0010.run();
+#endif
+            break;
+        case 0b001100:
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_0110.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_0110.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_0110.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_0110.run();
+#endif
+            break;
+        case 0b100100:
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_1010.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_1010.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_1010.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_1010.run();
+#endif
+            break;
+        case 0b101100:
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_1110.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_1110.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_1110.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_1110.run();
+#endif
+            break;
+
+        case 0b000101:
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_0011.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_0011.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_0011.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_0011.run();
+#endif
+            break;
+        case 0b001101:
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_0111.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_0111.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_0111.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_0111.run();
+#endif
+            break;
+        case 0b100101:
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_1011.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_1011.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_1011.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_1011.run();
+#endif
+            break;
+        case 0b101101:
+#ifdef __DAV_C220_CUBE__
+            kernel_aic_1111.InitCube(sync, gm_a, gm_b, gm_flag, gm_index, gm_c, workspace, workspace_hp, tiling_data);
+            kernel_aic_1111.Process();
+#elif __DAV_C220_VEC__
+            kernel_aiv_1111.SetArgs(sync, gm_a, gm_b, gm_flag, gm_index, gm_nscale, gm_mscale, gm_c, workspace,
+                                    workspace_hp, tiling_data);
+            kernel_aiv_1111.run();
+#endif
+            break;
+        default: break;
+    }
+}

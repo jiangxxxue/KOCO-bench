@@ -1,0 +1,12 @@
+dataset_name: videos
+rgb_hz: 30.0
+resolution_size:
+- 640
+- 480
+sequence_names:
+- sydney_opera_house
+- s11
+- output
+- video
+- IMG_1577
+- qut_gardens_point

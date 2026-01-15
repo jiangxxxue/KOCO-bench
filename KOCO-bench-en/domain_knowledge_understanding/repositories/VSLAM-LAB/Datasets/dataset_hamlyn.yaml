@@ -1,0 +1,8 @@
+dataset_name: hamlyn
+
+rgb_hz: 30.0
+url_download_root: 'vslamlab/Hamlyn_Rectified_Dataset'
+
+sequence_names:
+  - rectified01
+  - rectified04

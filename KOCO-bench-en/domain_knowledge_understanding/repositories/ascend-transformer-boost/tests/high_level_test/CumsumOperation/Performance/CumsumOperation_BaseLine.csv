@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|CumsumOperation1|539.89|539.89
+2|CumsumOperation2|531.91|531.91
+3|CumsumOperation3|546.83|546.83
+4|CumsumOperation4|661.005|661.005

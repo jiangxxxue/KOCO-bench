@@ -1,0 +1,3460 @@
+/*
+* Copyright (c) 2024 Huawei Technologies Co., Ltd.
+* This file is a part of the CANN Open Software.
+* Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+* Please refer to the License for details. You may not use this file except in compliance with the License.
+* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+* INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+* See LICENSE in the root of the software repository for the full text of the License.
+*/
+#include "kernels/utils/kernel/common.h"
+#include "kernels/utils/kernel/common_func.h"
+#include "kernels/utils/kernel/simd.h"
+#include "kernels/utils/kernel/iterator.h"
+#include "kernels/utils/kernel/mma.h"
+#include "kernels/utils/kernel/utils.h"
+
+#ifdef __CCE_KT_TEST__
+#define __aicore__
+#else
+#define __aicore__ [aicore]
+#endif
+
+// FFTS Flag
+constexpr int32_t QK_READY = 0;
+constexpr int32_t SOFTMAX_READY = 1;
+constexpr int32_t UPDATE_READY = 2;
+constexpr int32_t QK_READY_DECODER = 3;
+constexpr int32_t SOFTMAX_READY_DECODER = 4;
+constexpr int32_t UPDATE_READY_DECODER = 5;
+constexpr int32_t QK_READY_STAGE2 = 6;
+constexpr int32_t SOFTMAX_READY_STAGE2 = 7;
+constexpr int32_t UPDATE_READY_STAGE2 = 8;
+constexpr uint32_t VEC_DEQ_K0_READY = 9;
+constexpr uint32_t VEC_DEQ_K1_READY = 10;
+constexpr uint32_t VEC_DEQ_V0_READY = 11;
+constexpr uint32_t VEC_DEQ_V1_READY = 12;
+
+
+constexpr int32_t BLOCK_SIZE = 16;
+constexpr int64_t TMP_SIZE = 65536;              // 256 * 256
+constexpr int32_t BIT_SHIFT = 8;
+
+const int32_t TILING_BATCH = 0;
+const int32_t TILING_NUMHEADS = 1;
+const int32_t TILING_HEADDIM = 2;
+const int32_t TILING_NUMBLOKS = 3;
+const int32_t TILING_BLOCKSIZE = 4;
+const int32_t TILING_MAXBLOCKS = 5;
+const int32_t TILING_TOR = 6;
+const int32_t TILING_KVHEADS = 7;
+const int32_t TILING_FORMER_BATCH = 8;
+const int32_t TILING_FORMER_HEAD = 9;
+const int32_t TILING_TAIL_BATCH = 10;
+const int32_t TILING_TAIL_HEAD = 11;
+const int32_t TILING_HEADNUM_MOVE = 12;
+const int32_t TILING_MASK_MAX_LEN = 13;
+const int32_t TILING_BATCH_STRIDE = 14;
+const int32_t TILING_HEAD_STRIDE = 15;
+const int32_t TILING_KEY = 16;
+const int32_t TILING_HEADSIZE = 17;
+const int32_t TILING_PARASIZE = 18;
+const int32_t TILING_GROUPNUM = 19;
+const int32_t TILING_FORMER_GROUP_MOVE = 20;
+const int32_t TILING_TAIL_GROUP_MOVE = 21;
+const int32_t TILING_MAX_KVSEQLEN = 22;
+const int32_t TILING_KVSPLIT = 23;
+const int32_t TILING_KVCORENUM = 24;
+const int32_t TILING_BLOCKSIZE_CALC = 25;
+const int32_t TILING_TOTAL_BLOCK_NUM = 26;
+const int32_t TILING_PREFILL_BS = 27;
+const int32_t TILING_DECODER_BS = 28;
+const int32_t TILING_HEADDIM_V = 29;
+const int32_t TILING_MODCOEF = 30;
+const int32_t TILING_DIVCOEF = 31;
+const int32_t TILING_QHEADORIGINAL = 32;
+const int32_t TILING_COMPRESSHEAD = 33;
+const int32_t TILING_ISMLA = 34;
+
+const int32_t BLOCKSIZE_CALC_256 = 256;
+constexpr uint32_t CONST_16 = 16;
+constexpr uint32_t KV_SEQ_STEP = 16;
+constexpr uint32_t MAX_NUMEL_INST_B8 = 255 * 256;
+constexpr uint32_t MAX_NUMEL_INST_B16 = 255 * 128;
+constexpr uint32_t MAX_NUMEL_INST_B32 = 255 * 64;
+
+// MLA
+constexpr uint32_t EMBED_SPLIT = 256;
+constexpr uint32_t ROUND_EMBED_SPLIT = 256;
+
+template <typename T>
+using GlobalT = AscendC::GlobalTensor<T>;
+
+template <typename T>
+using LocalT = AscendC::LocalTensor<T>;
+
+
+#ifdef __DAV_C220_CUBE__
+
+constexpr int32_t L0AB_HALF_BUF_SIZE = 16384;    // 128 * 128 = 16K
+constexpr int32_t CUBE_MATRIX_SIZE = 256;        // 16 * 16
+constexpr int64_t L0AB_UINT8_BLOCK_SIZE = 32768; // 128 * 128 * 2B
+constexpr int32_t L1_HALF_BUF_SIZE = 65536;  // 256 * 256
+
+constexpr int32_t TMP_SIZE_DECODER = 32768;
+
+constexpr int32_t L1_HALF_BUF_SIZE_DECODER = 16384;
+constexpr int32_t L1_KV_HALF_BUF_SIZE = 65536;// 2* 128 * 256
+constexpr uint64_t L1_E_UINT8_SIZE = 1024;  // 32 * 32 * 1B
+constexpr uint64_t L1_SCALE_UINT8_SIZE = 4096;  // uint64 256 * 8 * 2head
+constexpr uint64_t L1_SCALE_UINT64_SIZE = L1_SCALE_UINT8_SIZE / 8;
+constexpr uint64_t L1_OFFSET_UINT8_SIZE = 2048;  // int32 256 * 4 8 2head
+constexpr uint64_t L1_OFFSET_INT32_SIZE = L1_OFFSET_UINT8_SIZE / 4;
+
+
+//DeQuant
+constexpr uint32_t L0AB_PINGPONG_BUFFER_LEN = 32768; // 32 KB
+constexpr uint32_t L0C_PINGPONG_BUFFER_LEN_INT32 = 16384; // 65536 / 4
+constexpr uint32_t CUBE_MATRIX_SIZE_512 = 16 * 32;       // 16 * 23
+constexpr int32_t BLOCK_SIZE_32 = 32;
+constexpr int32_t BLOCK_SIZE_16 = 16;
+constexpr uint64_t CONST_4 = 4;
+constexpr uint64_t CONST_32 = 32;
+constexpr uint64_t CONST_64 = 64;
+constexpr uint64_t CONST_128 = 128;
+
+template <bool SplitKV = false, uint32_t TYPE = 0, typename IN_DTYPE = half,  typename OUT_DTYPE = half, typename IN_KVDTYPE = half, typename TBIAS = int32_t, typename TDESCALE = uint64_t>
+class UnpadMLAttentionDecoderSplitAic {
+public:
+    __aicore__ __attribute__((always_inline)) inline UnpadMLAttentionDecoderSplitAic(uint32_t prefill_batch_size, uint32_t decoder_batch_size) {
+        prefill_batch_size_ = prefill_batch_size;
+        decoder_batch_size_ = decoder_batch_size;
+    }
+
+    __aicore__ __attribute__((always_inline)) inline void InitQuant(
+        __gm__ uint8_t *__restrict__ deq_scale1_in_gm,
+        __gm__ uint8_t *__restrict__ offset1_in_gm,
+        __gm__ uint8_t *__restrict__ deq_scale2_in_gm,
+        __gm__ uint8_t *__restrict__ offset2_in_gm,
+        __gm__ uint8_t *__restrict__ eye_in_gm
+    )
+    {
+        deq_scale1_gm = reinterpret_cast<__gm__ TDESCALE *>(deq_scale1_in_gm);
+        deq_scale2_gm = reinterpret_cast<__gm__ TDESCALE *>(deq_scale2_in_gm);
+        offset1_gm = reinterpret_cast<__gm__ TBIAS *>(offset1_in_gm);
+        offset2_gm = reinterpret_cast<__gm__ TBIAS *>(offset2_in_gm);
+        eye_gm = reinterpret_cast<__gm__ int8_t *>(eye_in_gm);
+
+        deq_scale1_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ TDESCALE *>(deq_scale1_in_gm));
+        deq_scale2_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ TDESCALE *>(deq_scale2_in_gm));
+        offset1_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ TBIAS *>(offset1_in_gm));
+        offset2_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ TBIAS *>(offset2_in_gm));
+        eye_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t *>(eye_in_gm));
+        if (offset1_gm != nullptr) {
+            k_bias_flag = 1;
+        }
+        if (offset2_gm != nullptr) {
+            v_bias_flag = 1;
+        }
+    }
+
+    __aicore__ __attribute__((always_inline)) inline void SetArgs(
+        __gm__ uint8_t *__restrict__ sync,
+        __gm__ uint8_t *__restrict__ q_in_gm,
+        __gm__ uint8_t *__restrict__ k_in_gm,
+        __gm__ uint8_t *__restrict__ v_in_gm,
+        __gm__ uint8_t *__restrict__ block_tables_in_gm,
+        __gm__ uint8_t *__restrict__ o_out_gm,
+        __gm__ uint8_t *__restrict__ s_out_gm,
+        __gm__ uint8_t *__restrict__ p_out_gm,
+        __gm__ uint8_t *__restrict__ o_temp_gm,
+        __gm__ uint8_t* __restrict__ gm_k16,
+        __gm__ uint8_t* __restrict__ gm_v16, 
+        __gm__ uint8_t *__restrict__ tiling_para_gm,
+        __gm__ uint8_t *__restrict__ razorOffset)
+    {
+        SetFftsBaseAddr((uint64_t)sync);
+        SetPadding<uint64_t>(0);
+        SetAtomicnone();
+        SetNdpara(1, 0, 0);
+        SetMasknorm();
+
+        q_gm = reinterpret_cast<__gm__ IN_DTYPE *>(q_in_gm);
+        k_gm = reinterpret_cast<__gm__ IN_KVDTYPE *>(k_in_gm);
+        v_gm = reinterpret_cast<__gm__ IN_KVDTYPE *>(v_in_gm);
+        block_tables_gm = reinterpret_cast<__gm__ int32_t *>(block_tables_in_gm);
+        s_gm = reinterpret_cast<__gm__ float *>(s_out_gm);
+
+        p_gm = reinterpret_cast<__gm__ IN_DTYPE *>(p_out_gm);
+        o_tmp_gm = reinterpret_cast<__gm__ float *>(o_temp_gm);
+        tiling_gm = reinterpret_cast<__gm__ uint8_t *>(tiling_para_gm);
+        razor_offset_gm = reinterpret_cast<__gm__ float *>(razorOffset);
+
+        q_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE *>(q_in_gm));
+        k_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ IN_KVDTYPE *>(k_in_gm));
+        v_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ IN_KVDTYPE *>(v_in_gm));
+        s_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(s_out_gm));
+        p_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE *>(p_out_gm));
+        o_tmp_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(o_temp_gm));
+        block_tables_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(block_tables_in_gm));
+
+        num_tokens = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm));
+        q_heads = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_NUMHEADS));
+        embedding_size = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_HEADDIM));
+        embedding_size_v = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_HEADDIM_V));
+        block_size = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_BLOCKSIZE));
+        max_num_blocks_per_query = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_MAXBLOCKS));
+        kv_heads = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_KVHEADS));
+        former_batch = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_FORMER_BATCH));
+        former_head_split = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_FORMER_HEAD));
+        tail_batch = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_TAIL_BATCH));
+        tail_head_split = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_TAIL_HEAD));
+        head_split_num = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_HEADNUM_MOVE));
+        tiling_head_size = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_HEADSIZE));
+        tiling_para_size = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_PARASIZE));
+        group_num = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_GROUPNUM));
+        block_size_calc = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_BLOCKSIZE_CALC));
+        q_head_original = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_QHEADORIGINAL));
+        compressHead = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_COMPRESSHEAD));
+
+        if constexpr (TYPE != 2) {
+            former_group_num_move = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_FORMER_GROUP_MOVE));
+            tail_group_num_move = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_TAIL_GROUP_MOVE));
+        }
+        kv_split_per_core = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_KVSPLIT));
+        kv_split_core_num = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_KVCORENUM));
+
+        former_head_split_num = (former_head_split > group_num) && (former_group_num_move == group_num) ? head_split_num : 1;
+        tail_head_split_num = (tail_head_split > group_num) && (tail_group_num_move == group_num) ? head_split_num : 1;
+
+        stride_kv = static_cast<uint64_t>(kv_heads) * embedding_size;
+        stride_vo = static_cast<uint64_t>(kv_heads) * embedding_size_v;
+
+        __k = embedding_size;
+        round_k = RoundUp<16>(__k);
+        __v = embedding_size_v;
+        round_v = RoundUp<16>(__v);
+
+        embed_split_size_qk = embedding_size > EMBED_SPLIT ? EMBED_SPLIT : embedding_size;
+        embed_split_loop_qk = (embedding_size + embed_split_size_qk - 1) / embed_split_size_qk;
+
+        embed_split_size_v = embedding_size_v > EMBED_SPLIT ? EMBED_SPLIT : embedding_size_v;
+        embed_split_loop_v = (embedding_size_v + embed_split_size_v - 1) / embed_split_size_v;
+        if constexpr (TYPE == 3) {
+            gm_k16_ping_.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE*>(gm_k16) +
+                                    get_block_idx() * block_size_calc * former_head_split * embedding_size);
+            gm_k16_pong_.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE*>(gm_k16) +
+                                    get_block_num() * block_size_calc * former_head_split * embedding_size + 
+                                    get_block_idx() * block_size_calc * former_head_split * embedding_size);
+            gm_v16_ping_.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE*>(gm_v16) +
+                                    get_block_idx() * block_size_calc * former_head_split * embedding_size);
+            gm_v16_pong_.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE*>(gm_v16) +
+                                    get_block_num() * block_size_calc * former_head_split * embedding_size + 
+                                    get_block_idx() * block_size_calc * former_head_split * embedding_size);
+        }
+
+    }
+
+    __aicore__ __attribute__((always_inline)) inline void Run()
+    {
+        SET_FLAG(M, MTE1, EVENT_ID0);
+        SET_FLAG(M, MTE1, EVENT_ID1);
+        SET_FLAG(M, MTE1, EVENT_ID2);
+        SET_FLAG(M, MTE1, EVENT_ID3);
+        SET_FLAG(M, MTE1, EVENT_ID4);
+        SET_FLAG(M, MTE1, EVENT_ID5);
+        SET_FLAG(FIX, M, EVENT_ID0);
+        SET_FLAG(FIX, M, EVENT_ID1);
+        SET_FLAG(MTE1, MTE2, EVENT_ID0);
+        SET_FLAG(MTE1, MTE2, EVENT_ID1);
+        SET_FLAG(MTE1, MTE2, EVENT_ID2);
+        SET_FLAG(MTE1, MTE2, EVENT_ID3);
+        SET_FLAG(MTE1, MTE2, EVENT_ID4);
+        SET_FLAG(MTE1, MTE2, EVENT_ID5);
+        SET_FLAG(FIX, MTE1, EVENT_ID2);
+        SET_FLAG(FIX, MTE1, EVENT_ID3);
+        SET_FLAG(FIX, MTE1, EVENT_ID4);
+        SET_FLAG(FIX, MTE1, EVENT_ID5);
+        SET_FLAG(MTE2, FIX, EVENT_ID0);
+        SET_FLAG(M, MTE1, EVENT_ID7);
+        core_per_batch = (q_heads + former_head_split - 1) / former_head_split;
+        process_num = static_cast<uint64_t>(former_batch) * core_per_batch * kv_split_core_num;
+        for (uint32_t process = block_idx; process < process_num; process += uint32_t(block_num)) {  // for task
+            uint32_t cur_batch = process / (core_per_batch * kv_split_core_num) + prefill_batch_size_;
+            uint32_t offset_tiling = tiling_head_size + tiling_para_size * cur_batch;
+            cur_batch = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 13 + offset_tiling));
+            offset_tiling = tiling_head_size + tiling_para_size * cur_batch;
+            uint32_t batch_idx = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 8 + offset_tiling));
+            uint32_t kv_seqlen = (uint32_t)(*((__gm__ uint32_t *)tiling_gm  + 1 + offset_tiling));
+            if (kv_seqlen == 0) {
+                continue;
+            }
+            uint32_t kv_seqlen_align = (kv_seqlen + block_size - 1) / block_size * block_size;
+            uint32_t cur_head = (process / kv_split_core_num) % core_per_batch;
+            uint32_t cur_nIndx = process % kv_split_core_num;
+            uint32_t start_head = cur_head * former_head_split;
+            uint32_t start_kv = cur_nIndx * kv_split_per_core;
+            uint32_t cur_kv_seqlen = kv_split_per_core;
+            uint32_t kv_loop = (kv_seqlen_align + kv_split_per_core - 1) /  kv_split_per_core;
+            if (cur_nIndx >= kv_loop) {
+                continue;
+            }
+            if (cur_nIndx == (kv_loop - 1)) {
+                cur_kv_seqlen = kv_seqlen - cur_nIndx * kv_split_per_core;
+            }
+            uint32_t cur_head_num = former_head_split;
+            if (cur_head == (core_per_batch - 1)) {
+                cur_head_num = q_heads - cur_head * former_head_split;
+                former_group_num_move = former_group_num_move <= cur_head_num ? former_group_num_move : cur_head_num;
+            }
+            uint32_t head_split_loop = (cur_head_num + (former_head_split_num * former_group_num_move) - 1) /
+                                       (former_head_split_num * former_group_num_move);
+            InnerRunCubeMLA(batch_idx, start_head, cur_head_num, head_split_loop, start_kv, cur_kv_seqlen, offset_tiling, former_group_num_move, former_head_split_num);
+        }
+        if (tail_batch > 0) {
+            core_per_batch = (q_heads + tail_head_split - 1) / tail_head_split;
+            process_num = static_cast<uint64_t>(tail_batch) * core_per_batch;
+            for (uint32_t process = block_idx; process < process_num; process += uint32_t(block_num)) {  // for task
+                uint32_t cur_batch = process / core_per_batch + former_batch + prefill_batch_size_;
+                uint32_t offset_tiling = tiling_head_size + tiling_para_size * cur_batch;
+                cur_batch = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 13 + offset_tiling));
+                offset_tiling = tiling_head_size + tiling_para_size * cur_batch;
+                uint32_t batch_idx = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 8 + offset_tiling));
+                uint32_t kv_seqlen = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 1 + offset_tiling));
+                if (kv_seqlen == 0) {
+                    continue;
+                }
+                uint32_t cur_kv_seqlen = kv_seqlen;
+                uint32_t start_kv = 0;
+                uint32_t cur_head = process % core_per_batch;
+                uint32_t cur_head_num = tail_head_split;
+                if (cur_head == (core_per_batch - 1)) {
+                    cur_head_num = q_heads - cur_head * tail_head_split;
+                    tail_group_num_move = tail_group_num_move <= cur_head_num ? tail_group_num_move : cur_head_num;
+                }
+                uint32_t head_split_loop = (cur_head_num + (tail_head_split_num * tail_group_num_move) - 1) /
+                                           (tail_head_split_num * tail_group_num_move);
+                uint32_t start_head = (process % core_per_batch) * tail_head_split;
+                InnerRunCubeMLA(batch_idx, start_head, cur_head_num, head_split_loop, start_kv, cur_kv_seqlen, offset_tiling, tail_group_num_move, tail_head_split_num);
+            }
+        }
+        WAIT_FLAG(M, MTE1, EVENT_ID0);
+        WAIT_FLAG(M, MTE1, EVENT_ID1);
+        WAIT_FLAG(M, MTE1, EVENT_ID2);
+        WAIT_FLAG(M, MTE1, EVENT_ID3);
+        WAIT_FLAG(M, MTE1, EVENT_ID4);
+        WAIT_FLAG(M, MTE1, EVENT_ID5);
+        WAIT_FLAG(M, MTE1, EVENT_ID7);
+        WAIT_FLAG(FIX, M, EVENT_ID0);
+        WAIT_FLAG(FIX, M, EVENT_ID1);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID0);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID1);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID2);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID3);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID4);
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID5);
+        WAIT_FLAG(FIX, MTE1, EVENT_ID2);
+        WAIT_FLAG(FIX, MTE1, EVENT_ID3);
+        WAIT_FLAG(FIX, MTE1, EVENT_ID4);
+        WAIT_FLAG(FIX, MTE1, EVENT_ID5);
+        WAIT_FLAG(MTE2, FIX, EVENT_ID0);
+        PIPE_BARRIER(ALL);
+    }
+
+private:
+
+    __attribute__((always_inline)) inline __aicore__ void DeQuant(AscendC::LocalTensor<int8_t> l1e_buf_addr_temp_tensor,
+                                                                  AscendC::LocalTensor<IN_KVDTYPE> l1kv_addr_tensor,
+                                                                  AscendC::LocalTensor<TDESCALE> l1kscale_int8_addr_tensor,
+                                                                  AscendC::LocalTensor<TBIAS> bias_l1_tensor,
+                                                                   uint32_t qk_n, uint32_t headdim, bool bias_flag, bool pingpang)
+    {
+        uint32_t m_actual = qk_n; // qslen
+        uint32_t kv_actual = qk_n; // qslen
+        uint32_t head_actual = headdim; // headdim
+        uint32_t m_round = (m_actual + BLOCK_SIZE_16 - 1) / BLOCK_SIZE_16 * BLOCK_SIZE_16;
+        uint32_t kv_round = (kv_actual + BLOCK_SIZE_32 - 1) / BLOCK_SIZE_32 * BLOCK_SIZE_32;
+        uint32_t head_round = (head_actual + BLOCK_SIZE_32 - 1) / BLOCK_SIZE_32 * BLOCK_SIZE_32;
+        const uint32_t FB_BUFF_SIZE = 1024 * 7;
+        AscendC::LocalTensor<uint64_t> scale_fb_tensor;
+        scale_fb_tensor.InitBuffer(0, FB_BUFF_SIZE);
+
+        auto l0a_buf_temp_tensor = pingpang ? l0a_buf_tensor.template ReinterpretCast<int8_t>()[L0AB_PINGPONG_BUFFER_LEN]
+                                            : l0a_buf_tensor.template ReinterpretCast<int8_t>();
+        auto l0b_buf_temp_tensor = pingpang ? l0b_buf_tensor.template ReinterpretCast<int8_t>()[L0AB_PINGPONG_BUFFER_LEN]
+                                            : l0b_buf_tensor.template ReinterpretCast<int8_t>();
+        auto l0c_buf_temp_tensor = pingpang ? l0c_buf_tensor.ReinterpretCast<int32_t>()[L0C_PINGPONG_BUFFER_LEN_INT32]
+                                            : l0c_buf_tensor.ReinterpretCast<int32_t>();
+
+        auto event_id = pingpang ? EVENT_ID2 : EVENT_ID3;
+        uint64_t bias_tb = pingpang ? 256 : 0;
+
+        //step1: creat ca matrix and move diag matrix
+        CreateCaMatrix(l0a_buf_temp_tensor.template ReinterpretCast<int16_t>(), 1, ((kv_round * head_round + 511)) / 512, 0, (int16_t)0);
+        PIPE_BARRIER(MTE1);
+        uint32_t m_part1_rpeat = (m_round + 31) / 32;
+        uint32_t m_part2_rpeat = kv_round / BLOCK_SIZE_32;
+        l1_to_l0_a<ArchType::ASCEND_V220, int8_t, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0a_buf_temp_tensor,
+            l1e_buf_addr_temp_tensor,
+            0,
+            m_part1_rpeat,                   // repeat
+            0,
+            0,                   // srcStride
+            0,
+            kv_round / 16 // dstStride
+        );
+        l1_to_l0_a<ArchType::ASCEND_V220, int8_t, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+            l0a_buf_temp_tensor[16 * kv_round],
+            l1e_buf_addr_temp_tensor[CUBE_MATRIX_SIZE_512],
+            0,
+            m_part2_rpeat,       // repeat
+            0,
+            0,                   // srcStride
+            0,
+            kv_round / 16          // dstStride
+        );
+
+        SET_FLAG(MTE1, M, event_id);
+        WAIT_FLAG(MTE1, M, event_id);
+        //step2: move b matrix
+        l1_to_l0_b<ArchType::ASCEND_V220, int8_t, true, DataFormat::NZ, DataFormat::ZN>(
+            l0b_buf_temp_tensor,
+            l1kv_addr_tensor,
+            kv_round,                                   // nTileCeil
+            head_round,                                 // kPartCeil
+            0,                                          // nSrcStride
+            0,                                          // kSrcStride
+            0,                                          // nDstStride
+            kv_round / 16                               // kDstStride
+        );
+        SET_FLAG(MTE1, M, event_id + 2);
+        WAIT_FLAG(MTE1, M, event_id + 2);
+
+        if (bias_flag) {
+            l1_to_bt<ArchType::ASCEND_V220, int32_t>(bias_tb,                                          // dst
+                                                     bias_l1_tensor,                                   // src
+                                                     0,                                                // convControl
+                                                     1,                                                // nBurst
+                                                     CeilDiv<CONST_64>(head_actual * sizeof(int32_t)), // lenBurst
+                                                     0,                                                // srcGap
+                                                     0);                                               // dstGap
+            SET_FLAG(MTE1, M, EVENT_ID7);
+            WAIT_FLAG(MTE1, M, EVENT_ID7); // wait move bias fron L1 to BT
+            mmad<ArchType::ASCEND_V220, int8_t, int8_t, int32_t, false>(
+                l0c_buf_temp_tensor,
+                l0a_buf_temp_tensor,
+                l0b_buf_temp_tensor,
+                ((uint64_t)bias_tb),
+                m_actual,  // m
+                head_actual,  // n
+                kv_actual, // k
+                0          // cmatrixInitVal
+            );
+        } else {
+            mmad<ArchType::ASCEND_V220, int8_t, int8_t, int32_t, false>(
+                l0c_buf_temp_tensor,
+                l0a_buf_temp_tensor,
+                l0b_buf_temp_tensor,
+                m_actual,  // m
+                head_actual,  // n
+                kv_actual, // k
+                1          // cmatrixInitVal
+            );
+        }
+        SET_FLAG(M, FIX, EVENT_ID0);
+        WAIT_FLAG(M, FIX, EVENT_ID0);
+
+        //step3: move bias
+        l1_to_fb<ArchType::ASCEND_V220, TDESCALE>(scale_fb_tensor,                                    // dst
+                                                  l1kscale_int8_addr_tensor,                          // src
+                                                  1,                                                  // nBurst
+                                                  CeilDiv<CONST_128>(head_actual * sizeof(TDESCALE)), // lenBurst
+                                                  0,                                                  // srcGap
+                                                  0);                                                 // dstGap
+        PIPE_BARRIER(FIX);
+        SetFpc<uint64_t>(scale_fb_tensor, false);
+        l0c_to_l1<ArchType::ASCEND_V220, DataFormat::ZN, half, int32_t>(
+            l1kv_addr_tensor.template ReinterpretCast<half>(),
+            l0c_buf_temp_tensor,
+            l1kscale_int8_addr_tensor,
+            m_actual, // MSize
+            head_actual, // NSize
+            m_round,  // srcStride
+            m_round // dstStride_dst_D
+        );
+    }
+
+    __attribute__((always_inline)) inline __aicore__ void LoadQToL1MLA(
+        uint32_t q_offset,
+        uint32_t cur_head_num,
+        uint32_t embed_split_size,
+        uint32_t round_embed_split_size)
+    {
+        WAIT_FLAG(MTE1, MTE2, EVENT_ID4);
+        if (is_multi_head_mmad) {
+            gm_to_l1<ArchType::ASCEND_V220, IN_DTYPE, DataFormat::ND, DataFormat::NZ>(
+                l1q_buf_addr_tensor,
+                q_gm_tensor[q_offset],
+                cur_head_num,        // nValue
+                RoundUp<16>(cur_head_num),// dstNzC0Stride
+                0,                     // dstNzMatrixStride, unused
+                embed_split_size,                   // dValue
+                0,                     // dstNzMatrixStride, unused
+                __k                   // srcDValue
+            );
+        } else {
+            for (uint32_t copy_idx = 0; copy_idx < cur_head_num; copy_idx++) {
+                gm_to_l1<ArchType::ASCEND_V220, IN_DTYPE, DataFormat::ND, DataFormat::ND>(
+                    l1q_buf_addr_tensor[copy_idx * round_embed_split_size],
+                    q_gm_tensor[q_offset + copy_idx * embedding_size],
+                    1,
+                    0,
+                    0,
+                    round_embed_split_size,               // lenBurst
+                    0,
+                    0
+                );
+            }           
+        }
+    }
+
+    __attribute__((always_inline)) inline __aicore__ void LoadKVToL1Int8(
+        AscendC::GlobalTensor<IN_KVDTYPE> kv_gm_tensor,
+        AscendC::LocalTensor<IN_KVDTYPE> l1kv_buf_int8_addr_tensor,
+        AscendC::GlobalTensor<TDESCALE> deq_scale_gm_tensor,
+        AscendC::LocalTensor<TDESCALE> l1scale_buf_addr_tensor,
+        AscendC::GlobalTensor<TBIAS> offset_gm_tensor,
+        AscendC::LocalTensor<TBIAS> l1offset_buf_addr_tensor,
+        uint32_t head_num_move,
+        uint32_t cur_batch,
+        uint32_t cur_kv_seqlen,
+        uint32_t start_kv,
+        uint32_t qk_n,
+        uint32_t real_n_loop,
+        uint32_t sub_n_loop,
+        uint32_t n_idx
+    )
+    {
+        for (uint32_t inner_n_idx = 0; inner_n_idx < sub_n_loop; inner_n_idx++) {
+            uint32_t actual_idx = n_idx * sub_n_loop + inner_n_idx;
+            uint32_t sub_qk_n = block_size;
+            if (actual_idx >= real_n_loop) {
+                break;
+            }
+            uint32_t block_table_id = (uint32_t)(*(block_tables_gm +
+                            cur_batch * max_num_blocks_per_query + start_kv / block_size + actual_idx));
+            int64_t kv_offset = (int64_t)block_table_id * block_size * stride_kv;
+            if (actual_idx == (real_n_loop - 1)) {
+                sub_qk_n = (cur_kv_seqlen - actual_idx * block_size);
+            }
+            if (inner_n_idx == 0) {
+                WAIT_FLAG(MTE1, MTE2, l1_pingpong_flag);
+            }
+            gm_to_l1<ArchType::ASCEND_V220, IN_KVDTYPE, DataFormat::ND, DataFormat::NZ>(
+                l1kv_buf_int8_addr_tensor[block_size * 32 * inner_n_idx],
+                kv_gm_tensor[kv_offset],
+                sub_qk_n,                 // nValue
+                (qk_n + 31) / 32 * 32,               // dstNzC0Stride
+                0,                        // dstNzMatrixStride, unused
+                __k * head_num_move,      // dValue
+                0,                        // dstNzMatrixStride, unused
+                stride_kv                 // srcDValue
+            );
+        }
+        move_l1b_offset = l1_offset;
+        gm_to_l1<ArchType::ASCEND_V220, TDESCALE, DataFormat::ND, DataFormat::ND>(
+            l1scale_buf_addr_tensor,
+            deq_scale_gm_tensor,
+            1,
+            0,
+            0,
+            (__k * head_num_move), // lenBurst
+            0,
+            0
+        );
+
+        if (offset_gm_tensor.GetPhyAddr() != nullptr) {
+            // move bias
+            gm_to_l1<ArchType::ASCEND_V220, TBIAS, DataFormat::ND, DataFormat::ND>(
+                l1offset_buf_addr_tensor,
+                offset_gm_tensor,
+                1,
+                0,
+                0,
+                (__k * head_num_move), // lenBurst
+                0,
+                0
+            );
+        }
+    }
+
+    __attribute__((always_inline)) inline __aicore__ void LoadKVToL1MLA(
+        AscendC::GlobalTensor<IN_KVDTYPE> kv_gm_tensor,
+        AscendC::LocalTensor<IN_KVDTYPE> l1kv_buf_addr_tensor,
+        bool move_l1b_flag,
+        uint32_t head_num_move,
+        uint32_t cur_batch,
+        uint32_t cur_kv_seqlen,
+        uint32_t start_kv,
+        uint32_t qk_round_n,
+        uint32_t real_n_loop,
+        uint32_t sub_n_loop,
+        uint32_t n_idx,
+        uint32_t embed_split_size,
+        uint32_t stride_kv_real
+    )
+    {
+        for (uint32_t inner_n_idx = 0; inner_n_idx < sub_n_loop; inner_n_idx++) {
+            uint32_t actual_idx = n_idx * sub_n_loop + inner_n_idx;
+            uint32_t sub_qk_n = block_size;
+            if (actual_idx >= real_n_loop) {
+                break;
+            }
+            uint32_t block_table_id = (uint32_t)(*(block_tables_gm +
+                            cur_batch * max_num_blocks_per_query + start_kv / block_size + actual_idx));
+            int64_t kv_offset = (int64_t)block_table_id * block_size * stride_kv_real;
+            if (actual_idx == (real_n_loop - 1)) {
+                sub_qk_n = (cur_kv_seqlen - actual_idx * block_size);
+            }
+            if (group_num == 1) {
+                if (inner_n_idx == 0) {
+                    WAIT_FLAG(MTE1, MTE2, l1b_pingpong_flag + 2);
+                }
+                gm_to_l1<ArchType::ASCEND_V220, IN_KVDTYPE, DataFormat::ND, DataFormat::NZ>(
+                    l1kv_buf_addr_tensor[l1b_offset +
+                                        block_size * 16 * inner_n_idx],
+                    kv_gm_tensor[kv_offset],
+                    sub_qk_n,                 // nValue
+                    qk_round_n,           // dstNzC0Stride
+                    0,                     // dstNzMatrixStride, unused
+                    embed_split_size * head_num_move,  // dValue
+                    0,                     // dstNzMatrixStride, unused
+                    stride_kv_real            // srcDValue
+                );
+                if (actual_idx == real_n_loop - 1 || inner_n_idx == sub_n_loop - 1) {
+                    SET_FLAG(MTE2, MTE1, l1b_pingpong_flag + 2);
+                    move_l1b_offset = l1b_offset;
+                }
+            } else {
+                if (move_l1b_flag && inner_n_idx == 0) {
+                    l1b_pingpong_flag = 1 - l1b_pingpong_flag;
+                    l1b_offset = l1b_pingpong_flag * L1_KV_HALF_BUF_SIZE;
+                    WAIT_FLAG(MTE1, MTE2, l1b_pingpong_flag + 2);
+                }
+                if (move_l1b_flag) {
+                    gm_to_l1<ArchType::ASCEND_V220, IN_KVDTYPE, DataFormat::ND, DataFormat::NZ>(
+                        l1kv_buf_addr_tensor[l1b_offset +
+                                            block_size * 16 * inner_n_idx],
+                        kv_gm_tensor[kv_offset],
+                        sub_qk_n,                 // nValue
+                        qk_round_n,           // dstNzC0Stride
+                        0,                     // dstNzMatrixStride, unused
+                        embed_split_size * head_num_move,  // dValue
+                        0,                     // dstNzMatrixStride, unused
+                        stride_kv_real            // srcDValue
+                    );
+                    if (actual_idx == real_n_loop - 1 || inner_n_idx == sub_n_loop - 1) {
+                        SET_FLAG(MTE2, MTE1, l1b_pingpong_flag + 2);
+                    }
+                }
+                move_l1b_offset = l1b_offset;
+            }
+        }
+    }
+
+    inline __aicore__ void LoadKVToL1(AscendC::LocalTensor<IN_DTYPE> dst,  // [seq_len, num_head, embd_size]
+                                      AscendC::GlobalTensor<IN_DTYPE> src, // [seq_len, hidden_size]
+                                      const uint32_t seq_len, const uint32_t num_head, const uint32_t hidden_size)
+    {
+        gm_to_l1<ArchType::ASCEND_V220, IN_DTYPE, DataFormat::ND, DataFormat::NZ>(dst, src,
+                                                                                  seq_len,              // nValue
+                                                                                  RoundUp<16>(seq_len), // dstNzC0Stride
+                                                                                  0, // dstNzMatrixStride
+                                                                                  num_head * embedding_size, // dValue
+                                                                                  0,          // dstNzMatrixStride
+                                                                                  hidden_size // srcDValue
+        );
+    }
+
+__attribute__((always_inline)) inline __aicore__ void ProcessQKMLA(
+        AscendC::GlobalTensor<float> s_gm_tensor,
+        uint32_t qk_n, uint32_t qk_round_n,
+        uint32_t head_num_move, uint32_t group_num_move,
+        uint32_t head_split_num_move, uint32_t cur_head_num_round,
+        uint32_t split_idx, bool move_l1b_flag,
+        uint32_t embed_split_size, uint32_t round_embed_split_size, uint32_t embed_split_idx)
+    {
+        uint32_t cMatrixInit = (embed_split_idx == 0) ? 1 : 0;
+        uint32_t loop_mad = (group_num == 1) ? head_num_move : 1;
+        for (uint32_t headdim_idx = 0; headdim_idx < loop_mad; headdim_idx++) {
+            bool move_l0b_flag = move_l1b_flag;
+            if constexpr (TYPE == 2) {
+                WAIT_FLAG(FIX, MTE1, l0_pingpong_flag + 2);
+                WAIT_FLAG(M, MTE1, l0_pingpong_flag + 2);
+                uint64_t l1kv_int8_offset = l1_offset * 2 + (uint64_t)headdim_idx * round_k * qk_round_n;
+                uint64_t l1kscale_int8_offset =  l1_scale_offset + (uint64_t)headdim_idx * round_k;
+                uint64_t l1koffset_int8_offset = k_bias_flag ? l1_bias_offset + (uint64_t)headdim_idx * round_k : 0;
+                DeQuant(l1e_buf_addr_tensor,
+                        l1kv_buf_int8_addr_tensor[l1kv_int8_offset],
+                        l1scale_buf_addr_tensor[l1kscale_int8_offset],
+                        l1offset_buf_addr_tensor[l1koffset_int8_offset],
+                        qk_n, __k, k_bias_flag, l0_pingpong_flag);
+                SET_FLAG(FIX, MTE1, l0_pingpong_flag);
+                WAIT_FLAG(FIX, MTE1, l0_pingpong_flag);
+            }
+            WAIT_FLAG(M, MTE1, l0_pingpong_flag);
+            uint64_t l1q_offset = 0;
+            uint32_t q_load_coeff = 1;
+            if (!is_multi_head_mmad) {
+                l1q_offset = split_idx * head_split_num_move * round_embed_split_size + 
+                             headdim_idx * round_embed_split_size;
+            } else {
+                l1q_offset = split_idx * group_num_move * 16;
+                q_load_coeff = cur_head_num_round;
+            }
+            if (q_load_coeff == 1) {
+                l1_to_l0_a<ArchType::ASCEND_V220, IN_DTYPE, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                    l0a_buf_tensor[l0_offset],
+                    l1q_buf_addr_tensor[l1q_offset],
+                    0,
+                    (round_embed_split_size + CUBE_MATRIX_SIZE - 1) / CUBE_MATRIX_SIZE,  // repeat
+                    0,
+                    1,                                                    // srcStride
+                    0,
+                    0                                                    // dstStride
+                );
+            } else {
+                for (uint64_t loa_load_idx = 0; loa_load_idx < q_load_coeff / BLOCK_SIZE; ++loa_load_idx) {
+                    l1_to_l0_a<ArchType::ASCEND_V220, IN_DTYPE, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                        l0a_buf_tensor[l0_offset + loa_load_idx * round_embed_split_size * BLOCK_SIZE],
+                        l1q_buf_addr_tensor[l1q_offset + loa_load_idx * CUBE_MATRIX_SIZE],
+                        0,
+                        round_embed_split_size / BLOCK_SIZE,                                 // repeat
+                        0,
+                        q_load_coeff / BLOCK_SIZE,                            // srcStride
+                        0,
+                        0                                                     // dstStride
+                    );
+                }
+            }
+            if (headdim_idx == loop_mad - 1) {
+                SET_FLAG(MTE1, MTE2, EVENT_ID4);
+            }      
+            uint32_t mad_l0b_offset = 0;
+            if (group_num == 1 || TYPE == 2) {
+                if constexpr (TYPE != 2) {
+                    if (headdim_idx == 0) {
+                        WAIT_FLAG(MTE2, MTE1, l1b_pingpong_flag + 2);
+                    }
+                }
+                if (block_size_calc * ROUND_EMBED_SPLIT > L0AB_HALF_BUF_SIZE) {
+                    mad_l0b_offset = 0;
+                    WAIT_FLAG(M, MTE1, l0b_pingpong_flag + 2);
+                } else {
+                    mad_l0b_offset = l0_offset;
+                }
+                l1_to_l0_b<ArchType::ASCEND_V220, IN_DTYPE, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                    l0b_buf_tensor[mad_l0b_offset],
+                    l1kv_buf_addr_tensor[move_l1b_offset + headdim_idx * round_embed_split_size * qk_round_n],
+                    0,
+                    round_embed_split_size * qk_round_n / CUBE_MATRIX_SIZE,  // repeat
+                    0,
+                    1,                                        // srcStride
+                    0,
+                    0                                        // dstStride
+                );
+            } else {
+                if (block_size_calc * ROUND_EMBED_SPLIT > L0AB_HALF_BUF_SIZE) {
+                    l0b_offset = 0;
+                    WAIT_FLAG(M, MTE1, l0b_pingpong_flag + 2);
+                } else if (move_l0b_flag) {
+                    l0b_pingpong_flag = 1 - l0b_pingpong_flag;
+                    l0b_offset = l0b_pingpong_flag * L0AB_HALF_BUF_SIZE;
+                    WAIT_FLAG(M, MTE1, l0b_pingpong_flag + 2);
+                }
+                if constexpr (TYPE != 2) {
+                    if (headdim_idx == 0 && move_l1b_flag) {
+                        WAIT_FLAG(MTE2, MTE1, l1b_pingpong_flag + 2);
+                    }
+                }
+                if (move_l0b_flag) {
+                    uint64_t l1kv_offset = move_l1b_offset + headdim_idx * round_embed_split_size * qk_round_n;
+                    l1_to_l0_b<ArchType::ASCEND_V220, IN_DTYPE, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                        l0b_buf_tensor[l0b_offset],
+                        l1kv_buf_addr_tensor[l1kv_offset],
+                        0,
+                        round_embed_split_size * qk_round_n / CUBE_MATRIX_SIZE,  // repeat
+                        0,
+                        1,                                        // srcStride
+                        0,
+                        0                                        // dstStride
+                    );
+                }
+                mad_l0b_offset = l0b_offset;
+            }
+
+            if (headdim_idx == loop_mad - 1) {
+                if constexpr (TYPE != 2) {
+                    if (group_num != 1 && move_l1b_flag || group_num == 1) {
+                        SET_FLAG(MTE1, MTE2, l1b_pingpong_flag + 2);
+                    }
+                } else {
+                    SET_FLAG(MTE1, MTE2, l1_pingpong_flag);
+                }
+            }
+
+            SET_FLAG(MTE1, M, l0_pingpong_flag);
+            WAIT_FLAG(MTE1, M, l0_pingpong_flag);
+            if (embed_split_idx == 0) {
+                WAIT_FLAG(FIX, M, l0_pingpong_flag);
+            }
+            mmad<ArchType::ASCEND_V220, IN_DTYPE, IN_DTYPE, float, false>(
+                l0c_buf_tensor[l0_offset],
+                l0a_buf_tensor[l0_offset],
+                l0b_buf_tensor[mad_l0b_offset],
+                m,     // m
+                qk_n,  // n
+                embed_split_size,   // k
+                cMatrixInit      // cmatrixInitVal
+            );
+            PIPE_BARRIER(M);
+            if (block_size_calc * ROUND_EMBED_SPLIT > L0AB_HALF_BUF_SIZE) {
+                SET_FLAG(M, MTE1, l0b_pingpong_flag + 2);
+            } else {
+                if constexpr (TYPE != 2) {
+                    if (group_num != 1 && move_l0b_flag) {
+                        SET_FLAG(M, MTE1, l0b_pingpong_flag + 2);
+                    }
+                }
+            }
+            SET_FLAG(M, MTE1, l0_pingpong_flag);
+            
+            // copy S to gm
+            if (embed_split_idx == embed_split_loop_qk - 1) {
+                SET_FLAG(M, FIX, l0_pingpong_flag);
+                WAIT_FLAG(M, FIX, l0_pingpong_flag);
+                uint64_t s_gm_offset = headdim_idx * group_num_move * qk_round_n;
+                l0c_to_gm<ArchType::ASCEND_V220, DataFormat::ND, float, float>(
+                    s_gm_tensor[s_gm_offset],
+                    l0c_buf_tensor[l0_offset],
+                    m,           // MSize
+                    qk_round_n,  // NSize
+                    RoundUp<16>(m), // srcStride
+                    qk_round_n  // dstStride_dst_D
+                );
+                SET_FLAG(FIX, M, l0_pingpong_flag);
+            }
+            
+            if constexpr (TYPE == 2) {
+                SET_FLAG(M, MTE1, l0_pingpong_flag + 2);
+                SET_FLAG(FIX, MTE1, l0_pingpong_flag + 2);
+            }
+        }
+    }
+
+    __attribute__((always_inline)) inline __aicore__ void ProcessPVMLA(
+        AscendC::GlobalTensor<float> o_tmp_gm_tensor,
+        AscendC::GlobalTensor<IN_DTYPE> p_gm_tensor,
+        AscendC::LocalTensor<IN_DTYPE> l1p_buf_addr_tensor,
+        uint32_t qk_n, uint32_t qk_round_n, uint32_t head_num_move, uint32_t group_num_move,
+        uint32_t head_split_num_move, uint32_t cur_head_num, uint32_t cur_head_num_round,
+        uint32_t split_idx, bool move_l1b_flag, uint32_t softmax_ready_flag,
+        uint32_t embed_split_size, uint32_t round_embed_split_size, uint32_t embed_split_idx)
+    {
+        uint32_t loop_mad = (group_num == 1) ? head_num_move : 1;
+        // gqa场景没有多head搬移，head_num_move = 1
+        for (uint32_t headdim_idx = 0; headdim_idx < loop_mad; headdim_idx++) {
+            bool move_l0b_flag = move_l1b_flag;
+            if constexpr (TYPE == 2) {
+                WAIT_FLAG(FIX, MTE1, l0_pingpong_flag + 2);
+                WAIT_FLAG(M, MTE1, l0_pingpong_flag + 2);
+                uint64_t l1kv_int8_offset = l1_offset * 2 + (uint64_t)headdim_idx * round_embed_split_size * qk_round_n / group_num;
+                uint64_t l1vscale_int8_offset = l1_scale_offset + (uint64_t)headdim_idx * round_embed_split_size / group_num;
+                uint64_t l1voffset_int8_offet = v_bias_flag ? l1_bias_offset + (uint64_t)headdim_idx * round_embed_split_size / group_num : 0;
+                DeQuant(l1e_buf_addr_tensor,
+                        l1kv_buf_int8_addr_tensor[l1kv_int8_offset],
+                        l1scale_buf_addr_tensor[l1vscale_int8_offset],
+                        l1offset_buf_addr_tensor[l1voffset_int8_offet],
+                         qk_n, __k, v_bias_flag, l0_pingpong_flag);
+                SET_FLAG(FIX, MTE1, l0_pingpong_flag);
+                WAIT_FLAG(FIX, MTE1, l0_pingpong_flag);
+            }
+            WAIT_FLAG(M, MTE1, l0_pingpong_flag);
+            uint32_t mad_l0b_offset = 0;
+            if (group_num == 1 || TYPE == 2) {
+                if constexpr (TYPE != 2) {
+                    if (headdim_idx == 0) {
+                        WAIT_FLAG(MTE2, MTE1, l1b_pingpong_flag + 2);
+                    }
+                }
+                if (block_size_calc * ROUND_EMBED_SPLIT > L0AB_HALF_BUF_SIZE) {
+                    mad_l0b_offset = 0;
+                    WAIT_FLAG(M, MTE1, l0b_pingpong_flag + 2);
+                } else {
+                    mad_l0b_offset = l0_offset;
+                }
+                if(qk_round_n <= round_embed_split_size) {// Nz -> nZ
+                    for (uint32_t l0b_load_idx = 0; l0b_load_idx < qk_round_n / BLOCK_SIZE; ++l0b_load_idx) {
+                        l1_to_l0_b<ArchType::ASCEND_V220, IN_DTYPE, true, DataFormat::VECTOR, DataFormat::VECTOR>(
+                            l0b_buf_tensor[mad_l0b_offset + l0b_load_idx * round_embed_split_size * BLOCK_SIZE],
+                            l1kv_buf_addr_tensor[move_l1b_offset +
+                                headdim_idx * round_embed_split_size * qk_round_n / group_num + l0b_load_idx * CUBE_MATRIX_SIZE],
+                            0,
+                            round_embed_split_size / BLOCK_SIZE,     // repeat
+                            0,
+                            qk_round_n / BLOCK_SIZE,  // srcStride
+                            0,
+                            0                        // dstStride
+                        );
+                    }
+                } else {
+                    for (uint32_t l0b_load_idx = 0; l0b_load_idx < round_embed_split_size / BLOCK_SIZE; ++l0b_load_idx) {
+                        l1_to_l0_b<ArchType::ASCEND_V220, IN_DTYPE, true, DataFormat::VECTOR, DataFormat::VECTOR>(
+                            l0b_buf_tensor[mad_l0b_offset + l0b_load_idx * CUBE_MATRIX_SIZE],
+                            l1kv_buf_addr_tensor[move_l1b_offset +
+                                headdim_idx * round_embed_split_size * qk_round_n / group_num +
+                                l0b_load_idx * qk_round_n * BLOCK_SIZE],
+                            0,
+                            qk_round_n / BLOCK_SIZE,   // repeat
+                            0,
+                            1,                         // srcStride
+                            0,
+                            round_embed_split_size / BLOCK_SIZE - 1  // dstStride
+                        );
+                    }
+                }
+
+            } else {
+                if (block_size_calc * ROUND_EMBED_SPLIT > L0AB_HALF_BUF_SIZE) {
+                    l0b_offset = 0;
+                    WAIT_FLAG(M, MTE1, l0b_pingpong_flag + 2);
+                } else if (move_l0b_flag) {
+                    l0b_pingpong_flag = 1 - l0b_pingpong_flag;
+                    l0b_offset = l0b_pingpong_flag * L0AB_HALF_BUF_SIZE;
+                    WAIT_FLAG(M, MTE1, l0b_pingpong_flag + 2);
+                }
+                if constexpr (TYPE != 2) {
+                    if (headdim_idx == 0 && move_l1b_flag) {
+                        WAIT_FLAG(MTE2, MTE1, l1b_pingpong_flag + 2);
+                    }
+                }
+                if (move_l0b_flag) {
+                    uint64_t l1kv_offset = move_l1b_offset + headdim_idx * round_embed_split_size * qk_round_n;
+                    if (qk_round_n <= round_embed_split_size) {// Nz -> nZ
+                        for (uint32_t l0b_load_idx = 0; l0b_load_idx < qk_round_n / BLOCK_SIZE; ++l0b_load_idx) {
+                            // 沿 embd 方向搬
+                            l1_to_l0_b<ArchType::ASCEND_V220, IN_DTYPE, true, DataFormat::VECTOR, DataFormat::VECTOR>(
+                                l0b_buf_tensor[l0b_offset + l0b_load_idx * round_embed_split_size * BLOCK_SIZE],
+                                l1kv_buf_addr_tensor[l1kv_offset + l0b_load_idx * CUBE_MATRIX_SIZE],
+                                0,
+                                round_embed_split_size / BLOCK_SIZE,     // repeat
+                                0,
+                                qk_round_n / BLOCK_SIZE,  // srcStride
+                                0,
+                                0                        // dstStride
+                            );
+                        }
+                    } else {
+                        for (uint32_t l0b_load_idx = 0; l0b_load_idx < round_embed_split_size / BLOCK_SIZE; ++l0b_load_idx) {
+                            // 沿 kv_len_blk方向搬
+                            l1_to_l0_b<ArchType::ASCEND_V220, IN_DTYPE, true, DataFormat::VECTOR, DataFormat::VECTOR>(
+                                l0b_buf_tensor[l0b_offset + l0b_load_idx * CUBE_MATRIX_SIZE],
+                                l1kv_buf_addr_tensor[l1kv_offset + l0b_load_idx * qk_round_n * BLOCK_SIZE],
+                                0,
+                                qk_round_n / BLOCK_SIZE,   // repeat
+                                0,
+                                1,                         // srcStride
+                                0,
+                                round_embed_split_size / BLOCK_SIZE - 1  // dstStride
+                            );
+                        }
+                    }
+                }
+                mad_l0b_offset = l0b_offset;
+            }
+
+            // move p from gm to l1
+            if (split_idx == 0 && headdim_idx == 0 && embed_split_idx == 0) {
+                WaitFlagDev(softmax_ready_flag);
+                if (!is_multi_head_mmad) {
+                    gm_to_l1<ArchType::ASCEND_V220, IN_DTYPE, DataFormat::ND, DataFormat::ND>(
+                        l1p_buf_addr_tensor,
+                        p_gm_tensor,
+                        1,
+                        0,
+                        0,
+                        qk_round_n * cur_head_num,               // lenBurst
+                        0,
+                        0
+                    );
+                } else {
+                    gm_to_l1<ArchType::ASCEND_V220, IN_DTYPE, DataFormat::ND, DataFormat::NZ>(
+                        l1p_buf_addr_tensor,
+                        p_gm_tensor,
+                        cur_head_num,         // nValue
+                        (cur_head_num + 15) / 16 * 16,// dstNzC0Stride
+                        0,                     // dstNzMatrixStride, unused
+                        qk_round_n,           // dValue
+                        0,                     // dstNzMatrixStride, unused
+                        qk_round_n           // srcDValue
+                    );
+                }
+            }
+            // move p from l1 to l0a
+            SET_FLAG(MTE2, MTE1, l0_pingpong_flag);
+            WAIT_FLAG(MTE2, MTE1, l0_pingpong_flag);
+            uint64_t l1p_offset = 0;
+            uint32_t p_load_coeff = 1;
+            if (!is_multi_head_mmad) {
+                l1p_offset =  split_idx * head_split_num_move * qk_round_n + headdim_idx * qk_round_n;
+            } else {
+                l1p_offset = split_idx * group_num_move * 16;
+                p_load_coeff = cur_head_num_round;
+            }
+            if (p_load_coeff == 1) {
+                l1_to_l0_a<ArchType::ASCEND_V220, IN_DTYPE, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                    l0a_buf_tensor[l0_offset],
+                    l1p_buf_addr_tensor[l1p_offset],
+                    0,
+                    (qk_round_n + CUBE_MATRIX_SIZE - 1) / CUBE_MATRIX_SIZE,  // repeat
+                    0,
+                    1,                                                       // srcStride
+                    0,
+                    0                                                        // dstStride
+                );
+            } else {
+                for (uint64_t loa_load_idx = 0; loa_load_idx < p_load_coeff / BLOCK_SIZE; ++loa_load_idx) {
+                    l1_to_l0_a<ArchType::ASCEND_V220, IN_DTYPE, false, DataFormat::VECTOR, DataFormat::VECTOR>(
+                        l0a_buf_tensor[l0_offset + loa_load_idx * qk_round_n * BLOCK_SIZE],
+                        l1p_buf_addr_tensor[l1p_offset + loa_load_idx * CUBE_MATRIX_SIZE],
+                        0,
+                        qk_round_n / BLOCK_SIZE,                                 // repeat
+                        0,
+                        p_load_coeff / BLOCK_SIZE,                               // srcStride
+                        0,
+                        0                                                        // dstStride
+                    );
+                }
+            }
+
+            if (headdim_idx == loop_mad - 1) {
+                if constexpr (TYPE != 2) {
+                    if (group_num != 1 && move_l1b_flag || group_num == 1) {
+                        SET_FLAG(MTE1, MTE2, l1b_pingpong_flag + 2);
+                    }
+                } else {
+                    SET_FLAG(MTE1, MTE2, l1_pingpong_flag);
+                }
+            }
+            SET_FLAG(MTE1, M, l0_pingpong_flag);
+            WAIT_FLAG(MTE1, M, l0_pingpong_flag);
+            WAIT_FLAG(FIX, M, l0_pingpong_flag);
+            mmad<ArchType::ASCEND_V220, IN_DTYPE, IN_DTYPE, float, false>(
+                l0c_buf_tensor[l0_offset],
+                l0a_buf_tensor[l0_offset],
+                l0b_buf_tensor[mad_l0b_offset],
+                m,     // m
+                embed_split_size,   // n
+                qk_n,  // k
+                1      // cmatrixInitVal
+            );
+
+            if (block_size_calc * ROUND_EMBED_SPLIT > L0AB_HALF_BUF_SIZE) {
+                SET_FLAG(M, MTE1, l0b_pingpong_flag + 2);
+            } else {
+                if constexpr (TYPE != 2) {
+                    if (group_num != 1 && move_l0b_flag) {
+                        SET_FLAG(M, MTE1, l0b_pingpong_flag + 2);
+                    }
+                }
+            }
+            SET_FLAG(M, MTE1, l0_pingpong_flag);
+            SET_FLAG(M, FIX, l0_pingpong_flag);
+            WAIT_FLAG(M, FIX, l0_pingpong_flag);
+            // copy O to gm
+            uint64_t o_temp_gm_offset = headdim_idx * group_num_move * round_v;
+            l0c_to_gm<ArchType::ASCEND_V220, DataFormat::ND, float, float>(
+                o_tmp_gm_tensor[o_temp_gm_offset],
+                l0c_buf_tensor[l0_offset],
+                m,        // MSize
+                round_embed_split_size,  // NSize 32B对齐，防止workspace补齐的位置中有脏数据
+                RoundUp<16>(m),       // srcStride
+                round_v  // dstStride_dst_D
+            );
+
+            if constexpr (TYPE == 2) {
+                SET_FLAG(FIX, MTE1, l0_pingpong_flag + 2);
+                SET_FLAG(M, MTE1, l0_pingpong_flag + 2);
+            }
+            SET_FLAG(FIX, M, l0_pingpong_flag);
+            l0_pingpong_flag = 1 - l0_pingpong_flag;
+            l0_offset = l0_pingpong_flag * L0AB_HALF_BUF_SIZE;
+        }
+    }
+
+    __attribute__((always_inline)) inline __aicore__ void ChangePingPongFlag() {
+        l1_pingpong_flag = 1 - l1_pingpong_flag;
+        l1_offset = l1_pingpong_flag * L1_HALF_BUF_SIZE_DECODER;
+        l1_scale_offset = l1_pingpong_flag * L1_SCALE_UINT64_SIZE;
+        l1_bias_offset = l1_pingpong_flag * L1_OFFSET_INT32_SIZE;
+        if (group_num == 1) {
+            l1b_pingpong_flag = 1 - l1b_pingpong_flag;
+            l1b_offset = l1b_pingpong_flag * L1_KV_HALF_BUF_SIZE;
+        }
+    }
+
+    __aicore__ __attribute__((always_inline)) inline void InnerRunCubeMLA(uint32_t cur_batch, uint32_t start_head, uint32_t cur_head_num, uint32_t head_split_loop,
+                                    uint32_t start_kv, uint32_t cur_kv_seqlen, uint32_t offset_tiling, uint32_t group_num_move, uint32_t head_split_num_move)
+    {
+        uint32_t addr_q_high32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 4 + offset_tiling));
+        uint32_t addr_q_loww32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 5 + offset_tiling));
+        uint64_t addr_q_scalar = (uint64_t)(((uint64_t)addr_q_high32) << 32 | addr_q_loww32);
+        uint64_t q_offset = addr_q_scalar + start_head * embedding_size;
+
+        uint32_t pp_n_scalar = block_size_calc;
+        uint32_t sub_n_loop = pp_n_scalar / block_size;
+
+        uint32_t n_loop = (cur_kv_seqlen + pp_n_scalar - 1) / pp_n_scalar;
+        uint32_t real_n_loop = (cur_kv_seqlen + block_size - 1) / block_size;
+
+        uint32_t qk_n = pp_n_scalar;
+        uint32_t qk_round_n = (qk_n + 15) / 16 * 16;
+        uint32_t qk_n_2 = pp_n_scalar;
+        uint32_t qk_round_n_2 = (qk_n_2 + 15) / 16 * 16;
+
+        uint32_t cur_head_num_round = (cur_head_num + 15) / 16 * 16;
+        m = (group_num == 1) ? 1 : group_num_move;
+        is_multi_head_mmad = (group_num_move > 1) && (TYPE != 2);
+
+        for (uint32_t n_idx = 0; n_idx < n_loop; n_idx+=2) {
+            if (n_idx == (n_loop - 1)) {
+                qk_n = (cur_kv_seqlen - n_idx * pp_n_scalar);
+                qk_round_n = RoundUp<16>(qk_n);
+            }
+            if ((n_idx + 1) == (n_loop - 1)) {
+                qk_n_2 = (cur_kv_seqlen - (n_idx + 1) * pp_n_scalar);
+                qk_round_n_2 = RoundUp<16>(qk_n_2);
+            }
+            /* ************ CUBE1 stage1  ************* */
+            if constexpr (TYPE == 3) {
+                WaitFlagDev(VEC_DEQ_K0_READY);
+            }
+            for (uint32_t split_idx = 0; split_idx < head_split_loop; split_idx++) {
+                bool move_l1b_flag = 1;
+                uint32_t head_num_move = ((group_num_move == 1) && (split_idx == (head_split_loop - 1))) ?
+                        cur_head_num - head_split_num_move * split_idx * group_num_move : head_split_num_move;
+                uint64_t hiddenSize_offset = (start_head + split_idx * head_split_num_move * group_num_move) / group_num * embedding_size;
+                uint64_t offset1_hiddenSize = k_bias_flag ? hiddenSize_offset : 0;
+                uint32_t embed_split_size = EMBED_SPLIT;
+                for (uint32_t embed_split_idx = 0; embed_split_idx < embed_split_loop_qk; ++embed_split_idx) {
+                    uint32_t embed_split_offset_tight = embed_split_idx * EMBED_SPLIT;
+                    uint32_t embed_split_offset = embed_split_idx * ROUND_EMBED_SPLIT;
+                    if (embed_split_idx == embed_split_loop_qk - 1) {
+                        embed_split_size = embedding_size - embed_split_offset_tight;
+                    }
+                    uint32_t round_embed_split_size = RoundUp<16>(embed_split_size);
+                    uint32_t q_embed_offset = q_offset + embed_split_offset_tight;
+                    LoadQToL1MLA(q_embed_offset, cur_head_num, embed_split_size, round_embed_split_size);
+                    if constexpr (TYPE == 2) {
+                            // move diag matrix
+                        gm_to_l1<ArchType::ASCEND_V220, int8_t, DataFormat::ND, DataFormat::ND>(
+                            l1e_buf_addr_tensor,
+                            eye_gm_tensor,
+                            1,
+                            0,
+                            0,
+                            32 * 32,
+                            0,
+                            0
+                        );
+                    } else {
+                        SET_FLAG(MTE2, MTE1, l1_pingpong_flag);
+                    }
+                    if constexpr (TYPE == 0 || TYPE == 1) {
+                        LoadKVToL1MLA(
+                            k_gm_tensor[hiddenSize_offset + embed_split_offset_tight],
+                            l1kv_buf_addr_tensor,
+                            move_l1b_flag,
+                            head_num_move, cur_batch, cur_kv_seqlen, start_kv, qk_round_n,
+                            real_n_loop, sub_n_loop, n_idx, embed_split_size, stride_kv
+                        );
+                        WAIT_FLAG(MTE2, MTE1, l1_pingpong_flag);
+                        ProcessQKMLA(
+                            s_gm_tensor[(uint64_t)block_idx * TMP_SIZE_DECODER +
+                            split_idx * head_split_num_move * group_num_move * qk_round_n],
+                            qk_n, qk_round_n, head_num_move, group_num_move,
+                            head_split_num_move, cur_head_num_round,split_idx, move_l1b_flag,
+                            embed_split_size, round_embed_split_size, embed_split_idx
+                        );
+                    }
+                    ChangePingPongFlag();
+                }
+                l0_pingpong_flag = 1 - l0_pingpong_flag;
+                l0_offset = l0_pingpong_flag * L0AB_HALF_BUF_SIZE;
+                
+            }
+            FftsCrossCoreSync<PIPE_FIX, 2>(QK_READY_DECODER);
+            /* ************ CUBE1 stage2  ************* */
+            if (n_idx + 1 < n_loop) {
+                if constexpr (TYPE == 3) {
+                    WaitFlagDev(VEC_DEQ_K1_READY);
+                }
+                for (uint32_t split_idx = 0; split_idx < head_split_loop; split_idx++) {  // for head
+                    bool move_l1b_flag = 1;
+                    uint32_t head_num_move = ((group_num_move == 1) && (split_idx == (head_split_loop - 1))) ?
+                            cur_head_num - head_split_num_move * split_idx * group_num_move : head_split_num_move;
+                    uint64_t hiddenSize_offset = (start_head + split_idx * head_split_num_move * group_num_move) / group_num * embedding_size;
+                    uint64_t offset1_hiddenSize = k_bias_flag ? hiddenSize_offset : 0;
+                    uint32_t embed_split_size = EMBED_SPLIT;
+                    for (uint32_t embed_split_idx = 0; embed_split_idx < embed_split_loop_qk; ++embed_split_idx) {
+                        uint32_t embed_split_offset_tight = embed_split_idx * EMBED_SPLIT;
+                        uint32_t embed_split_offset = embed_split_idx * ROUND_EMBED_SPLIT;
+                        if (embed_split_idx == embed_split_loop_qk - 1) {
+                            embed_split_size = embedding_size - embed_split_offset_tight;
+                        }
+                        uint32_t round_embed_split_size = RoundUp<16>(embed_split_size);
+
+                        uint32_t q_embed_offset = q_offset + embed_split_offset_tight;
+                        LoadQToL1MLA(q_embed_offset, cur_head_num, embed_split_size, round_embed_split_size);
+                        if constexpr (TYPE == 2) {
+                            // move diag matrix
+                            gm_to_l1<ArchType::ASCEND_V220, int8_t, DataFormat::ND, DataFormat::ND>(
+                                l1e_buf_addr_tensor,
+                                eye_gm_tensor,
+                                1,
+                                0,
+                                0,
+                                32 * 32,
+                                0,
+                                0
+                            );
+                        } else {
+                            SET_FLAG(MTE2, MTE1, l1_pingpong_flag);
+                        }
+                        if constexpr (TYPE == 0 || TYPE == 1) {
+                            LoadKVToL1MLA(
+                                k_gm_tensor[hiddenSize_offset + embed_split_offset_tight],
+                                l1kv_buf_addr_tensor,
+                                move_l1b_flag,
+                                head_num_move, cur_batch, cur_kv_seqlen, start_kv, qk_round_n_2,
+                                real_n_loop, sub_n_loop, (n_idx + 1), embed_split_size, stride_kv
+                            );
+                            WAIT_FLAG(MTE2, MTE1, l1_pingpong_flag);
+                            ProcessQKMLA(
+                                s_gm_tensor[(uint64_t)block_idx * TMP_SIZE_DECODER +
+                                    split_idx * head_split_num_move * group_num_move * qk_round_n_2 +
+                                    TMP_SIZE_DECODER / 2],
+                                qk_n_2, qk_round_n_2, head_num_move, group_num_move,
+                                head_split_num_move, cur_head_num_round, split_idx, move_l1b_flag,
+                                embed_split_size, round_embed_split_size, embed_split_idx
+                            );
+                        }
+                        ChangePingPongFlag();
+                    }
+                    l0_pingpong_flag = 1 - l0_pingpong_flag;
+                    l0_offset = l0_pingpong_flag * L0AB_HALF_BUF_SIZE;
+                }
+                FftsCrossCoreSync<PIPE_FIX, 2>(QK_READY_STAGE2);
+            }
+            /* ************ CUBE2 stage1  ************* */
+            if constexpr (TYPE == 3) {
+                WaitFlagDev(VEC_DEQ_V0_READY);
+            }
+            uint32_t embed_split_size = EMBED_SPLIT;
+            for (uint32_t embed_split_idx = 0; embed_split_idx < embed_split_loop_v; ++embed_split_idx) {
+                uint32_t embed_split_offset_tight = embed_split_idx * EMBED_SPLIT;
+                uint32_t embed_split_offset = embed_split_idx * ROUND_EMBED_SPLIT;
+                if (embed_split_idx == embed_split_loop_v - 1) {
+                    embed_split_size = embedding_size_v - embed_split_offset_tight;
+                }
+                uint32_t round_embed_split_size = RoundUp<16>(embed_split_size);
+                
+                for (uint32_t split_idx = 0; split_idx < head_split_loop; split_idx++) {
+                    int32_t head_num_move = ((group_num_move == 1) && (split_idx == (head_split_loop - 1))) ?
+                            cur_head_num - head_split_num_move * split_idx * group_num_move : head_split_num_move;
+                    bool move_l1b_flag = 1;
+                    // *** Prepare V to L1
+                    uint64_t hiddenSize_offset = 
+                        (start_head + split_idx * head_split_num_move * group_num_move) / group_num * embedding_size_v;
+                    uint64_t offset2_hiddenSize = v_bias_flag ? hiddenSize_offset : 0;
+                    if constexpr (TYPE == 0 || TYPE == 1) {
+                        LoadKVToL1MLA(
+                            v_gm_tensor[hiddenSize_offset + embed_split_offset_tight],
+                            l1kv_buf_addr_tensor,
+                            move_l1b_flag,
+                            head_num_move, cur_batch, cur_kv_seqlen, start_kv, qk_round_n,
+                            real_n_loop, sub_n_loop, n_idx, embed_split_size, stride_vo
+                        );
+                        SET_FLAG(MTE2, MTE1, l1_pingpong_flag);
+                        WAIT_FLAG(MTE2, MTE1, l1_pingpong_flag);
+                        ProcessPVMLA(
+                            o_tmp_gm_tensor[(uint64_t)block_idx * TMP_SIZE * 2 +
+                                        split_idx * head_split_num_move * group_num_move * round_v +
+                                        embed_split_offset],
+                            p_gm_tensor[(uint64_t)block_idx * TMP_SIZE],
+                            l1p_buf_addr_tensor,
+                            qk_n, qk_round_n, head_num_move, group_num_move,
+                            head_split_num_move, cur_head_num, cur_head_num_round,
+                            split_idx, move_l1b_flag, SOFTMAX_READY_DECODER,
+                            embed_split_size, round_embed_split_size, embed_split_idx
+                        );
+                    }
+                    ChangePingPongFlag();
+                }
+            }
+            FftsCrossCoreSync<PIPE_FIX, 2>(UPDATE_READY_DECODER);
+            /* ************ CUBE2 stage2  ************* */
+            if (n_idx + 1 < n_loop) {
+                if constexpr (TYPE == 3) {
+                    WaitFlagDev(VEC_DEQ_V1_READY);
+                }
+                embed_split_size = EMBED_SPLIT;
+                for (uint32_t embed_split_idx = 0; embed_split_idx < embed_split_loop_v; ++embed_split_idx) {              
+                    uint32_t embed_split_offset_tight = embed_split_idx * EMBED_SPLIT;
+                    uint32_t embed_split_offset = embed_split_idx * ROUND_EMBED_SPLIT;
+                    if (embed_split_idx == embed_split_loop_v - 1) {
+                        embed_split_size = embedding_size_v - embed_split_offset_tight;
+                    }
+                    uint32_t round_embed_split_size = RoundUp<16>(embed_split_size);    
+                    for (uint32_t split_idx = 0; split_idx < head_split_loop; split_idx++) {
+                        int32_t head_num_move = ((group_num_move == 1) && (split_idx == (head_split_loop - 1))) ?
+                                cur_head_num - head_split_num_move * split_idx * group_num_move : head_split_num_move;
+                        bool move_l1b_flag = 1;
+                        // *** Prepare V to L1
+                        uint64_t hiddenSize_offset =
+                            (start_head + split_idx * head_split_num_move * group_num_move) / group_num * embedding_size_v;
+                        uint64_t offset2_hiddenSize = v_bias_flag ? hiddenSize_offset : 0;
+                        if constexpr (TYPE == 0 || TYPE == 1) {
+                            LoadKVToL1MLA(
+                                v_gm_tensor[hiddenSize_offset + embed_split_offset_tight],
+                                l1kv_buf_addr_tensor,
+                                move_l1b_flag,
+                                head_num_move, cur_batch, cur_kv_seqlen, start_kv, qk_round_n_2,
+                                real_n_loop, sub_n_loop, (n_idx + 1), embed_split_size, stride_vo
+                            );
+                            SET_FLAG(MTE2, MTE1, l1_pingpong_flag);
+                            WAIT_FLAG(MTE2, MTE1, l1_pingpong_flag);
+                            ProcessPVMLA(
+                                o_tmp_gm_tensor[(uint64_t)block_idx * TMP_SIZE * 2 +
+                                            split_idx * head_split_num_move * group_num_move * round_v +
+                                            TMP_SIZE +
+                                            embed_split_offset],
+                                p_gm_tensor[(uint64_t)block_idx * TMP_SIZE + TMP_SIZE / 2],
+                                l1p_buf_addr_tensor[qk_round_n * cur_head_num_round],
+                                qk_n_2, qk_round_n_2, head_num_move, group_num_move,
+                                head_split_num_move, cur_head_num, cur_head_num_round,
+                                split_idx, move_l1b_flag, SOFTMAX_READY_STAGE2,
+                                embed_split_size, round_embed_split_size, embed_split_idx
+                            );
+                        }
+                        ChangePingPongFlag();
+                    }
+                }
+                FftsCrossCoreSync<PIPE_FIX, 2>(UPDATE_READY_STAGE2);
+            }
+        }
+    }
+
+private:
+    __gm__ IN_DTYPE *__restrict__ q_gm{nullptr};
+    __gm__ IN_KVDTYPE *__restrict__ k_gm{nullptr};
+    __gm__ IN_KVDTYPE *__restrict__ v_gm{nullptr};
+
+    __gm__ TDESCALE *__restrict__ deq_scale1_gm{nullptr};
+    __gm__ TDESCALE *__restrict__ deq_scale2_gm{nullptr};
+    __gm__ TBIAS *__restrict__ offset1_gm{nullptr};
+    __gm__ TBIAS *__restrict__ offset2_gm{nullptr};
+    __gm__ int8_t *__restrict__ eye_gm{nullptr};
+
+    __gm__ float *__restrict__ s_gm{nullptr};
+    __gm__ IN_DTYPE *__restrict__ p_gm{nullptr};
+    __gm__ float *__restrict__ o_tmp_gm{nullptr};
+    __gm__ int32_t *__restrict__ block_tables_gm{nullptr};
+    __gm__ uint8_t *__restrict__ tiling_gm{nullptr};
+    __gm__ float *__restrict__ razor_offset_gm{nullptr};
+
+    AscendC::GlobalTensor<OUT_DTYPE> o_gm_tensor;
+    AscendC::GlobalTensor<IN_DTYPE> q_gm_tensor;
+    AscendC::GlobalTensor<IN_KVDTYPE> k_gm_tensor;
+    AscendC::GlobalTensor<IN_KVDTYPE> v_gm_tensor;
+    AscendC::GlobalTensor<float> s_gm_tensor;
+    AscendC::GlobalTensor<IN_DTYPE> p_gm_tensor;
+    AscendC::GlobalTensor<float> o_tmp_gm_tensor;
+    AscendC::GlobalTensor<TDESCALE> deq_scale1_gm_tensor;
+    AscendC::GlobalTensor<TDESCALE> deq_scale2_gm_tensor;
+    AscendC::GlobalTensor<TBIAS> offset1_gm_tensor;
+    AscendC::GlobalTensor<TBIAS> offset2_gm_tensor;
+    AscendC::GlobalTensor<int8_t> eye_gm_tensor;
+    AscendC::GlobalTensor<int32_t> block_tables_gm_tensor;
+
+    AscendC::GlobalTensor<IN_DTYPE> gm_k16_ping_;
+    AscendC::GlobalTensor<IN_DTYPE> gm_k16_pong_;
+    AscendC::GlobalTensor<IN_DTYPE> gm_v16_ping_;
+    AscendC::GlobalTensor<IN_DTYPE> gm_v16_pong_;
+
+    const uint32_t l1q_buf_addr_offset = (TYPE == 2) ? (L1_E_UINT8_SIZE + L1_SCALE_UINT8_SIZE * 2 + L1_OFFSET_UINT8_SIZE * 2) : 0;
+
+    const uint32_t l1p_buf_addr_offset = (TYPE == 2) ? (L1_E_UINT8_SIZE + L1_SCALE_UINT8_SIZE * 2 + L1_OFFSET_UINT8_SIZE * 2 + 2 * L0AB_UINT8_BLOCK_SIZE)
+                                                     : (2 * L0AB_UINT8_BLOCK_SIZE);
+    const uint32_t l1kv_buf_int8_addr_offset = L1_E_UINT8_SIZE + L1_SCALE_UINT8_SIZE*2 + L1_OFFSET_UINT8_SIZE*2 + 4 * L0AB_UINT8_BLOCK_SIZE;
+    const uint32_t l1kv_buf_addr_offset = (TYPE == 2) ? (L1_E_UINT8_SIZE + L1_SCALE_UINT8_SIZE * 2 + L1_OFFSET_UINT8_SIZE * 2 + 4 * L0AB_UINT8_BLOCK_SIZE)
+                                                      : (4 * L0AB_UINT8_BLOCK_SIZE);
+    const uint32_t l1e_buf_addr_offset = 0;
+    const uint32_t l1scale_buf_addr_offset = L1_E_UINT8_SIZE;
+    const uint32_t l1offset_buf_addr_offset = L1_E_UINT8_SIZE + L1_SCALE_UINT8_SIZE * 2;
+
+    AsdopsBuffer<ArchType::ASCEND_V220> buf;
+    AscendC::LocalTensor<IN_DTYPE> l1q_buf_addr_tensor = buf.GetBuffer<BufferType::ASCEND_CB, IN_DTYPE>(l1q_buf_addr_offset);
+
+    AscendC::LocalTensor<IN_KVDTYPE> l1kv_buf_int8_addr_tensor = buf.GetBuffer<BufferType::ASCEND_CB, IN_KVDTYPE>(l1kv_buf_int8_addr_offset);
+    AscendC::LocalTensor<IN_DTYPE> l1kv_buf_addr_tensor = buf.GetBuffer<BufferType::ASCEND_CB, IN_DTYPE>(l1kv_buf_addr_offset);
+
+    AscendC::LocalTensor<IN_DTYPE> l1p_buf_addr_tensor = buf.GetBuffer<BufferType::ASCEND_CB, IN_DTYPE>(l1p_buf_addr_offset);
+    AscendC::LocalTensor<int8_t> l1e_buf_addr_tensor = buf.GetBuffer<BufferType::ASCEND_CB, int8_t>(l1e_buf_addr_offset);
+    AscendC::LocalTensor<TDESCALE> l1scale_buf_addr_tensor = buf.GetBuffer<BufferType::ASCEND_CB, TDESCALE>(l1scale_buf_addr_offset);
+    AscendC::LocalTensor<TBIAS> l1offset_buf_addr_tensor = buf.GetBuffer<BufferType::ASCEND_CB, TBIAS>(l1offset_buf_addr_offset);
+
+    AscendC::LocalTensor<IN_DTYPE> l0a_buf_tensor = buf.GetBuffer<BufferType::ASCEND_L0A, IN_DTYPE>(0);
+    AscendC::LocalTensor<IN_DTYPE> l0b_buf_tensor = buf.GetBuffer<BufferType::ASCEND_L0B, IN_DTYPE>(0);
+    AscendC::LocalTensor<float> l0c_buf_tensor = buf.GetBuffer<BufferType::ASCEND_L0C, float>(0);
+
+    uint32_t k_bias_flag{0};
+    uint32_t v_bias_flag{0};
+    uint32_t num_tokens{0};
+    uint32_t q_heads{0};
+    uint32_t kv_heads{0};
+    uint32_t embedding_size{0};
+    uint32_t embedding_size_v{0};
+    uint32_t block_size{0};
+    uint32_t max_num_blocks_per_query{0};
+    uint32_t group_num{0};
+    uint32_t former_group_num_move{1};
+    uint32_t tail_group_num_move{1};
+    uint32_t former_head_split_num{1};
+    uint32_t tail_head_split_num{1};
+    uint32_t stride_kv{0};
+    uint32_t stride_vo{0};
+    uint32_t m{0};
+    uint32_t __k{0};
+    uint32_t __v{0};
+    uint32_t round_k{0};
+    uint32_t round_v{0};
+    uint32_t core_per_batch{0};
+    uint32_t process_num{0};
+    uint64_t former_batch{0};
+    uint32_t former_head_split{0};
+    uint64_t tail_batch{0};
+    uint32_t tail_head_split{0};
+    uint32_t head_split_num{0};
+    uint32_t tiling_head_size{0};
+    uint32_t tiling_para_size{0};
+    uint32_t kv_split_per_core{0};
+    uint32_t kv_split_core_num{1};
+    uint32_t block_size_calc{0};
+
+    uint32_t embed_split_size_qk{0};
+    uint32_t embed_split_loop_qk{1};
+    uint32_t embed_split_size_v{0};
+    uint32_t embed_split_loop_v{1};
+    bool is_multi_head_mmad{0};
+    uint32_t move_l1b_offset = 0;
+    uint32_t q_head_original{0};
+    uint32_t compressHead{0};
+
+    uint32_t l1_pingpong_flag = 0;
+    uint32_t l1b_pingpong_flag = 1;
+    uint32_t l0_pingpong_flag = 0;
+    uint32_t l0b_pingpong_flag = 1;
+
+    uint32_t l1_offset = l1_pingpong_flag * L1_HALF_BUF_SIZE_DECODER;
+    uint32_t l1b_offset = l1b_pingpong_flag * L1_KV_HALF_BUF_SIZE;
+    uint32_t l1_scale_offset = l1_pingpong_flag * L1_SCALE_UINT64_SIZE;
+    uint32_t l1_bias_offset = l1_pingpong_flag * L1_OFFSET_INT32_SIZE;
+    uint32_t l0_offset = l0_pingpong_flag * L0AB_HALF_BUF_SIZE;
+    uint32_t l0b_offset = l0b_pingpong_flag * L0AB_HALF_BUF_SIZE;
+
+    uint32_t prefill_batch_size_;
+    uint32_t decoder_batch_size_;
+};
+
+
+#elif __DAV_C220_VEC__
+
+
+constexpr int32_t HALF_VECTOR_SIZE = 128;
+constexpr int32_t FLOAT_VECTOR_SIZE = 64;
+constexpr int64_t UB_UINT8_BLOCK_SIZE = 24576;      // 96 * 128 * 2B // prefill/decoder diff
+constexpr int64_t UB_UINT8_LINE_SIZE = 512;         // 64 * 4B，申请两倍空间防踩踏。
+constexpr int64_t UB_HALF_LINE_SIZE = 256;          // UB_FLOAT_LINE_SIZE * 2
+constexpr int64_t UB_FLOAT_LINE_SIZE = 128;         // 64，申请两倍空间防踩踏。
+
+constexpr int64_t PRE_UB_UINT8_BLOCK_SIZE = 16384;  // 64 * 128 * 2B
+constexpr int32_t VECTOR_SIZE = 128;                // prefill
+constexpr int32_t FLOAT_BLOCK_SIZE = 8;
+constexpr int32_t UB_HALF_BUF_SIZE = 8192;          // 64 * 128
+constexpr int32_t TMP_SIZE_DECODER = 32768;
+constexpr int32_t STAGE2_UB_UINT8_BLOCK_SIZE = 8192;
+constexpr int32_t CUBE_MATRIX_SIZE = 256;
+constexpr uint32_t MAX_UB_SIZE = 196608; // 192 * 1024
+
+__aicore__ __attribute__((always_inline)) void inline __set_mask(int32_t len)
+{
+    uint64_t mask = 0;
+    uint64_t one = 1;
+    uint64_t temp = len % FLOAT_VECTOR_SIZE;
+    for (int64_t i = 0; i < temp; i++) {
+        mask |= one << i;
+    }
+
+    if (len == VECTOR_SIZE) {
+        SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+    } else if (len >= FLOAT_VECTOR_SIZE) {
+        SetVectorMask<int8_t>(mask, (uint64_t)-1);
+    } else {
+        SetVectorMask<int8_t>(0x0, mask);
+    }
+}
+
+template <uint32_t TYPE = 0, typename IN_DTYPE = half, typename OUT_DTYPE = half, bool SplitKV = false>
+class UnpadMLAttentionDecoderSplitAiv{
+public:
+    __aicore__ __attribute__((always_inline)) inline UnpadMLAttentionDecoderSplitAiv(uint32_t prefill_batch_size, uint32_t decoder_batch_size) {
+        prefill_batch_size_ = prefill_batch_size;
+        decoder_batch_size_ = decoder_batch_size;
+    }
+
+    __aicore__ __attribute__((always_inline)) inline void SetArgs(
+        __gm__ uint8_t *__restrict__ sync,
+        __gm__ uint8_t* __restrict__ gm_k8,
+        __gm__ uint8_t* __restrict__ gm_v8,
+        __gm__ uint8_t* __restrict__ gm_scale1,
+        __gm__ uint8_t* __restrict__ gm_offset1,
+        __gm__ uint8_t* __restrict__ gm_scale2,
+        __gm__ uint8_t* __restrict__ gm_offset2,
+        __gm__ uint8_t* __restrict__ gm_block_table,
+        __gm__ uint8_t *__restrict__ mask_in_gm,
+        __gm__ uint8_t *__restrict__ o_out_gm,
+        __gm__ uint8_t *__restrict__ s_out_gm,
+        __gm__ uint8_t *__restrict__ p_out_gm,
+        __gm__ uint8_t *__restrict__ o_temp_gm,
+        __gm__ uint8_t *__restrict__ globalo_gm,
+        __gm__ uint8_t *__restrict__ o_core_out_tmp_gm,
+        __gm__ uint8_t *__restrict__ l_in_gm,
+        __gm__ uint8_t* __restrict__ gm_k16,
+        __gm__ uint8_t* __restrict__ gm_v16,
+        __gm__ uint8_t *__restrict__ tiling_para_gm,
+        __gm__ uint8_t *__restrict__ razorOffset)
+    {
+        SetFftsBaseAddr((uint64_t)sync);
+        sub_block_idx = static_cast<uint64_t>(GetSubBlockidx());
+        SetAtomicnone();
+        SetMasknorm();
+        SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+
+        mask_gm = reinterpret_cast<__gm__ IN_DTYPE *>(mask_in_gm);
+        o_gm = reinterpret_cast<__gm__ OUT_DTYPE *>(o_out_gm);
+        s_gm = reinterpret_cast<__gm__ float *>(s_out_gm);
+        p_gm = reinterpret_cast<__gm__ IN_DTYPE *>(p_out_gm);
+        o_tmp_gm = reinterpret_cast<__gm__ float *>(o_temp_gm);
+        go_gm = reinterpret_cast<__gm__ float *>(globalo_gm);
+        o_core_tmp_gm = reinterpret_cast<__gm__ float *>(o_core_out_tmp_gm);
+        tiling_gm = reinterpret_cast<__gm__ uint8_t *>(tiling_para_gm);
+        l_gm = reinterpret_cast<__gm__ float *>(l_in_gm);
+        razor_offset_gm = reinterpret_cast<__gm__ float *>(razorOffset);
+        gm_block_tables_ = reinterpret_cast<__gm__ int32_t*>(gm_block_table);
+
+        mask_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE *>(mask_gm));
+        o_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ OUT_DTYPE *>(o_gm));
+        s_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(s_gm));
+        p_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE *>(p_gm));
+        o_tmp_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(o_tmp_gm));
+        go_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(go_gm));
+        o_core_tmp_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(o_core_tmp_gm));
+        l_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(l_gm));
+        razor_offset_gm_tensor.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(razor_offset_gm));
+
+        num_tokens = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm));
+        q_heads = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_NUMHEADS));
+        embedding_size = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_HEADDIM));
+        embedding_size_v = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_HEADDIM_V));
+        block_size = (int32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_BLOCKSIZE));
+        max_num_blocks_per_query = (uint32_t)(*((__gm__ uint32_t*)tiling_para_gm + TILING_MAXBLOCKS));
+        tor = (float)(*((__gm__ float *)tiling_para_gm + TILING_TOR));
+        num_kv_heads = (uint32_t)(*((__gm__ uint32_t*)tiling_para_gm + TILING_KVHEADS));
+        former_batch = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_FORMER_BATCH));
+        former_head_split = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_FORMER_HEAD));
+        tail_batch = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_TAIL_BATCH));
+        tail_head_split = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_TAIL_HEAD));
+        max_context_len = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_MASK_MAX_LEN));
+        batch_stride = (uint64_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_BATCH_STRIDE));
+        head_stride = (uint64_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_HEAD_STRIDE));
+        tiling_head_size = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_HEADSIZE));
+        tiling_para_size = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_PARASIZE));
+        group_num = (uint32_t)(*((__gm__ uint32_t*)tiling_para_gm + TILING_GROUPNUM));
+
+        kv_split_per_core = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_KVSPLIT));
+        kv_split_core_num = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_KVCORENUM));
+        block_size_calc = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_BLOCKSIZE_CALC));
+        q_head_original = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_QHEADORIGINAL));
+        compressHead = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_COMPRESSHEAD));
+
+
+        go_flag_scalar = 1;
+        gl_flag_scalar = 1;
+
+        modCoef = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_MODCOEF));
+        divCoef = (uint32_t)(*((__gm__ uint32_t *)tiling_para_gm + TILING_DIVCOEF));
+
+        __k = embedding_size;
+        round_k = (__k + 15) / 16 * 16;
+        __v = embedding_size_v;
+        round_v = RoundUp<16>(__v);
+
+
+        embed_split_size_qk = embedding_size > EMBED_SPLIT ? EMBED_SPLIT : embedding_size;
+        embed_split_loop_qk = (embedding_size + embed_split_size_qk - 1) / embed_split_size_qk;
+
+        embed_split_size_v = embedding_size_v > EMBED_SPLIT ? EMBED_SPLIT : embedding_size_v;
+        embed_split_loop_v = (embedding_size_v + embed_split_size_v - 1) / embed_split_size_v;
+
+        core_per_batch = (q_heads + split_size - 1) / split_size;
+        process_num = num_tokens * core_per_batch;
+        if constexpr (TYPE == 3) {
+            gm_k8_.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(gm_k8));
+            gm_v8_.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(gm_v8));
+            gm_k16_ping_.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE*>(gm_k16) +
+                                    get_block_idx() * block_size_calc * former_head_split * embedding_size);
+            gm_k16_pong_.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE*>(gm_k16) +
+                                    get_block_num() * block_size_calc * former_head_split * embedding_size + 
+                                    get_block_idx() * block_size_calc * former_head_split * embedding_size);
+            gm_v16_ping_.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE*>(gm_v16) +
+                                    get_block_idx() * block_size_calc * former_head_split * embedding_size);
+            gm_v16_pong_.SetGlobalBuffer(reinterpret_cast<__gm__ IN_DTYPE*>(gm_v16) + 
+                                    get_block_num() * block_size_calc * former_head_split * embedding_size + 
+                                    get_block_idx() * block_size_calc * former_head_split * embedding_size);
+            gm_block_tables_ = reinterpret_cast<__gm__ int32_t*>(gm_block_table);
+            gm_scale1_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(gm_scale1));
+            gm_offset1_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(gm_offset1));
+            gm_scale2_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(gm_scale2));
+            gm_offset2_.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(gm_offset2));
+            if (gm_offset1 != nullptr) {
+                k_bias_flag = 1;
+            }
+            if (gm_offset2 != nullptr) {
+                v_bias_flag = 1;
+            }
+
+        }
+    }
+
+    __aicore__ __attribute__((always_inline)) inline void Run()
+    {
+        SET_FLAG(MTE3, V, EVENT_ID0);
+        SET_FLAG(MTE3, MTE2, EVENT_ID0);
+        SET_FLAG(MTE3, MTE2, EVENT_ID2);
+        SET_FLAG(MTE3, MTE2, EVENT_ID3);
+        SET_FLAG(MTE3, MTE2, EVENT_ID4);
+        SET_FLAG(V, MTE2, EVENT_ID4);
+        SET_FLAG(V, MTE2, EVENT_ID0);
+        SET_FLAG(V, MTE2, EVENT_ID2);
+        SET_FLAG(MTE3, V, EVENT_ID2);
+
+        core_per_batch = (q_heads + former_head_split - 1) / former_head_split;
+        process_num = static_cast<uint64_t>(former_batch) * core_per_batch * kv_split_core_num;
+        for (uint32_t process = block_idx; process < process_num; process += uint32_t(block_num)) {
+            uint32_t cur_batch = process / (core_per_batch * kv_split_core_num) + prefill_batch_size_;
+            uint32_t offset_tiling = tiling_head_size + tiling_para_size * cur_batch;
+            cur_batch = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 13 + offset_tiling));
+            offset_tiling = tiling_head_size + tiling_para_size * cur_batch;
+            uint32_t batch_idx = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 8 + offset_tiling));
+            uint32_t kv_seqlen = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 1 + offset_tiling));
+            uint32_t kv_seqlen_align = (kv_seqlen + block_size - 1) / block_size * block_size;
+            if (kv_seqlen == 0) {
+                continue;
+            }
+            uint32_t cur_head = (process / kv_split_core_num) % core_per_batch;
+            uint32_t cur_nIndx = process % kv_split_core_num;
+            uint32_t start_head = cur_head * former_head_split;
+            uint32_t cur_kv_seqlen = kv_split_per_core;
+            uint32_t kv_loop = (kv_seqlen_align + kv_split_per_core - 1) /  kv_split_per_core;
+            if (cur_nIndx >= kv_loop) {
+                continue;
+            }
+            if (cur_nIndx == (kv_loop - 1)) {
+                cur_kv_seqlen = kv_seqlen - cur_nIndx * kv_split_per_core;
+            }
+            uint32_t cur_head_num = former_head_split;
+            if (cur_head == (core_per_batch - 1)) {
+                cur_head_num = q_heads - cur_head * former_head_split;
+            }
+            InnerRunVectorMLA(batch_idx, start_head, cur_nIndx, cur_kv_seqlen, cur_head_num, offset_tiling, kv_seqlen);
+
+        }
+        if (tail_batch > 0) {
+            core_per_batch = (q_heads + tail_head_split - 1) / tail_head_split;
+            process_num = static_cast<uint64_t>(tail_batch) * core_per_batch;
+            for (uint32_t process = block_idx; process < process_num; process += uint32_t(block_num)) {
+                uint32_t cur_batch = process / core_per_batch + former_batch + prefill_batch_size_;
+                uint32_t offset_tiling = tiling_head_size + tiling_para_size * cur_batch;
+                cur_batch = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 13 + offset_tiling));
+                offset_tiling = tiling_head_size + tiling_para_size * cur_batch;
+                uint32_t batch_idx = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 8 + offset_tiling));
+                uint32_t kv_seqlen = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 1 + offset_tiling));
+                if (kv_seqlen == 0) {
+                    continue;
+                }
+                uint32_t cur_kv_seqlen = kv_seqlen;
+                uint32_t cur_nIndx = 0;
+                uint32_t cur_head = process % core_per_batch;
+                uint32_t cur_head_num = tail_head_split;
+                if (cur_head == (core_per_batch - 1)) {
+                    cur_head_num = q_heads - cur_head * tail_head_split;
+                }
+                uint32_t start_head = (process % core_per_batch) * tail_head_split;
+                InnerRunVectorMLA(batch_idx, start_head, cur_nIndx, cur_kv_seqlen, cur_head_num, offset_tiling, kv_seqlen);
+            }
+        }
+        WAIT_FLAG(MTE3, V, EVENT_ID0);
+        WAIT_FLAG(MTE3, MTE2, EVENT_ID0);
+        WAIT_FLAG(MTE3, MTE2, EVENT_ID2);
+        WAIT_FLAG(MTE3, MTE2, EVENT_ID3);
+        WAIT_FLAG(MTE3, MTE2, EVENT_ID4);
+        WAIT_FLAG(V, MTE2, EVENT_ID0);
+        WAIT_FLAG(V, MTE2, EVENT_ID2);
+        WAIT_FLAG(V, MTE2, EVENT_ID4);
+        WAIT_FLAG(MTE3, V, EVENT_ID2);
+        PIPE_BARRIER(ALL);
+        if (SplitKV) {
+            int reduce_flag_id = 3;
+            FftsCrossCoreSync<PIPE_MTE3, 0>(reduce_flag_id);
+            WaitFlagDev(3);
+            CombineScale(decoder_batch_size_, q_heads, kv_split_core_num, embedding_size);
+        }
+    }
+
+private:
+
+    __aicore__ __attribute__((always_inline)) inline void CopyScale(uint32_t sub_m, uint32_t l_offset, uint32_t o_offset)
+    {
+        SET_FLAG(V, MTE3, EVENT_ID2);
+        WAIT_FLAG(V, MTE3, EVENT_ID2);
+        ub_to_gm_align<ArchType::ASCEND_V220, float>(
+            l_gm_tensor[(int64_t)l_offset],
+            tv32_ubuf_tensor,
+            0,               // sid
+            sub_m,           // nBurst
+            4,               // lenBurst
+            0,               // leftPaddingNum
+            0,               // rightPaddingNum
+            0,                 // srcGap
+            (kv_split_core_num - 1) * 4 // dstGap
+        );
+        if (gl_flag_scalar == 0) {
+            SET_FLAG(MTE3, V, EVENT_ID2);
+            gl_flag_scalar = 1;
+        }
+        uint32_t src_gap = ((__k % 16 <= 8) && (__k % 16 > 0))? 1 : 0;
+        ub_to_gm_align<ArchType::ASCEND_V220, float>(
+            o_core_tmp_gm_tensor[(int64_t)o_offset],
+            go32_ubuf_tensor,
+            0,        // sid
+            sub_m,    // nBurst
+            __k * 4,  // lenBurst
+            0,        // leftPaddingNum
+            0,        // rightPaddingNum
+            src_gap,   // srcGap
+            (kv_split_core_num - 1) * __k * 4  // dstGap
+        );
+    }
+    __aicore__ __attribute__((always_inline)) inline void CombineScale(uint32_t num_tokens, uint32_t q_heads, uint32_t kv_split_core_num, uint32_t embedding_size) 
+    {
+        SetAtomicnone();
+        SetMasknorm();
+        SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+        const uint32_t ll_ubuf_stage2_offset = 0;  // 1 块，存放 存放local L fp32
+        const uint32_t lm_ubuf_stage2_offset = 1 * STAGE2_UB_UINT8_BLOCK_SIZE;  //  1 块，存放 l max, fp32
+        const uint32_t tl_ubuf_stage2_offset = 1 * STAGE2_UB_UINT8_BLOCK_SIZE + 1 * UB_UINT8_LINE_SIZE; // 1 块，存放中间结果tmp l, fp32
+        const uint32_t rs_ubuf_stage2_offset = 2 * STAGE2_UB_UINT8_BLOCK_SIZE + 1 * UB_UINT8_LINE_SIZE; // 存放中间结果row sum, fp32
+        const uint32_t ts_ubuf_stage2_offset = 2 * STAGE2_UB_UINT8_BLOCK_SIZE + 2 * UB_UINT8_LINE_SIZE; // 存放中间结果row sum, fp32
+        const uint32_t gl_ubuf_stage2_offset = 2 * STAGE2_UB_UINT8_BLOCK_SIZE + 3 * UB_UINT8_LINE_SIZE; // 存放gloal scale, fp32
+        const uint32_t lo_ubuf_stage2_offset = 4 * STAGE2_UB_UINT8_BLOCK_SIZE + 3 * UB_UINT8_LINE_SIZE;
+        const uint32_t to_ubuf_stage2_offset = 8 * STAGE2_UB_UINT8_BLOCK_SIZE + 3 * UB_UINT8_LINE_SIZE;
+        const uint32_t go_ubuf_stage2_offset = 12 * STAGE2_UB_UINT8_BLOCK_SIZE + 3 * UB_UINT8_LINE_SIZE;
+        const uint32_t go16_ubuf_stage2_offset = 16 * STAGE2_UB_UINT8_BLOCK_SIZE + 3 * UB_UINT8_LINE_SIZE;
+
+        AscendC::LocalTensor<float> ll_ubuf_stage2_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(ll_ubuf_stage2_offset);  // 1 块，存放 存放local L fp32
+        AscendC::LocalTensor<float> lm_ubuf_stage2_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(lm_ubuf_stage2_offset);  //  1 块，存放 l max, fp32
+        AscendC::LocalTensor<float> tl_ubuf_stage2_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(tl_ubuf_stage2_offset); // 1 块，存放中间结果tmp l, fp32
+        AscendC::LocalTensor<float> rs_ubuf_stage2_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(rs_ubuf_stage2_offset); // 存放中间结果row sum, fp32
+        AscendC::LocalTensor<float> ts_ubuf_stage2_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(ts_ubuf_stage2_offset); // 存放中间结果row sum, fp32
+        AscendC::LocalTensor<float> gl_ubuf_stage2_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(gl_ubuf_stage2_offset); // 存放gloal scale, fp32
+        AscendC::LocalTensor<float> lo_ubuf_stage2_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(lo_ubuf_stage2_offset);
+        AscendC::LocalTensor<float> to_ubuf_stage2_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(to_ubuf_stage2_offset);
+        AscendC::LocalTensor<float> go_ubuf_stage2_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(go_ubuf_stage2_offset);
+        AscendC::LocalTensor<OUT_DTYPE> go16_ubuf_stage2_tensor = buf.GetBuffer<BufferType::ASCEND_UB, OUT_DTYPE>(go16_ubuf_stage2_offset);
+
+        uint32_t batch_size = num_tokens;
+        uint32_t split_block = 1;
+        uint32_t __k0 = embedding_size;
+        uint32_t roundk_64 = (__k0 + 63) / 64 * 64;
+        uint32_t roundk_8 = (__k0 + 7) / 8 * 8;
+        uint32_t core_per_batch = (q_heads + split_block - 1) / split_block;
+
+        uint32_t process_num = core_per_batch * batch_size;
+        SET_FLAG(MTE3,MTE2,EVENT_ID0);
+        for (uint32_t process = block_idx; process < process_num; process += uint32_t(block_num)){
+            uint32_t cur_batch = process / core_per_batch + prefill_batch_size_;
+            uint32_t offset_tiling = tiling_head_size + tiling_para_size * cur_batch;
+            cur_batch = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 13 + offset_tiling));
+            offset_tiling = tiling_head_size + tiling_para_size * cur_batch;
+            uint32_t kv_seqlen = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 1 + offset_tiling));
+            if (kv_seqlen == 0) {
+                continue;
+            }
+            uint32_t addr_o_high32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 6 + offset_tiling));
+            uint32_t addr_o_loww32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 7 + offset_tiling));
+            uint64_t addr_o_scalar = (uint64_t)(((uint64_t)addr_o_high32) << 32 | addr_o_loww32);
+            uint32_t addr_o_fd_high32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 15 + offset_tiling));
+            uint32_t addr_o_fd_loww32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 16 + offset_tiling));
+            uint64_t addr_o_fd_scalar = (uint64_t)(((uint64_t)addr_o_fd_high32) << 32 | addr_o_fd_loww32);
+            uint32_t addr_l_high32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 11 + offset_tiling));
+            uint32_t addr_l_loww32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 12 + offset_tiling));
+            uint64_t addr_l_scalar = (uint64_t)(((uint64_t)addr_l_high32) << 32 | addr_l_loww32);
+
+            uint32_t kv_seqlen_align = (kv_seqlen + block_size - 1) / block_size * block_size;
+            uint32_t m_split = (kv_seqlen_align + kv_split_per_core - 1) /  kv_split_per_core;
+            uint32_t cur_core = process % core_per_batch;
+            uint32_t cur_head_num = split_block; // 每次计算的head数量
+            if (cur_core == (core_per_batch - 1)){
+                cur_head_num = q_heads - cur_core * split_block;
+            }
+            uint32_t start_head = cur_core * split_block;
+            uint64_t addr_l_offset = addr_l_scalar;
+            uint64_t addr_o_offset = addr_o_fd_scalar * kv_split_core_num;
+            uint32_t l_remain = m_split % FLOAT_BLOCK_SIZE;
+            WAIT_FLAG(MTE3,MTE2,EVENT_ID0);
+            gm_to_ub_align<ArchType::ASCEND_V220, float>(
+                ll_ubuf_stage2_tensor,
+                l_gm_tensor[addr_l_offset + start_head * kv_split_core_num],
+                0,                            // sid
+                1,                            // nBurst
+                m_split * 4,                  // lenBurst
+                0,                           // leftPaddingNum
+                FLOAT_BLOCK_SIZE - l_remain,  // rightPaddingNum
+                0,                           // srcGap
+                0   // dstGap
+            );
+
+            SET_FLAG(MTE2, V, EVENT_ID0);
+            WAIT_FLAG(MTE2, V, EVENT_ID0);
+
+            __set_mask(m_split);
+            cmax_v<ArchType::ASCEND_V220, float, AscendC::ReduceOrder::ORDER_ONLY_VALUE>(lm_ubuf_stage2_tensor,
+                ll_ubuf_stage2_tensor,
+                (m_split + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,                              // repeat
+                1,                                           // dstRepeatStride
+                1,                                           // srcBlockStride
+                8                                            // srcRepeatStride
+            );
+            PIPE_BARRIER(V);
+
+            // lse_accum - lse_max
+            SET_FLAG(V, S, EVENT_ID3);
+            WAIT_FLAG(V, S, EVENT_ID3);
+            float lse_max = -(float)(*((__ubuf__ float*)lm_ubuf_stage2_tensor.GetPhyAddr()));
+            SET_FLAG(S, V, EVENT_ID2);
+            WAIT_FLAG(S, V, EVENT_ID2);
+            adds_v<ArchType::ASCEND_V220, float>(tl_ubuf_stage2_tensor,
+                ll_ubuf_stage2_tensor,
+                lse_max,
+                (m_split + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+                1,                               // dstBlockStride
+                1,                               // srcBlockStride
+                8,                               // dstRepeatStride
+                8                               // src0RepeatStride
+            );
+            PIPE_BARRIER(V);
+
+            // expf
+            exp_v<ArchType::ASCEND_V220, float>(tl_ubuf_stage2_tensor,
+                tl_ubuf_stage2_tensor,
+                (m_split + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+                1,                               // dstBlockStride
+                1,                               // srcBlockStride
+                8,                               // dstRepeatStride
+                8                                // srcRepeatStride
+            );
+            PIPE_BARRIER(V);
+
+            // rowsum lse_sum
+            cadd_v<ArchType::ASCEND_V220, float>(rs_ubuf_stage2_tensor,
+                tl_ubuf_stage2_tensor,
+                (m_split + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,    // repeat
+                1,                                           // dstRepeatStride
+                1,                                           // srcBlockStride
+                8                                            // srcRepeatStride
+            );
+            PIPE_BARRIER(V);
+            __set_mask(cur_head_num);
+            ln_v<ArchType::ASCEND_V220, float>(rs_ubuf_stage2_tensor,
+                rs_ubuf_stage2_tensor,
+                (cur_head_num + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,     // repeat
+                1,                               // dstBlockStride
+                1,                               // srcBlockStride
+                8,                               // dstRepeatStride
+                8                                // srcRepeatStride
+            );
+            PIPE_BARRIER(V);
+
+            // logf(lse_sum) + lse_max
+            add_v<ArchType::ASCEND_V220, float>(ts_ubuf_stage2_tensor,
+                rs_ubuf_stage2_tensor,
+                lm_ubuf_stage2_tensor,
+                (cur_head_num + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,      // repeat
+                1,                                // dstBlockStride
+                1,                                // src0BlockStride
+                1,                                // src1BlockStride
+                8,                                // dstRepeatStride
+                8,                                // src0RepeatStride
+                8                                 // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+
+            // scale = expf(lse_accum(l) - lse_logsum)
+            __set_mask(m_split);
+            SET_FLAG(V, S, EVENT_ID3);
+            WAIT_FLAG(V, S, EVENT_ID3);
+            float log_sum = -(float)(*((__ubuf__ float*)ts_ubuf_stage2_tensor.GetPhyAddr()));
+            SET_FLAG(S, V, EVENT_ID2);
+            WAIT_FLAG(S, V, EVENT_ID2);
+            adds_v<ArchType::ASCEND_V220, float>(gl_ubuf_stage2_tensor,
+                ll_ubuf_stage2_tensor,
+                log_sum,
+                (m_split + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+                1,           // dstBlockStride
+                1,           // src0BlockStride
+                8,           // dstRepeatStride
+                8            // src0RepeatStride
+            );
+            PIPE_BARRIER(V);
+
+            __set_mask(m_split);
+            exp_v<ArchType::ASCEND_V220, float>(gl_ubuf_stage2_tensor,
+                gl_ubuf_stage2_tensor,
+                (m_split + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+                1,                               // dstBlockStride
+                1,                               // srcBlockStride
+                8,                               // dstRepeatStride
+                8                                // srcRepeatStride
+            );
+            PIPE_BARRIER(V);
+            // msplit * 1 * embedding
+            gm_to_ub_align<ArchType::ASCEND_V220, float>(
+                lo_ubuf_stage2_tensor,
+                o_core_tmp_gm_tensor[addr_o_offset + start_head * kv_split_core_num * __k0],
+                0,                                           // sid
+                m_split,                                     // nBurst
+                __k0 * 4,                                    // lenBurst
+                0,                                           // leftPaddingNum
+                0,                                           // rightPaddingNum
+                0,                                           // srcGap
+                0                                            // dstGap
+            );
+            SET_FLAG(MTE2, V, EVENT_ID1);
+            WAIT_FLAG(MTE2, V, EVENT_ID1);
+            SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+            for (uint32_t n_idx = 0; n_idx < m_split; n_idx++){
+                SET_FLAG(V, S, EVENT_ID3);
+                WAIT_FLAG(V, S, EVENT_ID3);
+                float scale = (float)(*((__ubuf__ float*)gl_ubuf_stage2_tensor.GetPhyAddr() + n_idx));
+                SET_FLAG(S, V, EVENT_ID2);
+                WAIT_FLAG(S, V, EVENT_ID2);
+
+                muls_v<ArchType::ASCEND_V220, float>(to_ubuf_stage2_tensor,
+                    lo_ubuf_stage2_tensor[n_idx * roundk_8],
+                    scale,
+                    (roundk_64 + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+                    1,                                                   // dstBlockStride
+                    1,                                                   // srcBlockStride
+                    8,                                                               // dstRepeatStride
+                    8                                                                // srcRepeatStride
+                );
+                PIPE_BARRIER(V);
+
+                if (n_idx == 0){
+                    adds_v<ArchType::ASCEND_V220, float>(go_ubuf_stage2_tensor,
+                        to_ubuf_stage2_tensor,
+                        0,
+                        roundk_64 / FLOAT_VECTOR_SIZE,  // repeat
+                        1,           // dstBlockStride
+                        1,           // src0BlockStride
+                        8,           // dstRepeatStride
+                        8           // src0RepeatStride
+                    );
+                    PIPE_BARRIER(V);
+
+                }
+                else{
+                    add_v<ArchType::ASCEND_V220, float>(go_ubuf_stage2_tensor,
+                        to_ubuf_stage2_tensor,
+                        go_ubuf_stage2_tensor,
+                        roundk_64 / FLOAT_VECTOR_SIZE, // repeat
+                        1,                          // dstBlockStride
+                        1,                          // src0BlockStride
+                        1,                          // src1BlockStride
+                        8,                          // dstRepeatStride
+                        8,                          // src0RepeatStride
+                        8                           // src1RepeatStride
+                    );
+                    PIPE_BARRIER(V);
+
+                }
+            }
+            if constexpr (TYPE == 1) {
+                convr_v<ArchType::ASCEND_V220, float, OUT_DTYPE>(go16_ubuf_stage2_tensor,
+                    go_ubuf_stage2_tensor,
+                    roundk_64 / FLOAT_VECTOR_SIZE,   // repeat
+                    1,                               // dstBlockStride
+                    1,                               // srcBlockStride
+                    4,                               // dstRepeatStride
+                    8                                // srcRepeatStride
+                );
+            } else {
+                conv_v<ArchType::ASCEND_V220, float, OUT_DTYPE>(go16_ubuf_stage2_tensor,
+                    go_ubuf_stage2_tensor,
+                    roundk_64 / FLOAT_VECTOR_SIZE,   // repeat
+                    1,                               // dstBlockStride
+                    1,                               // srcBlockStride
+                    4,                               // dstRepeatStride
+                    8                                // srcRepeatStride
+                );
+            }
+            PIPE_BARRIER(V);
+            SET_FLAG(V, MTE3, EVENT_ID1);
+            WAIT_FLAG(V, MTE3, EVENT_ID1);
+            ub_to_gm_align<ArchType::ASCEND_V220, OUT_DTYPE>(
+                o_gm_tensor[addr_o_scalar + start_head * __k0],
+                go16_ubuf_stage2_tensor,
+                0,                       // sid
+                1,                       // nBurst
+                __k0 * 2,                // lenBurst
+                0,                       // leftPaddingNum
+                0,                       // rightPaddingNum
+                0,                       // srcGap
+                0                        // dstGap
+            );
+            SET_FLAG(MTE3,MTE2,EVENT_ID0);
+        }
+        WAIT_FLAG(MTE3,MTE2,EVENT_ID0);
+    }
+
+    __aicore__ __attribute__((always_inline)) inline void SoftmaxStage1MLA(
+        AscendC::GlobalTensor<IN_DTYPE> p_gm_tensor,
+        AscendC::GlobalTensor<float> s_gm_tensor,
+        AscendC::GlobalTensor<IN_DTYPE> mask_gm_tensor,
+        AscendC::LocalTensor<float> dm32_ubuf_tensor,
+        AscendC::LocalTensor<float> ll_ubuf_tensor,
+        uint32_t n_idx,
+        uint32_t qk_n,
+        uint32_t qk_round_n,
+        uint32_t sub_m,
+        uint32_t mask_offset)
+    {
+        uint32_t sub_m_d128 = (sub_m + 127) / 128;  // up aligned to 128
+        uint32_t sub_m_d64 = (sub_m + 63) / 64;     // up aligned to 128
+        uint32_t round_sub_m = (sub_m + 15) / 16 * 16;
+        uint32_t mask_repeat_stride = head_stride == 0 ? 0 : qk_round_n / FLOAT_BLOCK_SIZE;
+        uint32_t mask_nburst = head_stride == 0 ? 1 : sub_m;
+        WAIT_FLAG(V, MTE2, EVENT_ID2);
+        gm_to_ub<ArchType::ASCEND_V220, float>(
+            ls32_ubuf_tensor,
+            s_gm_tensor,
+            0,                        // sid
+            1,                        // nBurst
+            sub_m * qk_round_n / FLOAT_BLOCK_SIZE,  // lenBurst
+            0,                        // srcGap
+            0                         // dstGap
+        );
+        SET_FLAG(MTE2, V, EVENT_ID0);
+        WAIT_FLAG(MTE2, V, EVENT_ID0);
+        // *** ls = tor * ls
+        for (uint32_t vadd_idx = 0; vadd_idx < qk_n / FLOAT_VECTOR_SIZE; ++vadd_idx) {
+            muls_v<ArchType::ASCEND_V220, float>(ls32_ubuf_tensor[vadd_idx * FLOAT_VECTOR_SIZE],
+                ls32_ubuf_tensor[vadd_idx * FLOAT_VECTOR_SIZE],
+                tor,
+                sub_m,                          // repeat
+                1,                              // dstBlockStride
+                1,                              // srcBlockStride
+                qk_round_n / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                qk_round_n / FLOAT_BLOCK_SIZE  // srcRepeatStride
+            );
+        }
+        if (qk_n % FLOAT_VECTOR_SIZE > 0) {
+            __set_mask(qk_n % FLOAT_VECTOR_SIZE);
+            muls_v<ArchType::ASCEND_V220, float>(ls32_ubuf_tensor[qk_n / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                ls32_ubuf_tensor[qk_n / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                tor,
+                sub_m,                          // repeat
+                1,                              // dstBlockStride
+                1,                              // srcBlockStride
+                qk_round_n / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                qk_round_n / FLOAT_BLOCK_SIZE  // srcRepeatStride
+            );
+            SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+        }
+        PIPE_BARRIER(V);
+
+        if (mask_gm != nullptr) {
+            WAIT_FLAG(V, MTE2, EVENT_ID0);
+            WAIT_FLAG(MTE3, MTE2, EVENT_ID0);
+            gm_to_ub_align<ArchType::ASCEND_V220, IN_DTYPE>(
+                mask_ubuf_tensor,
+                mask_gm_tensor,
+                0,                                 // sid
+                mask_nburst,                             // nBurst
+                qk_n * 2,                          // lenBurst
+                0,                                 // leftPaddingNum
+                0,                                 // rightPaddingNum
+                (max_context_len - qk_n) * 2,      // srcGap
+                0                                  // dstGap
+            );
+            SET_FLAG(MTE2, V, EVENT_ID0);
+            WAIT_FLAG(MTE2, V, EVENT_ID0);
+            SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+            conv_v<ArchType::ASCEND_V220, IN_DTYPE, float>(mask32_ubuf_tensor,
+                mask_ubuf_tensor,
+                (mask_nburst * qk_round_n + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+                1,                                                         // dstBlockStride
+                1,                                                         // srcBlockStride
+                8,                                                         // dstRepeatStride
+                4                                                          // srcRepeatStride
+            );
+            PIPE_BARRIER(V);
+            // *** ls = ls + mask
+            for (uint32_t vadd_idx = 0; vadd_idx < qk_n / FLOAT_VECTOR_SIZE; ++vadd_idx) {
+                add_v<ArchType::ASCEND_V220, float>(ls32_ubuf_tensor[vadd_idx * FLOAT_VECTOR_SIZE],
+                    ls32_ubuf_tensor[vadd_idx * FLOAT_VECTOR_SIZE],
+                    mask32_ubuf_tensor[vadd_idx * FLOAT_VECTOR_SIZE],
+                    sub_m,                          // repeat
+                    1,                              // dstBlockStride
+                    1,                              // src0BlockStride
+                    1,                              // src1BlockStride
+                    qk_round_n / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                    qk_round_n / FLOAT_BLOCK_SIZE,  // src0RepeatStride
+                    mask_repeat_stride              // src1RepeatStride
+                );
+            }
+            if (qk_n % FLOAT_VECTOR_SIZE > 0) {
+                __set_mask(qk_n % FLOAT_VECTOR_SIZE);
+                add_v<ArchType::ASCEND_V220, float>(ls32_ubuf_tensor[qk_n / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                    ls32_ubuf_tensor[qk_n / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                    mask32_ubuf_tensor[qk_n / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                    sub_m,                          // repeat
+                    1,                              // dstBlockStride
+                    1,                              // src0BlockStride
+                    1,                              // src1BlockStride
+                    qk_round_n / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                    qk_round_n / FLOAT_BLOCK_SIZE,  // src0RepeatStride
+                    mask_repeat_stride              // src1RepeatStride
+                );
+                SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+            }
+            PIPE_BARRIER(V);
+            SET_FLAG(V, MTE2, EVENT_ID0);
+        }
+
+        // *** lm = rowmax(ls)
+        if (qk_n <= FLOAT_VECTOR_SIZE) {
+            __set_mask(qk_n);
+            cmax_v<ArchType::ASCEND_V220, float, AscendC::ReduceOrder::ORDER_ONLY_VALUE>(lm32_ubuf_tensor,
+                ls32_ubuf_tensor,
+                sub_m,                    // repeat
+                1,                        // dstRepeatStride
+                1,                        // srcBlockStride
+                qk_round_n / FLOAT_BLOCK_SIZE   // srcRepeatStride
+            );
+        } else {
+            ub_to_ub<ArchType::ASCEND_V220, float>(
+                lp32_ubuf_tensor,
+                ls32_ubuf_tensor,
+                0,                                             // sid
+                sub_m,                                         // nBurst
+                HALF_VECTOR_SIZE / BLOCK_SIZE,                 // lenBurst
+                (qk_round_n - FLOAT_VECTOR_SIZE) / FLOAT_BLOCK_SIZE,  // srcGap
+                0                                              // dstGap
+            );
+            PIPE_BARRIER(V);
+            for (uint32_t rowmax_idx = 1; rowmax_idx < qk_n / FLOAT_VECTOR_SIZE; ++rowmax_idx) {
+                max_v<ArchType::ASCEND_V220, float>(lp32_ubuf_tensor,
+                    lp32_ubuf_tensor,
+                    ls32_ubuf_tensor[rowmax_idx * FLOAT_VECTOR_SIZE],
+                    sub_m,                         // repeat
+                    1,                             // dstBlockStride
+                    1,                             // src0BlockStride
+                    1,                             // src1BlockStride
+                    8,                             // dstRepeatStride
+                    8,                             // src0RepeatStride
+                    qk_round_n / FLOAT_BLOCK_SIZE  // src1RepeatStride
+                );
+            PIPE_BARRIER(V);
+            }
+            if (qk_n % FLOAT_VECTOR_SIZE > 0) {
+                __set_mask(qk_n % FLOAT_VECTOR_SIZE);
+                max_v<ArchType::ASCEND_V220, float>(lp32_ubuf_tensor,
+                    lp32_ubuf_tensor,
+                    ls32_ubuf_tensor[qk_n / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                    sub_m,                         // repeat
+                    1,                             // dstBlockStride
+                    1,                             // src0BlockStride
+                    1,                             // src1BlockStride
+                    8,                             // dstRepeatStride
+                    8,                             // src0RepeatStride
+                    qk_round_n / FLOAT_BLOCK_SIZE  // src1RepeatStride
+                );
+            }
+            PIPE_BARRIER(V);
+            SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+            cmax_v<ArchType::ASCEND_V220, float, AscendC::ReduceOrder::ORDER_ONLY_VALUE>(lm32_ubuf_tensor,
+                lp32_ubuf_tensor,
+                sub_m,      // repeat
+                1,          // dstRepeatStride
+                1,          // srcBlockStride
+                8           // srcRepeatStride
+            );
+        }
+        PIPE_BARRIER(V);
+        SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+        if (n_idx != 0) {
+            // *** hm = vmax(lm, gm)
+            max_v<ArchType::ASCEND_V220, float>(hm32_ubuf_tensor,
+                lm32_ubuf_tensor,
+                gm32_ubuf_tensor,
+                sub_m_d64,  // repeat
+                1,           // dstBlockStride
+                1,           // src0BlockStride
+                1,           // src1BlockStride
+                8,           // dstRepeatStride
+                8,           // src0RepeatStride
+                8            // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+            // *** dm = gm - hm
+            sub_v<ArchType::ASCEND_V220, float>(dm32_ubuf_tensor,
+                gm32_ubuf_tensor,
+                hm32_ubuf_tensor,
+                sub_m_d64,  // repeat
+                1,           // dstBlockStride
+                1,           // src0BlockStride
+                1,           // src1BlockStride
+                8,           // dstRepeatStride
+                8,           // src0RepeatStride
+                8            // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+        } else {
+            // *** hm = lm
+            ub_to_ub<ArchType::ASCEND_V220, float>(
+                hm32_ubuf_tensor,
+                lm32_ubuf_tensor,
+                0,                         // sid
+                1,                         // nBurst
+                round_sub_m / FLOAT_BLOCK_SIZE,  // lenBurst
+                0,                         // srcGap
+                0                          // dstGap
+            );
+            PIPE_BARRIER(V);
+        }
+        // *** gm = hm
+        ub_to_ub<ArchType::ASCEND_V220, float>(
+            gm32_ubuf_tensor,
+            hm32_ubuf_tensor,
+            0,                         // sid
+            1,                         // nBurst
+            round_sub_m / FLOAT_BLOCK_SIZE,  // lenBurst
+            0,                         // srcGap
+            0                          // dstGap
+        );
+        PIPE_BARRIER(V);
+        // *** hm_block = expand_to_block(hm), 存放于 tv
+        if constexpr (SplitKV) {
+            if (n_idx == 0) {
+                if (gl_flag_scalar == 1) {
+                    WAIT_FLAG(MTE3, V, EVENT_ID2);
+                    gl_flag_scalar = 0;
+                }
+            }
+        }
+        brcb_v<ArchType::ASCEND_V220, uint32_t>(
+            tv32_ubuf_tensor.ReinterpretCast<uint32_t>(),
+            hm32_ubuf_tensor.ReinterpretCast<uint32_t>(),
+            1,               // dstBlockStride
+            8,               // dstRepeatStride
+            round_sub_m / FLOAT_BLOCK_SIZE  // repeat
+        );
+        PIPE_BARRIER(V);
+        // *** ls = ls - hm_block
+        for (uint32_t vsub_idx = 0; vsub_idx < qk_n / FLOAT_VECTOR_SIZE; ++vsub_idx) {
+            sub_v<ArchType::ASCEND_V220, float>(ls32_ubuf_tensor[vsub_idx * FLOAT_VECTOR_SIZE],
+                ls32_ubuf_tensor[vsub_idx * FLOAT_VECTOR_SIZE],
+                tv32_ubuf_tensor,
+                sub_m,                    // repeat
+                1,                        // dstBlockStride
+                1,                        // src0BlockStride
+                0,                        // src1BlockStride
+                qk_round_n / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                qk_round_n / FLOAT_BLOCK_SIZE,  // src0RepeatStride
+                1                         // src1RepeatStride
+            );
+        }
+        if (qk_n % FLOAT_VECTOR_SIZE > 0) {
+            __set_mask(qk_n % FLOAT_VECTOR_SIZE);
+            sub_v<ArchType::ASCEND_V220, float>(ls32_ubuf_tensor[qk_n / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                ls32_ubuf_tensor[qk_n / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                tv32_ubuf_tensor,
+                sub_m,                    // repeat
+                1,                        // dstBlockStride
+                1,                        // src0BlockStride
+                0,                        // src1BlockStride
+                qk_round_n / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                qk_round_n / FLOAT_BLOCK_SIZE,  // src0RepeatStride
+                1                         // src1RepeatStride
+            );
+            SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+        }
+        PIPE_BARRIER(V);
+        // *** ls = exp(ls)
+        exp_v<ArchType::ASCEND_V220, float>(ls32_ubuf_tensor,
+            ls32_ubuf_tensor,
+            (sub_m * qk_round_n + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+            1,                               // dstBlockStride
+            1,                               // srcBlockStride
+            8,                               // dstRepeatStride
+            8                                // srcRepeatStride
+        );
+        PIPE_BARRIER(V);
+        // *** lp = castfp32to16(ls)
+        if constexpr (TYPE == 1) {
+            convr_v<ArchType::ASCEND_V220, float, IN_DTYPE>(lp_ubuf_tensor,
+                ls32_ubuf_tensor,
+                (sub_m * qk_round_n + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+                1,                               // dstBlockStride
+                1,                               // srcBlockStride
+                4,                               // dstRepeatStride
+                8                                // srcRepeatStride
+            );
+        } else {
+            conv_v<ArchType::ASCEND_V220, float, IN_DTYPE>(lp_ubuf_tensor,
+                ls32_ubuf_tensor,
+                (sub_m * qk_round_n + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+                1,                               // dstBlockStride
+                1,                               // srcBlockStride
+                4,                               // dstRepeatStride
+                8                                // srcRepeatStride
+            );
+        }
+        PIPE_BARRIER(V);
+        SET_FLAG(V, MTE3, EVENT_ID0);
+        WAIT_FLAG(V, MTE3, EVENT_ID0);
+        ub_to_gm<ArchType::ASCEND_V220, IN_DTYPE>(
+            p_gm_tensor,
+            lp_ubuf_tensor,
+            0,                        // sid
+            1,                        // nBurst
+            sub_m * qk_round_n / BLOCK_SIZE,  // lenBurst
+            0,                        // srcGap
+            0                         // dstGap
+        );
+        if (mask_gm != nullptr){
+            SET_FLAG(MTE3, MTE2, EVENT_ID0);
+        }
+        // *** ll = rowsum(ls32)
+        if (qk_n <= FLOAT_VECTOR_SIZE) {
+            __set_mask(qk_n);
+            cadd_v<ArchType::ASCEND_V220, float>(ll_ubuf_tensor,
+                ls32_ubuf_tensor,
+                sub_m,           // repeat
+                1,               // dstRepeatStride
+                1,               // srcBlockStride
+                qk_round_n / FLOAT_BLOCK_SIZE   // srcRepeatStride
+            );
+        } else {
+            for (uint32_t rowsum_idx = 1; rowsum_idx < qk_n / FLOAT_VECTOR_SIZE; ++rowsum_idx) {
+                add_v<ArchType::ASCEND_V220, float>(ls32_ubuf_tensor,
+                    ls32_ubuf_tensor,
+                    ls32_ubuf_tensor[rowsum_idx * FLOAT_VECTOR_SIZE],
+                    sub_m,           // repeat
+                    1,               // dstBlockStride
+                    1,               // src0BlockStride
+                    1,               // src1BlockStride
+                    qk_round_n / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                    qk_round_n / FLOAT_BLOCK_SIZE,  // src0RepeatStride
+                    qk_round_n / FLOAT_BLOCK_SIZE   // src1RepeatStride
+                );
+                PIPE_BARRIER(V);
+            }
+            if (qk_n % FLOAT_VECTOR_SIZE > 0) {
+                __set_mask(qk_n % FLOAT_VECTOR_SIZE);
+                add_v<ArchType::ASCEND_V220, float>(ls32_ubuf_tensor,
+                    ls32_ubuf_tensor,
+                    ls32_ubuf_tensor[qk_n / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                    sub_m,           // repeat
+                    1,               // dstBlockStride
+                    1,               // src0BlockStride
+                    1,               // src1BlockStride
+                    qk_round_n / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                    qk_round_n / FLOAT_BLOCK_SIZE,  // src0RepeatStride
+                    qk_round_n / FLOAT_BLOCK_SIZE   // src1RepeatStride
+                );
+            }
+            PIPE_BARRIER(V);
+            SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+            cadd_v<ArchType::ASCEND_V220, float>(ll_ubuf_tensor,
+                ls32_ubuf_tensor,
+                sub_m,           // repeat
+                1,               // dstRepeatStride
+                1,               // srcBlockStride
+                qk_round_n / FLOAT_BLOCK_SIZE   // srcRepeatStride
+            );
+        }
+        SET_FLAG(V, MTE2, EVENT_ID2);
+        PIPE_BARRIER(V);
+    }
+
+    __aicore__ __attribute__((always_inline)) inline void SoftmaxStage2MLA(
+        AscendC::GlobalTensor<float> o_tmp_gm_tensor,
+        AscendC::GlobalTensor<float> go_gm_tensor,
+        AscendC::GlobalTensor<OUT_DTYPE> o_gm_tensor,
+        AscendC::LocalTensor<float> dm32_ubuf_tensor,
+        AscendC::LocalTensor<float> ll_ubuf_tensor,
+        uint32_t n_idx,
+        uint32_t n_loop,
+        uint32_t qk_n,
+        uint32_t qk_round_n,
+        uint32_t sub_m,
+        uint64_t l_offset,
+        uint64_t o_offset,
+        uint32_t embed_split_size,
+        uint32_t round_embed_split_size,       
+        uint32_t embed_split_idx)
+    {
+        uint32_t sub_m_d64 = (sub_m + 63) / 64;     // up aligned to 64
+        uint32_t round_sub_m = (sub_m + 15) / 16 * 16;
+
+        WAIT_FLAG(V, MTE2, EVENT_ID0);
+        gm_to_ub<ArchType::ASCEND_V220, float>(
+            lo_ubuf_tensor,
+            o_tmp_gm_tensor,
+            0,                    // sid
+            sub_m,                    // nBurst
+            round_embed_split_size / FLOAT_BLOCK_SIZE,  // lenBurst
+            (round_v - round_embed_split_size) / FLOAT_BLOCK_SIZE,                    // srcGap
+            0                     // dstGap
+        );
+        SET_FLAG(MTE2, V, EVENT_ID0);
+        WAIT_FLAG(MTE2, V, EVENT_ID0);
+        SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+        WAIT_FLAG(MTE3, MTE2, EVENT_ID4);
+        if (n_idx != 0) {
+            if (embed_split_idx == 0) {
+                // *** dm = exp(dm)
+                exp_v<ArchType::ASCEND_V220, float>(dm32_ubuf_tensor,
+                    dm32_ubuf_tensor,
+                    sub_m_d64,  // repeat
+                    1,          // dstBlockStride
+                    1,          // srcBlockStride
+                    8,          // dstRepeatStride
+                    8           // srcRepeatStride
+                );
+                PIPE_BARRIER(V);
+                // *** gl = dm * gl
+                mul_v<ArchType::ASCEND_V220, float>(gl32_ubuf_tensor,
+                    dm32_ubuf_tensor,
+                    gl32_ubuf_tensor,
+                    sub_m_d64,  // repeat
+                    1,          // dstBlockStride
+                    1,          // src0BlockStride
+                    1,          // src1BlockStride
+                    8,          // dstRepeatStride
+                    8,          // src0RepeatStride
+                    8           // src1RepeatStride
+                );
+                PIPE_BARRIER(V);
+                // *** gl = ll + gl
+                add_v<ArchType::ASCEND_V220, float>(gl32_ubuf_tensor,
+                    gl32_ubuf_tensor,
+                    ll_ubuf_tensor,
+                    sub_m_d64,  // repeat
+                    1,          // dstBlockStride
+                    1,          // src0BlockStride
+                    1,          // src1BlockStride
+                    8,          // dstRepeatStride
+                    8,          // src0RepeatStride
+                    8           // src1RepeatStride
+                );
+                PIPE_BARRIER(V);
+            }
+            // *** dm_block = expand_to_block(dm), 存放于 tv
+            brcb_v<ArchType::ASCEND_V220, uint32_t>(tv32_ubuf_tensor.ReinterpretCast<uint32_t>(),
+                dm32_ubuf_tensor.ReinterpretCast<uint32_t>(),
+                1,               // dstBlockStride
+                8,               // dstRepeatStride
+                round_sub_m / FLOAT_BLOCK_SIZE  // repeat
+            );
+            PIPE_BARRIER(V);
+
+            gm_to_ub<ArchType::ASCEND_V220, float>(
+                go32_ubuf_tensor,
+                go_gm_tensor,
+                0,
+                sub_m,
+                round_embed_split_size / FLOAT_BLOCK_SIZE,
+                (round_v - round_embed_split_size) / FLOAT_BLOCK_SIZE,
+                0
+            );
+            SET_FLAG(MTE2, V, EVENT_ID3);
+            WAIT_FLAG(MTE2, V, EVENT_ID3);
+
+            // *** go = go * dm_block
+            for (uint32_t vmul_idx = 0; vmul_idx < embed_split_size / FLOAT_VECTOR_SIZE; ++vmul_idx) {
+                mul_v<ArchType::ASCEND_V220, float>(go32_ubuf_tensor[vmul_idx * FLOAT_VECTOR_SIZE],
+                    go32_ubuf_tensor[vmul_idx * FLOAT_VECTOR_SIZE],
+                    tv32_ubuf_tensor,
+                    sub_m,        // repeat
+                    1,            // dstBlockStride
+                    1,            // src0BlockStride
+                    0,            // src1BlockStride
+                    round_embed_split_size / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                    round_embed_split_size / FLOAT_BLOCK_SIZE,  // src0RepeatStride
+                    1             // src1RepeatStride
+                );
+            }
+            if (embed_split_size % FLOAT_VECTOR_SIZE > 0) {
+                __set_mask(embed_split_size % FLOAT_VECTOR_SIZE);
+                mul_v<ArchType::ASCEND_V220, float>(go32_ubuf_tensor[embed_split_size / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                    go32_ubuf_tensor[embed_split_size / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                    tv32_ubuf_tensor,
+                    sub_m,        // repeat
+                    1,            // dstBlockStride
+                    1,            // src0BlockStride
+                    0,            // src1BlockStride
+                    round_embed_split_size / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                    round_embed_split_size / FLOAT_BLOCK_SIZE,  // src0RepeatStride
+                    1             // src1RepeatStride
+                );
+                SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+            }
+            PIPE_BARRIER(V);
+            // *** go = lo + go
+            add_v<ArchType::ASCEND_V220, float>(go32_ubuf_tensor,
+                go32_ubuf_tensor,
+                lo_ubuf_tensor,
+                (sub_m * round_embed_split_size + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+                1,                            // dstBlockStride
+                1,                            // src0BlockStride
+                1,                            // src1BlockStride
+                8,                            // dstRepeatStride
+                8,                            // src0RepeatStride
+                8                             // src1RepeatStride
+            );
+            PIPE_BARRIER(V);
+        } else {
+            if (embed_split_idx == 0) {
+                // *** gl = ll
+                ub_to_ub<ArchType::ASCEND_V220, float>(
+                    gl32_ubuf_tensor,
+                    ll_ubuf_tensor,
+                    0,                // sid
+                    1,                // nBurst
+                    round_sub_m / FLOAT_BLOCK_SIZE,  // lenBurst
+                    0,                // srcGap
+                    0                 // dstGap
+                );
+                PIPE_BARRIER(V);
+            }
+            gm_to_ub<ArchType::ASCEND_V220, float>(
+                go32_ubuf_tensor,
+                o_tmp_gm_tensor,
+                0,                    // sid
+                sub_m,                    // nBurst
+                round_embed_split_size / FLOAT_BLOCK_SIZE,  // lenBurst
+                (round_v - round_embed_split_size) / FLOAT_BLOCK_SIZE,                    // srcGap
+                0                     // dstGap
+            );
+            SET_FLAG(MTE2, V, EVENT_ID3);
+            WAIT_FLAG(MTE2, V, EVENT_ID3);
+        }
+        SET_FLAG(V, MTE2, EVENT_ID0);
+
+        if (n_idx == n_loop - 1) {
+            // *** gl_block = expand_to_block(gl), 存放于 tv
+            brcb_v<ArchType::ASCEND_V220, uint32_t>(tv32_ubuf_tensor.ReinterpretCast<uint32_t>(),
+                gl32_ubuf_tensor.ReinterpretCast<uint32_t>(),
+                1,               // dstBlockStride
+                8,               // dstRepeatStride
+                round_sub_m / FLOAT_BLOCK_SIZE  // repeat
+            );
+            PIPE_BARRIER(V);
+            // *** go = go / gl_block
+            for (uint32_t vdiv_idx = 0; vdiv_idx < embed_split_size / FLOAT_VECTOR_SIZE; ++vdiv_idx) {
+                div_v<ArchType::ASCEND_V220, float>(go32_ubuf_tensor[vdiv_idx * FLOAT_VECTOR_SIZE],
+                    go32_ubuf_tensor[vdiv_idx * FLOAT_VECTOR_SIZE],
+                    tv32_ubuf_tensor,
+                    sub_m,                 // repeat
+                    1,                     // dstBlockStride
+                    1,                     // src0BlockStride
+                    0,                     // src1BlockStride
+                    round_embed_split_size / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                    round_embed_split_size / FLOAT_BLOCK_SIZE,  // src0RepeatStride
+                    1                      // src1RepeatStride
+                );
+            }
+            if (embed_split_size % FLOAT_VECTOR_SIZE > 0) {
+                __set_mask(embed_split_size % FLOAT_VECTOR_SIZE);
+                div_v<ArchType::ASCEND_V220, float>(go32_ubuf_tensor[embed_split_size / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                    go32_ubuf_tensor[embed_split_size / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE],
+                    tv32_ubuf_tensor,
+                    sub_m,                 // repeat
+                    1,                     // dstBlockStride
+                    1,                     // src0BlockStride
+                    0,                     // src1BlockStride
+                    round_embed_split_size / FLOAT_BLOCK_SIZE,  // dstRepeatStride
+                    round_embed_split_size / FLOAT_BLOCK_SIZE,  // src0RepeatStride
+                    1                      // src1RepeatStride
+                );
+                SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);  // fix hidden_size=96
+            }
+            PIPE_BARRIER(V);
+            if constexpr (SplitKV) {
+                // log（l）
+                ln_v<ArchType::ASCEND_V220, float>(tv32_ubuf_tensor,
+                    tv32_ubuf_tensor,
+                    sub_m, // repeat
+                    1,       // dstBlockStride
+                    1,       // srcBlockStride
+                    8,       // dstRepeatStride
+                    8        // srcRepeatStride
+                );
+                PIPE_BARRIER(V);
+                brcb_v<ArchType::ASCEND_V220, uint32_t>(hm32_ubuf_tensor.ReinterpretCast<uint32_t>(),
+                    gm32_ubuf_tensor.ReinterpretCast<uint32_t>(),
+                    1,               // dstBlockStride
+                    8,               // dstRepeatStride
+                    round_sub_m / FLOAT_BLOCK_SIZE  // repeat
+                );
+                PIPE_BARRIER(V);
+                // logf(lse_sum) + lse_max
+                add_v<ArchType::ASCEND_V220, float>(tv32_ubuf_tensor,
+                    tv32_ubuf_tensor,
+                    hm32_ubuf_tensor,
+                    sub_m,                        // repeat
+                    1,                                // dstBlockStride
+                    1,                                // src0BlockStride
+                    1,                                // src1BlockStride
+                    8,                                // dstRepeatStride
+                    8,                                // src0RepeatStride
+                    8                                 // src1RepeatStride
+                );
+                CopyScale(sub_m, l_offset, o_offset);
+            } else {
+                // *** go = castfp32to16(go)
+                if constexpr (TYPE == 1) {
+                    convr_v<ArchType::ASCEND_V220, float, IN_DTYPE>(go_ubuf_tensor,
+                        go32_ubuf_tensor,
+                        (sub_m * round_embed_split_size + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+                        1,                            // dstBlockStride
+                        1,                            // srcBlockStride
+                        4,                            // dstRepeatStride
+                        8                             // srcRepeatStride
+                    );
+                } else {
+                    conv_v<ArchType::ASCEND_V220, float, IN_DTYPE>(go_ubuf_tensor,
+                        go32_ubuf_tensor,
+                        (sub_m * round_embed_split_size + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE,  // repeat
+                        1,                            // dstBlockStride
+                        1,                            // srcBlockStride
+                        4,                            // dstRepeatStride
+                        8                             // srcRepeatStride
+                    );
+                }
+                SET_FLAG(V, MTE3, EVENT_ID0);
+                WAIT_FLAG(V, MTE3, EVENT_ID0);
+                ub_to_gm_align<ArchType::ASCEND_V220, IN_DTYPE>(
+                    o_gm_tensor,
+                    go_ubuf_tensor,
+                    0,        // sid
+                    sub_m,    // nBurst
+                    embed_split_size * 2,  // lenBurst
+                    0,        // leftPaddingNum
+                    0,        // rightPaddingNum
+                    0,        // srcGap
+                    (__v - embed_split_size) * 2        // dstGap
+                );
+            }
+            // ********************* move O to GM ************************
+        } else {
+            SET_FLAG(V, MTE3, EVENT_ID5);
+            WAIT_FLAG(V, MTE3, EVENT_ID5);                
+            ub_to_gm<ArchType::ASCEND_V220, float>(
+                go_gm_tensor,
+                go32_ubuf_tensor,
+                0,
+                sub_m,
+                round_embed_split_size / FLOAT_BLOCK_SIZE,
+                0,
+                (round_v - round_embed_split_size) / FLOAT_BLOCK_SIZE
+            );
+        }
+        SET_FLAG(MTE3, MTE2, EVENT_ID4);
+    }
+
+    __aicore__ inline void DequantKV(GlobalT<IN_DTYPE> dst,           // [qk_n, sub_m, embedding_size]
+                                     GlobalT<int8_t> src,         // [num_blocks, block_size, hidden_size]
+                                     GlobalT<int32_t> deq_offset, // [hidden_size,]
+                                     GlobalT<float> deq_scale,    // [hidden_size,]
+                                     const uint32_t hidden_size, const uint32_t batch_idx, const uint32_t n_idx,
+                                     const uint32_t kv_seq_len, const uint32_t sub_m, const uint32_t num_head,
+                                     const uint32_t real_n_loop, const uint32_t sub_n_loop, const uint32_t start_kv,
+                                     const uint32_t bias_flag)
+    {
+        SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+        uint32_t start_seq = 0;
+
+        // [qk_n, sub_m, head_size]
+        SET_FLAG(V, MTE2, EVENT_ID5);
+        SET_FLAG(MTE3, V, EVENT_ID5);
+        SET_FLAG(V, MTE2, EVENT_ID6);
+        SET_FLAG(MTE3, V, EVENT_ID6);
+        uint32_t cu_hidden_d64 =
+            (sub_m * embedding_size + FLOAT_VECTOR_SIZE - 1) / FLOAT_VECTOR_SIZE * FLOAT_VECTOR_SIZE;
+        for (uint32_t ni = 0; ni < sub_n_loop; ++ni) {
+            uint32_t actual_idx = n_idx * sub_n_loop + ni;
+            if (actual_idx >= real_n_loop) {
+                break;
+            }
+            uint32_t sub_qk_n = (actual_idx != real_n_loop - 1) ? block_size : kv_seq_len - actual_idx * block_size;
+            uint32_t page_idx = (uint32_t)(*(gm_block_tables_ + batch_idx * max_num_blocks_per_query +
+                                             start_kv / block_size + actual_idx));
+            uint32_t num_deq_kv = 16 * sub_m * embedding_size;
+            uint32_t dequant_ping_pang = 0;
+            // [sub_qk_n, sub_m, head_size]
+            for (uint32_t si = 0; si < sub_qk_n; si += KV_SEQ_STEP) {
+                // copy src from gm to ub
+                uint32_t seq_len_frag = Min(sub_qk_n - si, KV_SEQ_STEP);
+
+                WAIT_FLAG(V, MTE2, EVENT_ID5 + dequant_ping_pang);
+                gm_to_ub_align<ArchType::ASCEND_V220, int8_t>(ub_kv_int8_[dequant_ping_pang * num_deq_kv],
+                                                              src[(page_idx * block_size + si) * hidden_size],
+                                                              0,                                      // sid
+                                                              seq_len_frag,                           // nBurst
+                                                              sub_m * embedding_size,                 // lenBurst
+                                                              0,                                      // leftPaddingNum
+                                                              0,                                      // rightPaddingNum
+                                                              (hidden_size - sub_m * embedding_size), // srcGap
+                                                              0                                       // dstGap
+                );
+
+                if (si == 0 && ni == 0) {
+                    if (bias_flag) {
+                        // copy deq_offset from gm to ub
+                        gm_to_ub_align<ArchType::ASCEND_V220, int32_t>(ub_offset_, deq_offset,
+                                                                       0,                          // sid
+                                                                       1,                          // nBurst
+                                                                       sub_m * embedding_size * 4, // lenBurst
+                                                                       0,                          // leftPaddingNum
+                                                                       0,                          // rightPaddingNum
+                                                                       0,                          // srcGap
+                                                                       0                           // dstGap
+                        );
+                        SET_FLAG(MTE2, V, EVENT_ID4);
+                        WAIT_FLAG(MTE2, V, EVENT_ID4);
+                        conv_v<ArchType::ASCEND_V220, int32_t, float>(ub_offset_f32,                     // dst
+                                                                      ub_offset_,                        // src
+                                                                      cu_hidden_d64 / FLOAT_VECTOR_SIZE, // repeat
+                                                                      1, // dstBlockStride
+                                                                      1, // srcBlockStride
+                                                                      8, // dstRepeatStride
+                                                                      8  // srcRepeatStride
+                        );
+                    }
+                    gm_to_ub_align<ArchType::ASCEND_V220, float>(ub_scale_, deq_scale,
+                                                                 0,                          // sid
+                                                                 1,                          // nBurst
+                                                                 sub_m * embedding_size * 4, // lenBurst
+                                                                 0,                          // leftPaddingNum
+                                                                 0,                          // rightPaddingNum
+                                                                 0,                          // srcGap
+                                                                 0                           // dstGap
+                    );
+                }
+                SET_FLAG(MTE2, V, EVENT_ID5 + dequant_ping_pang);
+                WAIT_FLAG(MTE2, V, EVENT_ID5 + dequant_ping_pang);
+
+                // cast src(int8) -> src(fp16) -> src(int32)
+                uint64_t numel_kv = seq_len_frag * sub_m * embedding_size;
+                uint32_t count = numel_kv / MAX_NUMEL_INST_B16;
+
+                WAIT_FLAG(MTE3, V, EVENT_ID5 + dequant_ping_pang);
+
+                for (uint32_t i = 0; i < count; ++i) {
+                    conv_v<ArchType::ASCEND_V220, int8_t, half>(
+                        ub_kv_fp16_[dequant_ping_pang * num_deq_kv + i * MAX_NUMEL_INST_B16].template ReinterpretCast<half>(), // dst
+                        ub_kv_int8_[dequant_ping_pang * num_deq_kv + i * MAX_NUMEL_INST_B16], // src
+                        255,                                                                  // repeat
+                        1,                                                                    // dstBlockStride
+                        1,                                                                    // srcBlockStride
+                        8,                                                                    // dstRepeatStride
+                        4                                                                     // srcRepeatStride
+                    );
+                }
+                conv_v<ArchType::ASCEND_V220, int8_t, half>(
+                    ub_kv_fp16_[dequant_ping_pang * num_deq_kv + count * MAX_NUMEL_INST_B16].template ReinterpretCast<half>(), // dst
+                    ub_kv_int8_[dequant_ping_pang * num_deq_kv + count * MAX_NUMEL_INST_B16], // src
+                    (numel_kv - count * MAX_NUMEL_INST_B16) / HALF_VECTOR_SIZE,               // repeat
+                    1,                                                                        // dstBlockStride
+                    1,                                                                        // srcBlockStride
+                    8,                                                                        // dstRepeatStride
+                    4                                                                         // srcRepeatStride
+                );
+                SET_FLAG(V, MTE2, EVENT_ID5 + dequant_ping_pang);
+                // cast src(fp16) -> src(float)
+                PIPE_BARRIER(V);
+                count = numel_kv / MAX_NUMEL_INST_B32;
+                for (uint32_t i = 0; i < count; ++i) {
+                    conv_v<ArchType::ASCEND_V220, half, float>(
+                        ub_kv_fp32_[dequant_ping_pang * num_deq_kv + i * MAX_NUMEL_INST_B32], // dst
+                        ub_kv_fp16_[dequant_ping_pang * num_deq_kv + i * MAX_NUMEL_INST_B32].template ReinterpretCast<half>(), // src
+                        255,                                                                  // repeat
+                        1,                                                                    // dstBlockStride
+                        1,                                                                    // srcBlockStride
+                        8,                                                                    // dstRepeatStride
+                        4                                                                     // srcRepeatStride
+                    );
+                }
+                conv_v<ArchType::ASCEND_V220, half, float>(
+                    ub_kv_fp32_[dequant_ping_pang * num_deq_kv + count * MAX_NUMEL_INST_B32], // dst
+                    ub_kv_fp16_[dequant_ping_pang * num_deq_kv + count * MAX_NUMEL_INST_B32].template ReinterpretCast<half>(), // src
+                    (numel_kv - count * MAX_NUMEL_INST_B32) / FLOAT_VECTOR_SIZE,              // repeat
+                    1,                                                                        // dstBlockStride
+                    1,                                                                        // srcBlockStride
+                    8,                                                                        // dstRepeatStride
+                    4                                                                         // srcRepeatStride
+                );
+                if (bias_flag) {
+                    // src(float) <- src(float) + offset(float)
+                    PIPE_BARRIER(V);
+                    count = cu_hidden_d64 / FLOAT_VECTOR_SIZE;
+                    for (uint32_t i = 0; i < count; ++i) {
+                        add_v<ArchType::ASCEND_V220, float>(
+                            ub_kv_fp32_[dequant_ping_pang * num_deq_kv + i * FLOAT_VECTOR_SIZE], // dst
+                            ub_kv_fp32_[dequant_ping_pang * num_deq_kv + i * FLOAT_VECTOR_SIZE], // src0
+                            ub_offset_f32[i * FLOAT_VECTOR_SIZE],                                // src1
+                            seq_len_frag,                                                        // repeat
+                            1,                                                                   // dstBlockStride
+                            1,                                                                   // src0BlockStride
+                            1,                                                                   // src1BlockStride
+                            sub_m * embedding_size / 8,                                          // dstRepeatStride
+                            sub_m * embedding_size / 8,                                          // src0RepeatStride
+                            0                                                                    // src1RepeatStride
+                        );
+                    }
+                }
+                // src(float) <- src(float) * scale(float)
+                PIPE_BARRIER(V);
+                count = cu_hidden_d64 / FLOAT_VECTOR_SIZE;
+                for (uint32_t i = 0; i < count; ++i) {
+                    mul_v<ArchType::ASCEND_V220, float>(
+                        ub_kv_fp32_[dequant_ping_pang * num_deq_kv + i * FLOAT_VECTOR_SIZE], // dst
+                        ub_kv_fp32_[dequant_ping_pang * num_deq_kv + i * FLOAT_VECTOR_SIZE], // src0
+                        ub_scale_[i * FLOAT_VECTOR_SIZE],                                    // src1
+                        seq_len_frag,                                                        // repeat
+                        1,                                                                   // dstBlockStride
+                        1,                                                                   // src0BlockStride
+                        1,                                                                   // src1BlockStride
+                        sub_m * embedding_size / 8,                                          // dstRepeatStride
+                        sub_m * embedding_size / 8,                                          // src0RepeatStride
+                        0                                                                    // src1RepeatStride
+                    );
+                }
+
+                // cast src(float) -> src(half)
+                count = numel_kv / MAX_NUMEL_INST_B32;
+                PIPE_BARRIER(V);
+                for (uint32_t i = 0; i < count; ++i) {
+                    conv_v<ArchType::ASCEND_V220, float, IN_DTYPE>(
+                        ub_kv_fp16_[dequant_ping_pang * num_deq_kv + i * MAX_NUMEL_INST_B32], // dst
+                        ub_kv_fp32_[dequant_ping_pang * num_deq_kv + i * MAX_NUMEL_INST_B32], // src
+                        255,                                                                  // repeat
+                        1,                                                                    // dstBlockStride
+                        1,                                                                    // srcBlockStride
+                        4,                                                                    // dstRepeatStride
+                        8                                                                     // srcRepeatStride
+                    );
+                }
+                conv_v<ArchType::ASCEND_V220, float, IN_DTYPE>(
+                    ub_kv_fp16_[dequant_ping_pang * num_deq_kv + count * MAX_NUMEL_INST_B32], // dst
+                    ub_kv_fp32_[dequant_ping_pang * num_deq_kv + count * MAX_NUMEL_INST_B32], // src
+                    (numel_kv - count * MAX_NUMEL_INST_B32) / FLOAT_VECTOR_SIZE,              // repeat
+                    1,                                                                        // dstBlockStride
+                    1,                                                                        // srcBlockStride
+                    4,                                                                        // dstRepeatStride
+                    8                                                                         // srcRepeatStride
+                );
+                SET_FLAG(V, MTE3, EVENT_ID0 + dequant_ping_pang);
+                WAIT_FLAG(V, MTE3, EVENT_ID0 + dequant_ping_pang);
+
+                ub_to_gm_align<ArchType::ASCEND_V220, IN_DTYPE>(dst[(start_seq + si) * num_head * embedding_size],
+                                                            ub_kv_fp16_[dequant_ping_pang * num_deq_kv],
+                                                            0,                                      // sid
+                                                            seq_len_frag,                           // nBurst
+                                                            sub_m * embedding_size * 2,             // lenBurst
+                                                            0,                                      // leftPaddingNum
+                                                            0,                                      // rightPaddingNum
+                                                            0,                                      // srcGap
+                                                            (num_head - sub_m) * embedding_size * 2 // dstGap
+                );
+                SET_FLAG(MTE3, V, EVENT_ID5 + dequant_ping_pang);
+                dequant_ping_pang = 1 - dequant_ping_pang;
+            }
+            start_seq += sub_qk_n;
+        }
+        WAIT_FLAG(MTE3, V, EVENT_ID5);
+        WAIT_FLAG(V, MTE2, EVENT_ID5);
+        WAIT_FLAG(MTE3, V, EVENT_ID6);
+        WAIT_FLAG(V, MTE2, EVENT_ID6);
+    }
+
+    __aicore__ __attribute__((always_inline)) inline void InnerRunVectorMLA(uint32_t cur_batch, uint32_t start_head, uint32_t cur_nIndx, uint32_t cur_kv_seqlen, uint32_t cur_head_num, uint32_t offset_tiling, uint32_t kv_seqlen)
+    {
+        uint32_t head_idx = start_head + sub_block_idx * cur_head_num / 2;
+        uint32_t addr_o_high32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 6 + offset_tiling));
+        uint32_t addr_o_loww32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 7 + offset_tiling));
+        uint64_t addr_o_scalar = (uint64_t)(((uint64_t)addr_o_high32) << 32 | addr_o_loww32);
+        uint32_t mask_high32 = (uint32_t)(*((__gm__ int32_t *)tiling_gm + 10 + offset_tiling));
+        uint32_t mask_loww32 = (uint32_t)(*((__gm__ int32_t *)tiling_gm + 14 + offset_tiling));
+        uint64_t mask_scalar = (uint64_t)(((uint64_t)mask_high32) << 32 | mask_loww32);
+        uint32_t addr_l_high32 = 0;
+        uint32_t addr_l_loww32 = 0;
+        uint64_t addr_l_scalar = 0;
+        uint64_t o_offset = 0;
+        uint32_t l_offset = 0;
+        // o #((num_tokens, num_heads, kvsplit, head_size))
+        // l  (numt_tokens, num_heads, kvsplit)
+        if constexpr (SplitKV) {
+            addr_l_high32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 11 + offset_tiling));
+            addr_l_loww32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 12 + offset_tiling));
+            addr_l_scalar = (uint64_t)(((uint64_t)addr_l_high32) << 32 | addr_l_loww32);
+            uint32_t addr_o_fd_high32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 15 + offset_tiling));
+            uint32_t addr_o_fd_loww32 = (uint32_t)(*((__gm__ uint32_t *)tiling_gm + 16 + offset_tiling));
+            uint64_t addr_o_fd_scalar = (uint64_t)(((uint64_t)addr_o_fd_high32) << 32 | addr_o_fd_loww32);
+            o_offset = addr_o_fd_scalar * kv_split_core_num + head_idx * __k * kv_split_core_num + cur_nIndx * __k;
+            l_offset = addr_l_scalar + head_idx * kv_split_core_num + cur_nIndx;
+        } else {
+            o_offset = addr_o_scalar + head_idx * embedding_size_v;
+        }
+        uint32_t pp_n_scalar = block_size_calc;
+        uint32_t sub_n_loop = pp_n_scalar / block_size;
+        uint32_t real_n_loop = (cur_kv_seqlen + block_size - 1) / block_size;
+
+        uint32_t n_loop = (cur_kv_seqlen + pp_n_scalar - 1) / pp_n_scalar;
+        uint64_t mask_offset = cur_batch % modCoef / divCoef * batch_stride + head_idx * head_stride + (uint64_t)cur_nIndx * kv_split_per_core;
+        mask_offset += mask_scalar;
+
+        uint32_t qk_n = pp_n_scalar;
+        uint32_t qk_round_n = (qk_n + 15) / 16 * 16;
+
+        uint32_t qk_n_2 = pp_n_scalar;
+        uint32_t qk_round_n_2 = (qk_n + 15) / 16 * 16;
+
+        uint32_t sub_m = (sub_block_idx == 1) ? (cur_head_num - cur_head_num / 2) : cur_head_num / 2;
+        uint32_t sub_m_d128 = (sub_m + 127) / 128;  // up aligned to 128
+        uint32_t sub_m_d64 = (sub_m + 63) / 64;     // up aligned to 128
+        uint32_t round_sub_m = (sub_m + 15) / 16 * 16;
+
+        uint32_t start_kv = cur_nIndx * kv_split_per_core;
+
+        uint32_t hiddenSize = head_idx * embedding_size;
+        uint32_t hiddenSizeOffset1 = k_bias_flag ? hiddenSize : 0;
+        uint32_t hiddenSizeOffset2 = v_bias_flag ? hiddenSize : 0;
+
+        for (uint32_t n_idx = 0; n_idx < n_loop; n_idx+=2) {
+            if (n_idx == (n_loop - 1)) {
+                qk_n = (cur_kv_seqlen - n_idx * pp_n_scalar);
+                qk_round_n = RoundUp<16>(qk_n);
+            }
+            if ((n_idx + 1) == (n_loop - 1)) {
+                qk_n_2 = (cur_kv_seqlen - (n_idx + 1) * pp_n_scalar);
+                qk_round_n_2 = RoundUp<16>(qk_n_2);
+            }
+            if constexpr (TYPE == 3) {
+                // [qk_n, sub_m, head_size]
+                if (sub_m > 0) {
+                    DequantKV(gm_k16_ping_[sub_block_idx * embedding_size * (cur_head_num / 2)], // dst
+                              gm_k8_[hiddenSize],                                                // src
+                              gm_offset1_[hiddenSizeOffset1],                                    // deq_offset
+                              gm_scale1_[hiddenSize],                                            // deq_scale
+                              num_kv_heads * embedding_size,                                     // hidden_size
+                              cur_batch,                                                         // batch_idx
+                              n_idx,                                                             // n_idx
+                              cur_kv_seqlen,                                                     // kv_seq_len
+                              sub_m,                                                             // sub_m
+                              cur_head_num,                                                      // num_head
+                              real_n_loop,                                                       // real_n_loop
+                              sub_n_loop,                                                        // sub_n_loop
+                              start_kv,                                                          // start_kv
+                              k_bias_flag);
+                }
+                FftsCrossCoreSync<PIPE_MTE3, 2>(VEC_DEQ_K0_READY);
+                if (sub_m > 0) {
+                    if ((n_idx + 1) < n_loop) {
+                        DequantKV(gm_k16_pong_[sub_block_idx * embedding_size * (cur_head_num / 2)], // dst
+                                  gm_k8_[hiddenSize],                                                // src
+                                  gm_offset1_[hiddenSizeOffset1],                                    // deq_offset
+                                  gm_scale1_[hiddenSize],                                            // deq_scale
+                                  num_kv_heads * embedding_size,                                     // hidden_size
+                                  cur_batch,                                                         // batch_idx
+                                  n_idx + 1,                                                         // seq_idx
+                                  cur_kv_seqlen,                                                     // kv_seq_len
+                                  sub_m,                                                             // sub_m
+                                  cur_head_num,                                                      // num_head
+                                  real_n_loop,                                                       // real_n_loop
+                                  sub_n_loop,                                                        // sub_n_loop
+                                  start_kv,                                                          // start_kv
+                                  k_bias_flag);
+                    }
+                }
+                FftsCrossCoreSync<PIPE_MTE3, 2>(VEC_DEQ_K1_READY);
+            }
+            if constexpr (TYPE == 3) {
+                if (sub_m > 0) {
+                    DequantKV(gm_v16_ping_[sub_block_idx * embedding_size * (cur_head_num / 2)], // dst
+                              gm_v8_[hiddenSize],                                                // src
+                              gm_offset2_[hiddenSizeOffset2],                                    // deq_offset
+                              gm_scale2_[hiddenSize],                                            // deq_scale
+                              num_kv_heads * embedding_size,                                     // hidden_size
+                              cur_batch,                                                         // batch_idx
+                              n_idx,                                                             // n_idx
+                              cur_kv_seqlen,                                                     // kv_seq_len
+                              sub_m,                                                             // sub_m
+                              cur_head_num,                                                      // num_head
+                              real_n_loop,                                                       // real_n_loop
+                              sub_n_loop,                                                        // sub_n_loop
+                              start_kv,                                                          // start_kv
+                              v_bias_flag);
+                    SET_FLAG(V, MTE2, EVENT_ID6);
+                    WAIT_FLAG(V, MTE2, EVENT_ID6);
+                }
+                FftsCrossCoreSync<PIPE_MTE3, 2>(VEC_DEQ_V0_READY);
+            }
+            WaitFlagDev(QK_READY_DECODER);
+            /* ************ softmax1 stage1  ************* */
+            WAIT_FLAG(MTE3, MTE2, EVENT_ID3);
+            if (sub_m > 0) {
+                // input QK shape (sub_m, qk_round_n)
+                SoftmaxStage1MLA(
+                    p_gm_tensor[(uint64_t)block_idx * TMP_SIZE +
+                        (uint64_t)sub_block_idx * cur_head_num / 2 * qk_round_n],
+                    s_gm_tensor[(int64_t)block_idx * TMP_SIZE_DECODER +
+                        (int64_t)sub_block_idx * cur_head_num / 2 * qk_round_n],
+                    mask_gm_tensor[mask_offset + (uint64_t)n_idx * pp_n_scalar],
+                    dm32_ubuf_tensor, ll_ubuf_tensor,
+                    n_idx, qk_n, qk_round_n, sub_m, mask_offset
+                );
+               // input QK shape (sub_m, qk_round_n)
+            }
+            FftsCrossCoreSync<PIPE_MTE3, 2>(SOFTMAX_READY_DECODER);
+            SET_FLAG(MTE3, MTE2, EVENT_ID3);
+            WAIT_FLAG(MTE3, MTE2, EVENT_ID3);
+            /* ************ softmax1 stage2  ************* */
+            if (n_idx + 1 < n_loop){
+                if constexpr (TYPE == 3) {
+                    if (sub_m > 0) {
+                        DequantKV(gm_v16_pong_[get_subblockid() * embedding_size * (cur_head_num / 2)], // dst
+                                  gm_v8_[hiddenSize],                                                   // src
+                                  gm_offset2_[hiddenSizeOffset2],                                       // deq_offset
+                                  gm_scale2_[hiddenSize],                                               // deq_scale
+                                  num_kv_heads * embedding_size,                                        // hidden_size
+                                  cur_batch,                                                            // batch_idx
+                                  n_idx + 1,                                                            // seq_idx
+                                  cur_kv_seqlen,                                                        // kv_seq_len
+                                  sub_m,                                                                // sub_m
+                                  cur_head_num,                                                         // num_head
+                                  real_n_loop,                                                          // real_n_loop
+                                  sub_n_loop,                                                           // sub_n_loop
+                                  start_kv,                                                             // start_kv
+                                  v_bias_flag);
+                        SET_FLAG(V, MTE2, EVENT_ID6);
+                        WAIT_FLAG(V, MTE2, EVENT_ID6);
+                    }
+                    FftsCrossCoreSync<PIPE_MTE3, 2>(VEC_DEQ_V1_READY);
+                }
+                WaitFlagDev(QK_READY_STAGE2);
+                if (sub_m > 0) {
+                    SoftmaxStage1MLA(
+                        p_gm_tensor[(uint64_t)block_idx * TMP_SIZE +
+                            (uint64_t)sub_block_idx * cur_head_num / 2 * qk_round_n_2 +
+                            TMP_SIZE / 2],
+                        s_gm_tensor[(int64_t)block_idx * TMP_SIZE_DECODER +
+                            (int64_t)sub_block_idx * cur_head_num / 2 * qk_round_n_2 +
+                            TMP_SIZE_DECODER / 2],
+                        mask_gm_tensor[mask_offset + (uint64_t)(n_idx + 1) * pp_n_scalar],
+                        dm32_stage2_ubuf_tensor, ll_stage2_ubuf_tensor,
+                        (n_idx + 1), qk_n_2, qk_round_n_2, sub_m, mask_offset
+                    );
+                }
+                FftsCrossCoreSync<PIPE_MTE3, 2>(SOFTMAX_READY_STAGE2);
+            }
+            SET_FLAG(MTE3, MTE2, EVENT_ID3);
+            WaitFlagDev(UPDATE_READY_DECODER);
+            uint32_t embed_split_size = EMBED_SPLIT;
+            for (uint32_t embed_split_idx = 0; embed_split_idx < embed_split_loop_v; ++embed_split_idx) {              
+                uint32_t embed_split_offset_tight = embed_split_idx * EMBED_SPLIT;
+                uint32_t embed_split_offset = embed_split_idx * ROUND_EMBED_SPLIT;
+                if (embed_split_idx == embed_split_loop_v - 1) {
+                    embed_split_size = embedding_size_v - embed_split_offset_tight;
+                }
+                uint32_t round_embed_split_size = RoundUp<16>(embed_split_size);
+                
+                /* ************ softmax2 stage1  ************* */
+                if (sub_m > 0) {
+                    SoftmaxStage2MLA(
+                        o_tmp_gm_tensor[(int64_t)(block_idx * TMP_SIZE * 2 +
+                            sub_block_idx * cur_head_num / 2 * round_v + embed_split_offset)],
+                        go_gm_tensor[(int64_t)(block_idx * TMP_SIZE +
+                            sub_block_idx * cur_head_num / 2 * round_v + embed_split_offset)],
+                        o_gm_tensor[(int64_t)(o_offset + embed_split_offset_tight)], 
+                            dm32_ubuf_tensor, ll_ubuf_tensor,
+                        n_idx, n_loop, qk_n, qk_round_n, sub_m, l_offset, o_offset,
+                        embed_split_size, round_embed_split_size, embed_split_idx);
+                }
+            }
+            
+                /* ************ softmax2 stage2  ************* */
+            if (n_idx + 1 < n_loop) {
+                WaitFlagDev(UPDATE_READY_STAGE2);
+                embed_split_size = EMBED_SPLIT;
+                for (uint32_t embed_split_idx = 0; embed_split_idx < embed_split_loop_v; ++embed_split_idx) {              
+                    uint32_t embed_split_offset_tight = embed_split_idx * EMBED_SPLIT;
+                    uint32_t embed_split_offset = embed_split_idx * ROUND_EMBED_SPLIT;
+                    if (embed_split_idx == embed_split_loop_v - 1) {
+                        embed_split_size = embedding_size_v - embed_split_offset_tight;
+                    }
+                    uint32_t round_embed_split_size = RoundUp<16>(embed_split_size);    
+                    if (sub_m > 0) {                        
+                        SoftmaxStage2MLA(
+                            o_tmp_gm_tensor[(int64_t)(block_idx * TMP_SIZE * 2 +
+                                    sub_block_idx * cur_head_num / 2 * round_v + TMP_SIZE + embed_split_offset)],
+                            go_gm_tensor[(int64_t)(block_idx * TMP_SIZE +
+                                    sub_block_idx * cur_head_num / 2 * round_v + embed_split_offset)],
+                            o_gm_tensor[(int64_t)(o_offset + embed_split_offset_tight)], 
+                            dm32_stage2_ubuf_tensor, ll_stage2_ubuf_tensor,
+                            (n_idx + 1), n_loop, qk_n_2, qk_round_n_2, sub_m, l_offset, o_offset,
+                            embed_split_size, round_embed_split_size, embed_split_idx);
+                    }
+                }
+            }
+        }
+    }
+
+private:
+
+    __gm__ float *__restrict__ s_gm{nullptr};
+    __gm__ IN_DTYPE *__restrict__ p_gm{nullptr};
+    __gm__ float *__restrict__ o_tmp_gm{nullptr};
+    __gm__ float *__restrict__ go_gm{nullptr};
+    __gm__ float *__restrict__ o_core_tmp_gm{nullptr};
+    __gm__ float *__restrict__ l_gm{nullptr};
+    __gm__ int32_t* __restrict__ gm_block_tables_{nullptr};
+
+    __gm__ OUT_DTYPE *__restrict__ o_gm{nullptr};
+    __gm__ IN_DTYPE *__restrict__ mask_gm{nullptr};
+    __gm__ uint8_t *__restrict__ tiling_gm{nullptr};
+    __gm__ float *__restrict__ razor_offset_gm{nullptr};
+
+    const uint32_t ls32_ubuf_offset = 0;
+    const uint32_t lp_ubuf_offset = 2 * UB_UINT8_BLOCK_SIZE;
+    const uint32_t lp32_ubuf_offset = 2 * UB_UINT8_BLOCK_SIZE;
+    const uint32_t mask_ubuf_offset = 2 * UB_UINT8_BLOCK_SIZE;
+    const uint32_t lo_ubuf_offset = 3 * UB_UINT8_BLOCK_SIZE;
+    const uint32_t mask32_ubuf_offset = 3 * UB_UINT8_BLOCK_SIZE;
+    const uint32_t lm32_ubuf_offset = 5 * UB_UINT8_BLOCK_SIZE;
+    const uint32_t hm32_ubuf_offset = 5 * UB_UINT8_BLOCK_SIZE + 1 * UB_UINT8_LINE_SIZE;
+
+    const uint32_t dm32_ubuf_offset = 5 * UB_UINT8_BLOCK_SIZE + 2 * UB_UINT8_LINE_SIZE;
+    const uint32_t dm32_ubuf_stage2_offset = 5 * UB_UINT8_BLOCK_SIZE + 4 * UB_UINT8_LINE_SIZE;
+    const uint32_t ll_ubuf_offset = MAX_UB_SIZE - (UB_UINT8_LINE_SIZE + UB_UINT8_LINE_SIZE * 4); // 2 * UB_UINT8_LINE_SIZE
+    const uint32_t ll_ubuf_stage2_offset = MAX_UB_SIZE- UB_UINT8_LINE_SIZE * 2;      // 2 * UB_UINT8_LINE_SIZE
+
+    const uint32_t addr_kv8 = 0;
+    const uint32_t addr_kv16 = addr_kv8 + 32 * 4 * 128 * sizeof(int8_t);
+    const uint32_t addr_kv32 = addr_kv16 + 32 * 4 * 128 * sizeof(half);
+    const uint32_t addr_offset = addr_kv32 + 32 * 4 * 128 * sizeof(float);
+    const uint32_t addr_scale = addr_offset + 8 * 128 * sizeof(int32_t);
+    const uint32_t addr_offset32 = addr_scale + 8 * 128 * sizeof(int32_t);
+
+    const uint32_t gm32_ubuf_offset = dm32_ubuf_stage2_offset + 3 * UB_UINT8_LINE_SIZE; // 2 * UB_UINT8_LINE_SIZE
+    const uint32_t gl_ubuf_offset = gm32_ubuf_offset + 2 * UB_UINT8_LINE_SIZE;          // 3 * UB_UINT8_LINE_SIZE
+    const uint32_t gl32_ubuf_offset = gm32_ubuf_offset + 2 * UB_UINT8_LINE_SIZE;        // 3 * UB_UINT8_LINE_SIZE
+    const uint32_t go_ubuf_offset = gl_ubuf_offset + 3 * UB_UINT8_LINE_SIZE;            // 16K
+    const uint32_t go32_ubuf_offset = gl_ubuf_offset + 3 * UB_UINT8_LINE_SIZE;          // 16K
+    const uint32_t tv32_ubuf_offset = go32_ubuf_offset + 1 * UB_UINT8_BLOCK_SIZE;       //
+
+
+    AsdopsBuffer<ArchType::ASCEND_V220> buf;
+    AscendC::LocalTensor<float> ls32_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(ls32_ubuf_offset);
+    AscendC::LocalTensor<IN_DTYPE> lp_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, IN_DTYPE>(lp_ubuf_offset);
+    AscendC::LocalTensor<float> lp32_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(lp32_ubuf_offset);
+    AscendC::LocalTensor<IN_DTYPE> mask_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, IN_DTYPE>(mask_ubuf_offset);
+    AscendC::LocalTensor<float> lo_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(lo_ubuf_offset);
+    AscendC::LocalTensor<float> mask32_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(mask32_ubuf_offset);
+    AscendC::LocalTensor<float> lm32_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(lm32_ubuf_offset);
+    AscendC::LocalTensor<float> hm32_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(hm32_ubuf_offset);
+    AscendC::LocalTensor<float> gm32_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(gm32_ubuf_offset);
+    AscendC::LocalTensor<float> dm32_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(dm32_ubuf_offset);
+
+    AscendC::LocalTensor<float> dm32_stage2_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(dm32_ubuf_stage2_offset);
+    AscendC::LocalTensor<float> ll_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(ll_ubuf_offset);
+    AscendC::LocalTensor<float> ll_stage2_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(ll_ubuf_stage2_offset);
+    AscendC::LocalTensor<IN_DTYPE> gl_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, IN_DTYPE>(gl_ubuf_offset);
+    AscendC::LocalTensor<float> gl32_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(gl32_ubuf_offset);
+    AscendC::LocalTensor<float> tv32_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(tv32_ubuf_offset);
+    AscendC::LocalTensor<IN_DTYPE> go_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, IN_DTYPE>(go_ubuf_offset);
+    AscendC::LocalTensor<float> go32_ubuf_tensor = buf.GetBuffer<BufferType::ASCEND_UB, float>(go32_ubuf_offset);
+
+
+    AscendC::GlobalTensor<IN_DTYPE> mask_gm_tensor;
+    AscendC::GlobalTensor<OUT_DTYPE> o_gm_tensor;
+    AscendC::GlobalTensor<float> razor_offset_gm_tensor;
+    AscendC::GlobalTensor<float> s_gm_tensor;
+    AscendC::GlobalTensor<IN_DTYPE> p_gm_tensor;
+    AscendC::GlobalTensor<float> o_tmp_gm_tensor;
+    AscendC::GlobalTensor<float> go_gm_tensor;
+    AscendC::GlobalTensor<float> o_core_tmp_gm_tensor;
+    AscendC::GlobalTensor<float> l_gm_tensor;
+
+    GlobalT<int8_t> gm_k8_;
+    GlobalT<int8_t> gm_v8_;
+    GlobalT<IN_DTYPE> gm_k16_ping_;
+    GlobalT<IN_DTYPE> gm_k16_pong_;
+    GlobalT<IN_DTYPE> gm_v16_ping_;
+    GlobalT<IN_DTYPE> gm_v16_pong_;
+    GlobalT<int32_t> gm_offset1_;
+    GlobalT<int32_t> gm_offset2_;
+    GlobalT<float> gm_scale1_;
+    GlobalT<float> gm_scale2_;
+    LocalT<int8_t> ub_kv_int8_ = buf.GetBuffer<BufferType::ASCEND_UB, int8_t>(addr_kv8);
+    LocalT<IN_DTYPE> ub_kv_fp16_ = buf.GetBuffer<BufferType::ASCEND_UB, IN_DTYPE>(addr_kv16);
+    LocalT<int32_t> ub_kv_int32_ = buf.GetBuffer<BufferType::ASCEND_UB, int32_t>(addr_kv32);
+    LocalT<float> ub_kv_fp32_ = buf.GetBuffer<BufferType::ASCEND_UB, float>(addr_kv32);
+    LocalT<int32_t> ub_offset_ = buf.GetBuffer<BufferType::ASCEND_UB, int32_t>(addr_offset);
+    LocalT<float> ub_offset_f32 = buf.GetBuffer<BufferType::ASCEND_UB, float>(addr_offset32);
+    LocalT<float> ub_scale_ = buf.GetBuffer<BufferType::ASCEND_UB, float>(addr_scale);
+
+    uint32_t k_bias_flag{0};
+    uint32_t v_bias_flag{0};
+
+    uint32_t go_flag_scalar{1};
+    uint32_t gl_flag_scalar{1};
+
+    uint32_t num_tokens{0};
+    uint32_t q_heads{0};
+    uint32_t num_kv_heads{0};
+    uint32_t embedding_size{0};
+    uint32_t embedding_size_v{0};
+    uint32_t block_size{0};
+    uint32_t max_context_len{0};
+    uint32_t start_head{0};
+    uint32_t cur_head_num{0};
+    uint32_t __k{0};
+    uint32_t round_k{0};
+    uint32_t __v{0};
+    uint32_t round_v{0};
+    uint32_t cur_batch{0};
+    float tor{0};
+    uint64_t sub_block_idx{0};
+    uint32_t batch_stride{0};
+    uint32_t head_stride{0};
+    uint64_t former_batch{0};
+    uint32_t former_head_split{0};
+    uint32_t split_size{0};
+    uint64_t tail_batch{0};
+    uint32_t tail_head_split{0};
+    uint32_t core_per_batch{0};
+    uint32_t process_num{0};
+    uint32_t tiling_head_size{0};
+    uint32_t tiling_para_size{0};
+    uint32_t kv_split_per_core{0};
+    uint32_t kv_split_core_num{0};
+    uint32_t block_size_calc{0};
+
+    uint32_t embed_split_size_qk{0};
+    uint32_t embed_split_loop_qk{1};
+    uint32_t embed_split_size_v{0};
+    uint32_t embed_split_loop_v{1};
+
+    uint32_t modCoef{0xffffffff}; // 对batch_idx取模的参数，适用于多头自适应压缩场景
+    uint32_t divCoef{1}; // 对batch_idx做除法的参数，适用于多头自适应压缩场景
+    uint32_t q_head_original{0};
+    uint32_t compressHead{0};
+
+    uint32_t max_num_blocks_per_query{0};
+    uint32_t group_num{0};
+
+    uint32_t prefill_batch_size_;
+    uint32_t decoder_batch_size_;
+};
+
+#endif
+
+extern "C" __global__ __aicore__ void paged_multi_latent_attention_split_cache_mask(
+    __gm__ uint8_t *__restrict__ sync,
+    __gm__ uint8_t *__restrict__ q_gm,
+    __gm__ uint8_t *__restrict__ k_gm,
+    __gm__ uint8_t *__restrict__ v_gm,
+    __gm__ uint8_t *__restrict__ block_tables_gm,
+    __gm__ uint8_t *__restrict__ mask_gm,
+    __gm__ uint8_t *__restrict__ deq_scale1_gm,
+    __gm__ uint8_t *__restrict__ offset1_gm,
+    __gm__ uint8_t *__restrict__ deq_scale2_gm,
+    __gm__ uint8_t *__restrict__ offset2_gm,
+    __gm__ uint8_t *__restrict__ scale_gm,
+    __gm__ uint8_t *__restrict__ razorOffset,
+    __gm__ uint8_t *__restrict__ logN_gm,
+    __gm__ uint8_t *__restrict__ eye_gm,
+    __gm__ uint8_t *__restrict__ o_gm,
+    __gm__ uint8_t *__restrict__ s_gm,
+    __gm__ uint8_t *__restrict__ p_gm,
+    __gm__ uint8_t *__restrict__ o_tmp_gm,
+    __gm__ uint8_t *__restrict__ go_gm,
+    __gm__ uint8_t *__restrict__ o_core_tmp_gm,
+    __gm__ uint8_t *__restrict__ l_gm,
+    __gm__ uint8_t *__restrict__ gm_k16,
+    __gm__ uint8_t *__restrict__ gm_v16,
+    __gm__ uint8_t *__restrict__ tiling_para_gm)
+{ 
+    SetFftsBaseAddr((unsigned long)sync);
+    SetAtomicnone();
+    SetMasknorm();
+#ifdef __DAV_C220_VEC__
+    SetVectorMask<int8_t>((uint64_t)-1, (uint64_t)-1);
+#elif __DAV_C220_CUBE__
+    SetPadding<uint64_t>(0);
+    SetNdpara(1, 0, 0);
+#endif
+    uint32_t prefill_batch_size = (uint32_t)(*((__gm__ int32_t *)tiling_para_gm + TILING_PREFILL_BS));
+    uint32_t decoder_batch_size = (uint32_t)(*((__gm__ int32_t *)tiling_para_gm + TILING_DECODER_BS));
+    if (TILING_KEY_IS(0)) { // fp16
+#ifdef __DAV_C220_CUBE__
+        UnpadMLAttentionDecoderSplitAic<false, 0, half, half, half> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+        pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_fp16.Run();
+#elif __DAV_C220_VEC__
+        UnpadMLAttentionDecoderSplitAiv<0, half, half> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(1)) { // bf16
+#ifdef __DAV_C220_CUBE__
+        UnpadMLAttentionDecoderSplitAic<false, 1, __bf16, __bf16, __bf16> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+        pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_bf16.Run();
+#elif __DAV_C220_VEC__
+        UnpadMLAttentionDecoderSplitAiv<1, __bf16, __bf16> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(4)) { // cube dequant to half
+#ifdef __DAV_C220_CUBE__
+        UnpadMLAttentionDecoderSplitAic<false, 2, half, half, int8_t> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, eye_gm);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();
+#elif __DAV_C220_VEC__
+        UnpadMLAttentionDecoderSplitAiv<0, half, half> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(8)) { // vector dequant to half
+#ifdef __DAV_C220_CUBE__
+        UnpadMLAttentionDecoderSplitAic<false, 3, half, half, int8_t> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();
+#elif __DAV_C220_VEC__
+        UnpadMLAttentionDecoderSplitAiv<3, half, half> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aiv_int8.Run();
+#endif
+    } else if (TILING_KEY_IS(9)) { // vector dequant to bf16 
+#ifdef __DAV_C220_CUBE__
+        UnpadMLAttentionDecoderSplitAic<false, 3, __bf16, __bf16, __bf16> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();
+#elif __DAV_C220_VEC__
+        UnpadMLAttentionDecoderSplitAiv<3, __bf16, __bf16, false> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aiv_int8.Run();
+#endif
+    }  else if (TILING_KEY_IS(16)) { // fp16 splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadMLAttentionDecoderSplitAic<true, 0, half, half, half> pa_aic_fp16(prefill_batch_size, decoder_batch_size);
+        pa_aic_fp16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_fp16.Run();
+#elif __DAV_C220_VEC__
+        UnpadMLAttentionDecoderSplitAiv<0, half, half, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(17)) { // bf16 splitkv 
+#ifdef __DAV_C220_CUBE__
+        UnpadMLAttentionDecoderSplitAic<true, 1, __bf16, __bf16, __bf16> pa_aic_bf16(prefill_batch_size, decoder_batch_size);
+        pa_aic_bf16.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_bf16.Run();
+#elif __DAV_C220_VEC__
+        UnpadMLAttentionDecoderSplitAiv<1, __bf16, __bf16, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(20)) { // cube dequant to half splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadMLAttentionDecoderSplitAic<true, 2, half, half, int8_t> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.InitQuant(deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, eye_gm);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();
+#elif __DAV_C220_VEC__
+        UnpadMLAttentionDecoderSplitAiv<0, half, half, true> pa_aiv(prefill_batch_size, decoder_batch_size);
+        pa_aiv.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aiv.Run();
+#endif
+    } else if (TILING_KEY_IS(24)) { // vector dequant to half splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadMLAttentionDecoderSplitAic<true, 3, half, half, int8_t> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();    
+#elif __DAV_C220_VEC__
+        UnpadMLAttentionDecoderSplitAiv<3, half, half, true> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aiv_int8.Run();    
+#endif
+    } else if (TILING_KEY_IS(25)){ // vector dequant to bf16 splitkv
+#ifdef __DAV_C220_CUBE__
+        UnpadMLAttentionDecoderSplitAic<true, 3, __bf16, __bf16, __bf16> pa_aic_kvint8(prefill_batch_size, decoder_batch_size);
+        pa_aic_kvint8.SetArgs(sync, q_gm, k_gm, v_gm, block_tables_gm, o_gm, s_gm, p_gm, o_tmp_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aic_kvint8.Run();  
+#elif __DAV_C220_VEC__
+        UnpadMLAttentionDecoderSplitAiv<3, __bf16, __bf16, true> pa_aiv_int8(prefill_batch_size, decoder_batch_size);
+        pa_aiv_int8.SetArgs(sync, k_gm, v_gm, deq_scale1_gm, offset1_gm, deq_scale2_gm, offset2_gm, block_tables_gm,
+                    mask_gm, o_gm, s_gm, p_gm, o_tmp_gm, go_gm, o_core_tmp_gm, l_gm, gm_k16, gm_v16, tiling_para_gm, razorOffset);
+        pa_aiv_int8.Run();
+#endif
+    }
+    PIPE_BARRIER(ALL);
+}

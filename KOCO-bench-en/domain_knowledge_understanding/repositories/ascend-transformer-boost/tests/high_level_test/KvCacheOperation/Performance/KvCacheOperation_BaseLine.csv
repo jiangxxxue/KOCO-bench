@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|KvCacheOperation1|384.17|384.17
+2|KvCacheOperation2|386.505|386.505
+3|KvCacheOperation3|385.695|385.695
+4|KvCacheOperation4|386.965|386.965

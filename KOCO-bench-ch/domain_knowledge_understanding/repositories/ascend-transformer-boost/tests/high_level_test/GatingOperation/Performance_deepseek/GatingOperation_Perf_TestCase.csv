@@ -1,0 +1,4 @@
+CaseNum|CaseName|OpName|OpParam|InNum|InDType|InFormat|InShape|OutNum|OutDType|OutFormat|OutShape|DataGenType|DataGenRange|InTensorFile|OutTensorFile|TestType|TestLevel|FromModel|SocVersion|ExpectedError
+1|TPNoErrorCase7|GatingOperation|"{""topkExpertNum"":2,""cumSumNum"":1024,""deviceExpert"":[]}"|2|int32;int32|nd;nd|128;128|3|int32;int32;int32|nd;nd;nd|128;1024;128|customize;customize|0,0;0,0|||Performance||deepseek|Ascend910B|NO_ERROR
+2|EPNoErrorCase7|GatingOperation|"{""topkExpertNum"":2,""cumSumNum"":1024,""deviceExpert"":[0,1,2,3,4,5,6,7]}"|2|int32;int32|nd;nd|128;128|4|int32;int32;int32;int32|nd;nd;nd;nd|128;8;128;1|customize;customize|0,0;0,0|||Performance||deepseek|Ascend910B|NO_ERROR
+3|deepseek_case |GatingOperation|{"topkExpertNum":1,"cumSumNum":256,"deviceExpert":[]}|2|int32;int32|nd;nd|24576;24576|3|int32;int32;int32|nd;nd;nd|24576;256;24576|customize;customize|0,0;0,0|||Performance||deepseek|Ascend910B|E:NO_ERROR

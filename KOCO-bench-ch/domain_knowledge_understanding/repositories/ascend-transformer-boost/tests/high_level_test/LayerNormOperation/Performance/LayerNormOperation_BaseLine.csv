@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|LayerNormOperation1|153.515|153.515
+2|LayerNormOperation2|153.265|153.265
+3|LayerNormOperation3|151.29|151.29
+4|LayerNormOperation4|149.67|149.67

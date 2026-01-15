@@ -1,0 +1,408 @@
+{
+  "summary": {
+    "model": "deepseek/deepseek-chat-v3.1",
+    "total": 22,
+    "correct": 7,
+    "incorrect": 15,
+    "accuracy_percent": 31.82
+  },
+  "results": [
+    {
+      "id": 1,
+      "dataset": "triton-ascend",
+      "instruction": "choose ONE option",
+      "stem": "When designing a Triton kernel for Ascend NPU that performs both matrix multiplication and element-wise operations, what is the fundamental architectural trade-off that determines the choice of mix_mode?\n\n- (A) AICore (cube) mode provides higher throughput for matrix operations but cannot execute vector operations, requiring separate kernel launches for element-wise operations\n- (B) VectorCore (aiv) mode offers better energy efficiency but lacks the tensor core acceleration needed for matrix multiplication, making it unsuitable for mixed workloads\n- (C) The mix_mode selection determines which physical compute units are utilized, with \"aic\" targeting cube cores for matrix ops and \"aiv\" targeting vector cores, but a single kernel cannot dynamically switch between them during execution\n- (D) Mixed mode (\"mix\") allows runtime scheduling between cube and vector cores based on operation type, but introduces synchronization overhead that may negate performance benefits for small workloads",
+      "explanation": "This tests understanding of Ascend NPU's heterogeneous architecture. From compiler.py's _parse_linalg_metadata and the architecture documentation, mix_mode is a compile-time decision that determines which physical compute units (AICore cube vs vector) will execute the kernel. (C) is correct because the mode is fixed at compile time and determines resource allocation. (A) is incorrect - AICore can execute vector operations through its vector units. (B) misrepresents the capabilities - vector cores can perform matrix operations, just less efficiently. (D) is incorrect - there's no dynamic runtime switching within a single kernel; the mode is statically determined. This requires synthesizing knowledge from compiler.py's metadata parsing, driver.py's core count queries, and the architectural constraints documented in HighPerformanceGuide.md.",
+      "pred_raw": "Step-by-step reasoning:\n1. The question is about designing a Triton kernel for Ascend NPU that combines matrix multiplication (cube operations) and element-wise (vector operations).\n2. The key architectural trade-off involves how the NPU handles these different operations efficiently.\n3. Ascend NPU has specialized units: AICore (cube) for matrix operations and VectorCore (aiv) for vector operations.\n4. Option A is incorrect because AICore mode can execute vector operations, but not efficiently; it doesn't require separate kernel launches necessarily.\n5. Option B is incorrect because VectorCore mode does not have tensor cores for matrix multiplication, but it is not entirely unsuitable; it can handle mixed workloads with lower performance for matrix ops.\n6. Option D is incorrect because there is no \"mix\" mode that dynamically schedules between cube and vector cores at runtime; Triton requires static assignment via `mix_mode`.\n7. Option C is correct: in Triton for Ascend, `mix_mode` is set at kernel compile time to either \"aic\" (using cube cores) or \"aiv\" (using vector cores). A single kernel cannot dynamically switch during execution; it uses one type of core throughout. This is the fundamental trade-off: choosing which physical unit to utilize for the entire kernel, which may lead to inefficiencies if both operation types are present.\n\n\\boxed{C}",
+      "pred_letters": [
+        "C"
+      ],
+      "gt_letters": [
+        "C"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 2,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In the Triton-to-Linalg compilation lowering pipeline, which design decisions enable the framework to preserve high-level semantic information while enabling hardware-specific optimizations?\n\n- (A) The triton-to-annotation pass attaches domain-specific attributes (like tensor_kind and mix_mode) to MLIR operations before structural lowering occurs\n- (B) The discrete-mask-access-conversion pass transforms irregular memory access patterns into structured forms that can be analyzed by subsequent optimization passes\n- (C) The triton-to-unstructure pass deliberately removes control flow structure to enable more aggressive instruction scheduling\n- (D) The bubble-up-operation pass reorders operations to expose data dependencies that inform the HIVM scheduler's decision-making\n- (E) The triton-to-linalg pass directly generates CANN runtime calls without intermediate representations",
+      "explanation": "This tests deep understanding of the compilation pipeline's design philosophy. From compiler.py's ttir_to_linalg function, the pass sequence is carefully ordered: (A) is correct - triton-to-annotation preserves semantic metadata that would be lost in pure structural lowering. (B) is correct - discrete-mask-access-conversion normalizes memory patterns for optimization. (D) is correct - bubble-up-operation exposes parallelism opportunities. (C) is incorrect - triton-to-unstructure converts to unstructured control flow for lowering, not for scheduling. (E) is incorrect - the pipeline goes through Linalg and HIVM, not directly to CANN. This requires understanding the interplay between ascend/backend/compiler.py's pass ordering, ascend/triton-adapter's transformation logic, and the architectural constraints that motivate each pass.",
+      "pred_raw": "**Reasoning:**\n\nThe question asks about design decisions in the Triton-to-Linalg pipeline that preserve high-level semantic information while enabling hardware-specific optimizations. Let's evaluate each option:\n\n- (A) This is correct because attaching domain-specific attributes (e.g., tensor_kind, mix_mode) to MLIR operations preserves semantic information (like tensor types and computation modes) through the lowering process. These attributes guide hardware-specific optimizations later without losing context.\n- (B) This is correct because converting irregular memory accesses (e.g., masked accesses) into structured forms (like predicates) maintains analyzable patterns for optimization passes. This preserves semantic intent (e.g., sparsity) while enabling hardware-friendly transformations.\n- (C) This is incorrect because removing control flow structure (as in triton-to-unstructure) actually destroys high-level semantic information. It trades structure for scheduling flexibility, which does not align with preserving semantics.\n- (D) This is correct because reordering operations to expose data dependencies (bubble-up-operation) helps the HIVM scheduler make informed decisions. This preserves the semantic relationship between operations while enabling hardware-specific scheduling (e.g., for parallelism).\n- (E) This is incorrect because directly generating CANN runtime calls bypasses intermediate representations (like Linalg), which would lose high-level semantic information. The pipeline uses MLIR representations (e.g., Linalg) to retain semantics for optimizations before lowering to runtime calls.\n\nThus, options A, B, and D are correct as they preserve semantic information and enable hardware optimizations. C and E are counterproductive.\n\n\\boxed{A,B,D}",
+      "pred_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 4,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Which factors influence the HIVM intermediate virtual machine's ability to achieve efficient Cube-Vector core load balancing in a mixed-mode kernel?\n\n- (A) The enable-hivm-auto-cv-balance compilation flag that enables automatic workload distribution analysis\n- (B) The ratio of tl.dot operations to element-wise operations in the kernel source code\n- (C) The tile_mix_vector_loop and tile_mix_cube_loop parameters that control loop tiling strategies for each core type\n- (D) The physical proximity of cube and vector cores on the NPU die, which affects data transfer latency\n- (E) The tensor_kind annotations that indicate which tensors are read-only vs read-write, affecting scheduling constraints",
+      "explanation": "This tests understanding of HIVM's role in heterogeneous compute orchestration. From compiler.py's linalg_to_bin_enable_npu_compile, (A) is correct - enable_hivm_auto_cv_balance is explicitly provided as a tuning knob. (C) is correct - tile_mix_vector_loop and tile_mix_cube_loop control how loops are partitioned for different core types. (B) is correct in principle - the operation mix determines the theoretical workload split, though this is implicit rather than a direct parameter. (D) is incorrect - while physical layout matters, it's not a configurable factor in HIVM. (E) is incorrect - tensor_kind is for profiling, not scheduling. This requires understanding the interaction between compiler.py's NPUOptions, the HIVM compilation flags, and the architectural constraints from HighPerformanceGuide.md.",
+      "pred_raw": "### Step-by-Step Reasoning:\n\n1. **Understanding the Question**: The question asks about factors influencing the HIVM intermediate virtual machine's ability to achieve efficient Cube-Vector core load balancing in a mixed-mode kernel. This involves how workloads are distributed between cube and vector cores in a neural processing unit (NPU).\n\n2. **Analyzing Each Option**:\n   - **(A) The enable-hivm-auto-cv-balance compilation flag**: This flag directly enables automatic workload distribution analysis. If enabled, HIVM can analyze and balance the workload between cube and vector cores, making it a key factor.\n   - **(B) The ratio of tl.dot operations to element-wise operations**: Cube cores are typically optimized for matrix operations (like `tl.dot`), while vector cores handle element-wise operations. The ratio determines which core type is more utilized, affecting load balancing. Thus, this is a critical factor.\n   - **(C) The tile_mix_vector_loop and tile_mix_cube_loop parameters**: These parameters control loop tiling strategies for each core type. By adjusting tiling, HIVM can partition work efficiently between cube and vector cores, directly influencing load balancing.\n   - **(D) The physical proximity of cube and vector cores on the NPU die**: While proximity might affect data transfer latency, HIVM is an intermediate virtual machine that abstracts hardware details. Load balancing is managed at the compilation/scheduling level rather than being directly influenced by physical layout. This is unlikely to be a factor for HIVM.\n   - **(E) The tensor_kind annotations**: These annotations (e.g., read-only vs read-write) affect scheduling constraints by indicating memory access patterns. For example, read-only tensors might be cached differently. This influences how operations are scheduled on cores, impacting load balancing efficiency.\n\n3. **Conclusion**:\n   - Options A, B, C, and E directly relate to compilation flags, operation mix, tiling strategies, and memory annotations—all of which are under the control of HIVM for optimizing workload distribution.\n   - Option D is hardware-specific and not directly managed by HIVM; it is more of a fixed architectural detail rather than a tunable factor for virtual machine-level load balancing.\n\nTherefore, the factors are A, B, C, and E.\n\n\\boxed{A,B,C,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 5,
+      "dataset": "triton-ascend",
+      "instruction": "choose ONE option",
+      "stem": "What is the fundamental design rationale behind triton-ascend's decision to use Linalg dialect as an intermediate representation rather than lowering directly from TTIR to LLVM IR?\n\n- (A) Linalg provides a structured representation that enables polyhedral optimization techniques, which are essential for exploiting the regular memory access patterns of NPU architectures\n- (B) Linalg dialect is required by the CANN runtime's binary format, which expects structured loop nests rather than arbitrary control flow\n- (C) The HIVM virtual machine can only consume Linalg IR, making it a mandatory intermediate step in the compilation pipeline\n- (D) Linalg enables easier integration with MLIR's existing transformation infrastructure while providing a level of abstraction suitable for hardware-specific passes before final lowering",
+      "explanation": "This tests understanding of the compilation architecture's design philosophy. From compiler.py's add_stages and the triton-adapter pipeline, (D) is correct - Linalg serves as a sweet spot between high-level semantics and hardware-specific concerns. It allows triton-adapter to perform NPU-specific transformations (like HIVM lowering) while leveraging MLIR's ecosystem. (A) is partially true but overstates the role of polyhedral optimization. (B) is incorrect - CANN consumes binary code, not IR. (C) is incorrect - HIVM is part of the bishengir toolchain that processes Linalg, but this is an implementation detail, not a fundamental requirement. This requires synthesizing knowledge from compiler.py's pipeline design, the triton-adapter passes in ttir_to_linalg, and understanding the broader MLIR compilation philosophy.",
+      "pred_raw": "Let's analyze each option step by step:\n\n- Option (A): While polyhedral optimizations are indeed useful for regular memory access patterns (common in NPUs), Triton-Ascend's primary rationale isn't solely about polyhedral techniques. Triton already handles structured operations via TTIR, and Linalg serves as a bridge to MLIR's transformation ecosystem.\n- Option (B): The CANN runtime does not require Linalg dialect specifically; it expects binaries (e.g., .o files) generated from lower-level IR (like LLVM IR). Linalg is an intermediate step for optimizations, not a format for runtime consumption.\n- Option (C): HIVM (Heterogeneous Intermediate Virtual Machine) is not a standard component in Triton-Ascend's stack. Triton lowers to LLVM IR (which HIVM might use), but Linalg is not mandatory for HIVM. This seems incorrect.\n- Option (D): This is accurate. Linalg dialect in MLIR provides high-level structured operations that are amenable to powerful transformations (e.g., tiling, fusion, lowering to loops). Using Linalg allows Triton-Ascend to leverage MLIR's existing infrastructure (like passes and patterns) for optimizations tailored to NPUs (e.g., memory hierarchy mapping) before lowering to LLVM IR. It offers a good abstraction for hardware-specific passes without going too low too early.\n\nThe key design rationale is to utilize MLIR's transformation infrastructure and abstraction capabilities for effective NPU optimizations.\n\\boxed{D}",
+      "pred_letters": [
+        "D"
+      ],
+      "gt_letters": [
+        "D"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 6,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In the context of multi-buffer pipeline optimization, which statements correctly describe the trade-offs and implementation mechanisms?\n\n- (A) The multibuffer API increases memory consumption by buffer_num times but enables overlapping of data movement and computation through software pipelining\n- (B) The limit-auto-multi-buffer-only-for-local-buffer flag restricts multi-buffering to on-chip memory to avoid exceeding the 192KB limit\n- (C) The set-workspace-multibuffer parameter controls multi-buffering for the per-block workspace memory allocated by the runtime\n- (D) Multi-buffering is automatically applied by the compiler to all tensors when enable-auto-multi-buffer is set, without requiring explicit API calls\n- (E) The limit-auto-multi-buffer-of-local-buffer parameter provides fine-grained control over which specific local buffers receive multi-buffering optimization",
+      "explanation": "This tests deep understanding of multi-buffer optimization mechanisms. From compiler.py's NPUOptions and linalg_to_bin_enable_npu_compile, and HighPerformanceGuide.md: (A) is correct - this is the fundamental trade-off stated in the documentation. (C) is correct - set_workspace_multibuffer is a distinct parameter for workspace memory. (E) is correct - this parameter provides selective control. (B) is incorrect - the flag controls where auto-multi-buffering is applied, not a hard memory limit. (D) is incorrect - enable-auto-multi-buffer enables automatic analysis, but the multibuffer API provides explicit control. This requires synthesizing knowledge from compiler.py's compilation options, HighPerformanceGuide.md's API documentation, and understanding the memory hierarchy implications.",
+      "pred_raw": "### Step-by-Step Reasoning:\n\n1. **Understanding Multi-Buffer Pipeline Optimization**: Multi-buffering is a technique used to overlap data movement (e.g., DMA transfers) with computation by using multiple buffers. This allows computation to proceed on one buffer while data is being transferred to/from another buffer, improving throughput.\n\n2. **Analyzing Option (A)**:\n   - The multibuffer API (e.g., `__builtin_multi_buffer` in Halide) explicitly creates multiple copies of a buffer (buffer_num times), increasing memory consumption.\n   - This enables software pipelining by allowing overlapping of data movement and computation. This is correct.\n\n3. **Analyzing Option (B)**:\n   - The `limit-auto-multi-buffer-only-for-local-buffer` flag (in frameworks like TVM) restricts multi-buffering to on-chip memory (e.g., SRAM) to avoid exceeding the limited on-chip memory capacity (e.g., 192KB on some hardware). This prevents multi-buffering from being applied to larger off-chip buffers, which could cause memory issues. This is correct.\n\n4. **Analyzing Option (C)**:\n   - The `set-workspace-multibuffer` parameter controls multi-buffering for the per-block workspace memory allocated by the runtime. Workspace memory is used for temporary storage, and this parameter allows managing multi-buffering for such allocations. This is correct.\n\n5. **Analyzing Option (D)**:\n   - Multi-buffering is not automatically applied to all tensors even when `enable-auto-multi-buffer` is set. The compiler typically applies it only to specific buffers (e.g., those in local memory) where it is beneficial and safe. Explicit API calls or annotations are often required for full control. This statement is incorrect.\n\n6. **Analyzing Option (E)**:\n   - The `limit-auto-multi-buffer-of-local-buffer` parameter does not provide fine-grained control over which specific local buffers are multi-buffered. Instead, it is a flag to restrict multi-buffering to local buffers generally (similar to option B). Fine-grained control is usually achieved via explicit API calls or annotations (e.g., `__builtin_multi_buffer`). This statement is incorrect.\n\n**Conclusion**: Correct statements are (A), (B), and (C). Options (D) and (E) are incorrect based on typical compiler behavior and parameter functionalities in frameworks like TVM/Halide.\n\n\\boxed{A,B,C}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "gt_letters": [
+        "A",
+        "C",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 7,
+      "dataset": "triton-ascend",
+      "instruction": "choose ONE option",
+      "stem": "When implementing inter-core parallelism with block-level task distribution, what is the critical constraint that determines the maximum effective parallelism achievable on Ascend NPU?\n\n- (A) The CANN runtime's maximum grid size limit of 65535 blocks, which caps the total number of parallel tasks\n- (B) The physical core count (AICore or VectorCore depending on kernel type), beyond which additional blocks incur batch scheduling overhead\n- (C) The L2 cache coherency protocol's ability to maintain consistency across cores, which limits scalability\n- (D) The HIVM scheduler's maximum thread count, which is determined by the available register file size",
+      "explanation": "This tests understanding of inter-core parallelism constraints. From HighPerformanceGuide.md and driver.py's NPUUtils: (B) is correct - the guide explicitly states that exceeding physical core count causes batch scheduling with additional overhead, and recommends setting parallel tasks equal to core count. (A) is a hard limit but not the critical constraint for performance. (C) is incorrect - NPU architecture doesn't use traditional cache coherency. (D) is incorrect - HIVM doesn't use a thread model in this sense. This requires synthesizing knowledge from HighPerformanceGuide.md's parallelism recommendations, driver.py's get_aicore_num/get_aivector_core_num functions, and understanding the NPU's execution model where blocks map to physical cores.",
+      "pred_raw": "Step-by-step reasoning:\n1. The question is about inter-core parallelism with block-level task distribution on Ascend NPU.\n2. Block-level task distribution refers to distributing tasks (like in CUDA) where each block is assigned to a core.\n3. The critical constraint for maximum effective parallelism is the physical hardware limitation of how many cores are available to execute tasks simultaneously.\n4. Option (A) mentions a grid size limit of 65535 blocks, but this is a software/API limit (similar to CUDA) and not the fundamental constraint for effective parallelism. Even with many blocks, they are scheduled on finite cores.\n5. Option (B) directly addresses the physical core count (AICore or VectorCore). Beyond this count, additional blocks cannot run truly in parallel and must be scheduled in batches, introducing overhead. This is the critical constraint because the NPU has a fixed number of cores.\n6. Option (C) discusses L2 cache coherency, which might affect performance but is not the primary limiter of maximum parallelism; it is more about efficiency than the absolute core count.\n7. Option (D) mentions the HIVM scheduler's thread count and register file size, which might constrain per-core parallelism (like warp/thread-level) but not the inter-core parallelism at the block level.\n8. Thus, the physical core count is the hard constraint that determines the maximum number of blocks that can run in parallel without scheduling overhead.\n\n\\boxed{B}",
+      "pred_letters": [
+        "B"
+      ],
+      "gt_letters": [
+        "B"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 8,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Which mechanisms does the CANN runtime integration layer use to bridge between Triton's execution model and Ascend NPU's hardware capabilities?\n\n- (A) The rtKernelLaunch API that accepts a packed argument structure containing kernel parameters, grid configuration, and runtime metadata\n- (B) The OpCommand task queue system that integrates with PyTorch NPU's execution graph for better scheduling\n- (C) The syncBlockLock mechanism that provides inter-block synchronization primitives allocated in device memory\n- (D) The workspace memory allocation that provides per-block temporary storage managed by the NPU caching allocator\n- (E) The MsprofApi profiling hooks that report kernel execution timing and tensor metadata to the profiling infrastructure",
+      "explanation": "This tests understanding of CANN runtime integration mechanisms. From driver.py's generate_npu_wrapper_src: (A) is correct - rtKernelLaunch is the core launch API. (B) is correct - OpCommand is used when TRITON_ENABLE_TASKQUEUE is enabled. (C) is correct - syncBlockLock is allocated for inter-block synchronization. (D) is correct - workspace memory is allocated per-block. (E) is correct - MsprofApi hooks are integrated for profiling. All five mechanisms are present in the generated wrapper code and serve distinct purposes in the runtime integration. This requires detailed understanding of driver.py's wrapper generation, the CANN runtime APIs, and how they map to Triton's execution model.",
+      "pred_raw": "Let's reason through each option in the context of CANN's runtime integration layer bridging Triton execution with Ascend NPU hardware.  \n\n- **(A)** `rtKernelLaunch` API with packed arguments — Yes, this is used because Triton kernels need a way to launch with kernel parameters and grid info mapped to Ascend's kernel launch mechanism.  \n- **(B)** `OpCommand` task queue system — Yes, Ascend’s OpCommand is central to integrating custom kernels into the PyTorch NPU execution graph for scheduling.  \n- **(C)** `syncBlockLock` mechanism — Not relevant for Triton-Ascend bridging; this is more for internal Ascend multi-stream sync, not exposed in this integration layer for Triton.  \n- **(D)** `workspace memory allocation` — Yes, temporary storage per block is needed for Triton kernels, managed via NPU allocator in their integration.  \n- **(E)** `MsprofApi` profiling hooks — Likely yes, because profiling infrastructure needs kernel timing and tensor info, so CANN integrates Msprof for Triton kernels too.  \n\nThus, the mechanisms used are A, B, D, and E. C is not part of bridging Triton to Ascend in this context correctly described.  \n\n\\boxed{A,B,D,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 10,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "When implementing intra-core parallelism through sub-block tiling, which factors must be balanced to achieve optimal performance?\n\n- (A) The sub-block size must be small enough that all input, output, and intermediate tensors fit within the 192KB on-chip memory limit\n- (B) The sub-block size should be chosen to maximize data reuse within the on-chip memory across loop iterations\n- (C) The number of sub-blocks must be a power of 2 to align with the NPU's SIMD width requirements\n- (D) The sub-block tiling strategy must account for the compiler's automatic multi-buffering, which multiplies memory requirements\n- (E) The sub-block size should be tuned using autotune to find the optimal balance between memory pressure and computational efficiency",
+      "explanation": "This tests understanding of intra-core parallelism and memory optimization. From HighPerformanceGuide.md's sub-block discussion: (A) is correct - this is the fundamental constraint. (B) is correct - data reuse is a key optimization goal. (D) is correct - multi-buffering multiplies memory usage, affecting sub-block sizing. (E) is correct - the guide explicitly recommends using autotune for sub-block sizing. (C) is incorrect - there's no power-of-2 requirement for sub-blocks. This requires synthesizing knowledge from HighPerformanceGuide.md's tiling strategies, compiler.py's multi-buffer options, and understanding the memory hierarchy's impact on performance.",
+      "pred_raw": "Reasoning:\n- (A) is correct because the on-chip memory (scratchpad) is limited (e.g., 192KB in many NPUs), and the sub-block tiles must fit within this constraint to avoid frequent off-chip memory accesses.\n- (B) is correct because tiling aims to exploit data locality; choosing sub-block size to maximize reuse (e.g., for input/output tensors) reduces memory bandwidth and improves performance.\n- (C) is not necessarily required; while power-of-two sizes might help with alignment in some architectures, it is not a universal requirement for optimal performance in sub-block tiling.\n- (D) is correct because compilers often use multi-buffering (double or triple buffering) to overlap computation and data transfer, which increases memory usage per buffer. The tiling strategy must account for this to avoid exceeding on-chip memory.\n- (E) is correct because autotuning helps find the best sub-block size by empirically balancing memory pressure (due to tile size) and computational efficiency (e.g., utilization of compute units), as hardware characteristics may be complex to model analytically.\n\nThus, the factors that must be balanced are (A), (B), (D), and (E). (C) is not mandatory.\n\\boxed{A,B,D,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D",
+        "E"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 11,
+      "dataset": "triton-ascend",
+      "instruction": "choose ONE option",
+      "stem": "What is the architectural reason why the triton-adapter's triton-to-hivm pass is necessary before generating NPU binaries, rather than directly compiling Linalg to machine code?\n\n- (A) HIVM provides a virtual instruction set that abstracts over different Ascend NPU generations, enabling forward compatibility\n- (B) HIVM serves as an intermediate layer that performs NPU-specific optimizations like cube-vector workload balancing and memory hierarchy management that cannot be expressed in standard Linalg\n- (C) The CANN runtime can only execute HIVM bytecode, not native machine instructions\n- (D) HIVM enables dynamic compilation and adaptive optimization based on runtime profiling data",
+      "explanation": "This tests understanding of HIVM's architectural role. From compiler.py's ttir_to_linalg and linalg_to_bin_enable_npu_compile: (B) is correct - HIVM is where NPU-specific optimizations occur, including the cube-vector balance, memory management, and other hardware-specific transformations that are beyond Linalg's abstraction level. (A) is partially true but not the primary reason. (C) is incorrect - CANN executes native binaries generated from HIVM. (D) is incorrect - HIVM is a compile-time intermediate representation, not a runtime system. This requires understanding the compilation flow from compiler.py, the HIVM compilation options, and the architectural constraints that necessitate this intermediate layer.",
+      "pred_raw": "Let’s break it down:\n\n1. The question is about why there’s a **triton-to-hivm pass** before generating NPU binaries, instead of compiling directly from Linalg to machine code.  \n2. Linalg is a compiler IR that’s relatively high-level but still vendor-neutral — it doesn’t contain NPU-specific optimization knowledge.  \n3. HIVM is Huawei’s internal NPU intermediate representation designed to encode NPU-specific optimizations (cube vs vector unit partitioning, memory hierarchy management, tiling for NPU).  \n4. Option (A) mentions abstraction over NPU generations — possible, but not the *main* architectural reason for having HIVM between Triton/Linalg and final binary; this is more about compatibility than necessity.  \n5. Option (B) matches the need: HIVM adds NPU-specific optimizations that can’t be expressed in Linalg itself, especially cube-vector workload balancing and memory management for the Ascend architecture. That justifies an extra lowering step.  \n6. Option (C) is false because NPU hardware doesn’t run HIVM bytecode directly; HIVM is still compiled to binary.  \n7. Option (D) suggests dynamic compilation — not necessarily the primary reason for this specific pass in the static compilation flow described.\n\nThe most accurate is **(B)** — it explains why the extra IR layer is *architecturally necessary* from a compiler standpoint.  \n\n\\boxed{B}",
+      "pred_letters": [
+        "B"
+      ],
+      "gt_letters": [
+        "B"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 12,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Which compilation pipeline design decisions enable triton-ascend to maintain compatibility with upstream Triton while supporting Ascend-specific optimizations?\n\n- (A) The use of a separate triton_patch directory that overrides specific runtime and compiler components without modifying upstream code\n- (B) The backend plugin architecture that allows registering AscendBackend as an alternative to GPU backends\n- (C) The preservation of GPU-related MLIR dialects (NVVM, AMDGPU) in the build system to maintain upstream compatibility\n- (D) The use of environment variables like TRITON_ASCEND_COMPILE_SPEED_OPT to control Ascend-specific behavior\n- (E) The complete reimplementation of Triton's frontend in Python to support NPU-specific language extensions",
+      "explanation": "This tests understanding of the compatibility architecture. From setup.py, CMakeLists.txt, and the repository structure: (A) is correct - triton_patch provides selective overrides. (B) is correct - the backend plugin system enables clean separation. (C) is correct - maintaining GPU dialects minimizes divergence. (D) is correct - environment variables provide Ascend-specific controls. (E) is incorrect - the frontend is not reimplemented; extensions are added through patches. This requires understanding setup.py's package structure, the backend registration mechanism in compiler.py, and the overall architecture that balances upstream compatibility with Ascend-specific needs.",
+      "pred_raw": "Let’s reason step by step:\n\n1. The question asks about compilation pipeline design decisions that enable **triton-ascend** to support Ascend NPU optimizations while staying compatible with upstream Triton.  \n2. Option (A) mentions a `triton_patch` directory that overrides specific components without modifying upstream code — this sounds like a design allowing compatibility through modular patches rather than forking.  \n3. Option (B) about backend plugin architecture seems relevant because triton-ascend introduces AscendBackend alongside existing GPU backends and plugs it in via Triton’s backend registry mechanism — this maintains compatibility by avoiding GPU code changes.  \n4. Option (C) says preservation of GPU-related MLIR dialects in the build system for upstream compatibility — actually, triton-ascend uses Ascend-specific compiler passes and dialect conversions, not preserving GPU MLIR dialects for compatibility. This seems wrong because Ascend adaptations involve replacing GPU parts, not preserving them.  \n5. Option (D) refers to environment variables controlling Ascend-specific behavior — this is about flexible runtime options, not a core pipeline design for compatibility.  \n6. Option (E) says “complete reimplementation of Triton’s frontend” — triton-ascend doesn’t reimplement the entire Triton frontend, only adapts the backend, so this is incorrect.  \n\nThus, the correct design decisions are (A) and (B):  \n- (A) ensures changes are localized without upstream disruption.  \n- (B) allows plugging in AscendBackend alongside existing backends without breaking Triton’s GPU support.  \n\n\\boxed{A,B}",
+      "pred_letters": [
+        "A",
+        "B"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 14,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Which aspects of the on-chip memory constrained programming model require coordination between the Triton kernel author, the compiler, and the runtime system?\n\n- (A) The kernel author must design block and sub-block sizes that respect memory limits, which the compiler validates during HIVM compilation\n- (B) The compiler must insert memory allocation and deallocation operations that the runtime executes to manage the 192KB on-chip memory\n- (C) The runtime must allocate workspace memory based on compiler-provided metadata, which the kernel accesses through generated wrapper code\n- (D) The kernel author uses autotune to explore the memory-performance trade-off space, which the compiler evaluates by attempting compilation with different configurations\n- (E) The compiler automatically partitions large tensors across multiple blocks, which the runtime coordinates through inter-block synchronization",
+      "explanation": "This tests understanding of the multi-layer memory management system. From HighPerformanceGuide.md, compiler.py, and driver.py: (A) is correct - authors design sizes, compiler validates. (C) is correct - runtime allocates workspace based on compiler metadata. (D) is correct - autotune explores configurations through compilation attempts. (B) is incorrect - on-chip memory is managed by HIVM/hardware, not explicit runtime operations. (E) is incorrect - tensor partitioning is a kernel design decision, not automatic. This requires understanding the interaction between HighPerformanceGuide.md's programming model, compiler.py's workspace_size metadata, driver.py's memory allocation, and the autotune mechanism.",
+      "pred_raw": "Let's analyze each option step by step:\n\n(A) The kernel author designs block and sub-block sizes (e.g., BLOCK_SIZE) to ensure that the data accessed by each block fits within the on-chip memory (e.g., SRAM). The compiler validates these during compilation (e.g., HIVM) to ensure they do not exceed hardware limits. This requires coordination between the author and compiler.\n\n(B) The compiler does not insert explicit allocation/deallocation operations for the on-chip memory (e.g., SRAM) because it is statically allocated by the hardware. The 192KB is a fixed resource managed by the hardware and compiler through static partitioning, not dynamic runtime management. So this is incorrect.\n\n(C) The runtime does allocate workspace memory (in DRAM) for operations like reductions or external data staging. The compiler provides metadata (e.g., via a descriptor) about the workspace requirements, and the kernel accesses it through generated wrapper code. This requires coordination between compiler, runtime, and kernel author (who defines the kernel needing workspace).\n\n(D) Autotuning is used by the kernel author to explore configurations (e.g., block sizes) that balance memory usage and performance. The compiler attempts compilation with these different configurations to generate code, and the runtime may test them. This involves all three parties.\n\n(E) The compiler does not automatically partition large tensors across blocks; the kernel author explicitly defines how data is partitioned (e.g., via grid and blocking). Inter-block synchronization is typically not supported in Triton (as of current versions) due to hardware limitations. So this is incorrect.\n\nThus, the correct aspects requiring coordination are (A), (C), and (D).\n\\boxed{A,C,D}",
+      "pred_letters": [
+        "A",
+        "C",
+        "D"
+      ],
+      "gt_letters": [
+        "A",
+        "C",
+        "D"
+      ],
+      "is_correct": true
+    },
+    {
+      "id": 16,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "In the context of CANN runtime integration, which design patterns enable efficient kernel launching while maintaining compatibility with PyTorch's execution model?\n\n- (A) The generated C++ launcher wrapper that marshals Python arguments into the packed structure expected by rtKernelLaunch\n- (B) The OpCommand task queue integration that allows kernels to participate in PyTorch's graph optimization and scheduling\n- (C) The use of torch_npu's NPUCachingAllocator for workspace and synchronization memory to enable memory reuse across kernel launches\n- (D) The MsProf profiling integration that reports kernel execution to PyTorch's profiler infrastructure\n- (E) The automatic conversion of Triton tensors to torch_npu tensors through the data_ptr() method",
+      "explanation": "This tests understanding of PyTorch integration mechanisms. From driver.py's generate_npu_wrapper_src and make_npu_launcher_stub: (A) is correct - the wrapper bridges Python and C++ calling conventions. (B) is correct - OpCommand integrates with PyTorch's execution model. (C) is correct - using NPUCachingAllocator enables memory pooling. (E) is correct - the wrapper extracts data_ptr() from tensor objects. (D) is incorrect - MsProf is CANN's profiler, not PyTorch's. This requires understanding driver.py's launcher generation, the OpCommand integration when TRITON_ENABLE_TASKQUEUE is enabled, and how the wrapper code bridges between Python/PyTorch and CANN runtime.",
+      "pred_raw": "**Reasoning:**\n\nThe question asks about design patterns in CANN runtime integration that enable efficient kernel launching while maintaining compatibility with PyTorch's execution model. Let's evaluate each option:\n\n- (A) This is correct because marshaling Python arguments into a packed structure for rtKernelLaunch is essential for efficient kernel launching. It bridges the Python interface with the underlying CANN runtime, ensuring arguments are properly passed and the kernel is launched efficiently.\n\n- (B) This is correct because integrating with PyTorch's OpCommand task queue allows kernels to be part of PyTorch's graph optimization and scheduling. This maintains compatibility with PyTorch's execution model (e.g., enabling graph capture and optimizations) and improves efficiency by leveraging PyTorch's scheduler.\n\n- (C) This is correct because NPUCachingAllocator enables memory reuse for workspace and synchronization, which reduces allocation overhead and improves efficiency across kernel launches. This is a key pattern for performance without breaking PyTorch compatibility.\n\n- (D) This is incorrect because MsProf profiling integration is for monitoring and profiling kernel execution (useful for debugging and performance analysis), but it does not directly enable efficient kernel launching or maintain execution model compatibility. It is a diagnostic tool rather than a core design pattern for launching efficiency.\n\n- (E) This is incorrect because automatic conversion of Triton tensors to torch_npu tensors via data_ptr() is specific to Triton compatibility, not general CANN runtime integration. It is not a primary pattern for efficient kernel launching in the context of PyTorch's execution model.\n\nThus, the correct options are A, B, and C.\n\\boxed{A,B,C}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 18,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Which factors determine whether a Triton kernel can successfully exploit multi-buffer pipeline optimization to overlap computation and data movement?\n\n- (A) The kernel must have sufficient computational intensity that computation time exceeds data movement time, making overlap beneficial\n- (B) The on-chip memory must be large enough to hold multiple buffer copies plus intermediate computation results\n- (C) The kernel's memory access pattern must be predictable enough for the compiler to insert prefetch operations\n- (D) The HIVM scheduler must be able to identify independent loop iterations that can be pipelined\n- (E) The kernel must explicitly use the triton.language.multibuffer API to enable the optimization",
+      "explanation": "This tests understanding of multi-buffer optimization requirements. From HighPerformanceGuide.md and compiler.py's multi-buffer options: (A) is correct - overlap only helps if there's computation to overlap with. (B) is correct - memory must accommodate multiple buffers. (D) is correct - the compiler must identify pipelineable iterations. (C) is incorrect - prefetching is not the mechanism; multi-buffering works through software pipelining. (E) is incorrect - both explicit API and automatic enable-auto-multi-buffer can trigger the optimization. This requires synthesizing knowledge from HighPerformanceGuide.md's multibuffer discussion, compiler.py's automatic and manual multi-buffer options, and understanding the general requirements for software pipelining optimizations.",
+      "pred_raw": "To determine which factors are necessary for a Triton kernel to successfully exploit multi-buffer pipeline optimization, let's analyze each option:\n\n- (A) This is correct because the optimization aims to overlap computation with data movement. If computation time does not exceed data movement time, there is little benefit to overlapping, and the optimization may not be effective.\n- (B) This is correct because multi-buffer pipeline optimization requires storing multiple buffers (to hold data from different stages) along with intermediate results. If on-chip memory (e.g., shared memory) is insufficient, the optimization cannot be applied.\n- (C) This is correct because the compiler needs to insert prefetch operations to bring data in advance. Predictable memory access patterns (e.g., strided or contiguous) allow the compiler to effectively schedule prefetches.\n- (D) This is incorrect because the HIVM (High-Level Virtual Machine) scheduler is not directly involved in Triton's multi-buffer pipeline optimization. This optimization is handled by the Triton compiler through loop transformations and prefetching, not by identifying independent loop iterations (which relates more to parallelization).\n- (E) This is incorrect because the multi-buffer pipeline optimization is automatically applied by the Triton compiler when conditions are met; it does not require explicit use of a specific API. The `triton.language.multibuffer` API does not exist.\n\nThus, the correct factors are (A), (B), and (C).\n\\boxed{A,B,C}",
+      "pred_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 20,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Which compilation pipeline stages are responsible for transforming Triton's high-level memory abstractions (pointers, loads, stores) into NPU-specific memory operations?\n\n- (A) The discrete-mask-access-conversion pass that transforms masked memory operations into structured access patterns\n- (B) The triton-to-linalg pass that converts pointer arithmetic and memory operations into memref operations\n- (C) The HIVM compilation stage that maps memref operations to NPU's memory hierarchy (global memory, L1 cache, registers)\n- (D) The LLVM IR generation stage that converts memref operations into LLVM load/store instructions\n- (E) The rtMemcpy calls in the generated launcher that handle host-device memory transfers",
+      "explanation": "This tests understanding of memory abstraction lowering. From compiler.py's pipeline: (A) is correct - this pass normalizes memory access patterns. (B) is correct - triton-to-linalg converts Triton's pointer model to MLIR's memref abstraction. (C) is correct - HIVM maps to physical memory hierarchy. (D) is incorrect - NPU backend doesn't go through LLVM IR for memory operations; HIVM handles this. (E) is incorrect - rtMemcpy is for initialization, not kernel memory operations. This requires understanding the transformation sequence in compiler.py's ttir_to_linalg and linalg_to_bin_enable_npu_compile, and how memory abstractions are progressively lowered through the pipeline.",
+      "pred_raw": "### Step-by-Step Reasoning:\n\n1. **Understanding the Question**: The question asks which stages in the Triton compilation pipeline are responsible for converting high-level memory abstractions (pointers, loads, stores) into NPU-specific memory operations. NPU refers to Neural Processing Unit, which is a specialized accelerator.\n\n2. **Analyzing Each Option**:\n   - **(A) Discrete-mask-access-conversion pass**: This pass handles masked memory operations (e.g., for handling conditional accesses) and transforms them into structured patterns. However, it is not directly responsible for NPU-specific mapping; it is more about optimizing access patterns.\n   - **(B) Triton-to-linalg pass**: This converts Triton IR (with pointers, loads, stores) into memref operations (which are part of MLIR's abstraction for memory). This is a key step in lowering high-level memory operations to a more generic intermediate representation (memref), but it is not yet NPU-specific.\n   - **(C) HIVM compilation stage**: HIVM (Hardware-Independent Virtual Machine) is part of the Triton pipeline. This stage maps memref operations to the NPU's memory hierarchy (global memory, L1 cache, registers). This is directly responsible for generating NPU-specific memory operations, as it considers the target hardware's memory structure.\n   - **(D) LLVM IR generation stage**: This converts memref operations into standard LLVM load/store instructions. However, LLVM is generic and not NPU-specific; it typically targets CPUs/GPUs. For NPUs, a different backend (like HIVM) is used instead of LLVM.\n   - **(E) rtMemcpy calls in the generated launcher**: These handle host-to-device memory transfers (e.g., copying data to the NPU). This is a runtime operation and not part of the compilation pipeline that transforms memory abstractions into NPU-specific operations.\n\n3. **Key Insight**: The transformation to NPU-specific memory operations occurs in the HIVM stage (option C), which directly maps memref operations to the NPU's memory hierarchy. Additionally, the triton-to-linalg pass (option B) is a prerequisite because it converts high-level Triton memory operations to memref, which HIVM then processes. However, without HIVM, the memref operations would not be NPU-specific. Therefore, both B and C are necessary: B lowers to memref, and C maps memref to NPU-specific operations.\n\n4. **Eliminating Other Options**:\n   - Option A is about masking, not NPU-specific.\n   - Option D is for LLVM (not NPU-targeted).\n   - Option E is a runtime call, not a compilation stage.\n\n5. **Conclusion**: The stages responsible are the triton-to-linalg pass (B) for initial lowering to memref, and the HIVM stage (C) for mapping memref to NPU-specific memory operations.\n\n\\boxed{B,C}",
+      "pred_letters": [
+        "B",
+        "C"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 21,
+      "dataset": "triton-ascend",
+      "instruction": "choose ONE option",
+      "stem": "When designing a FlashAttention kernel for Ascend NPU, what is the primary architectural challenge that differs from GPU implementations?\n\n- (A) The lack of shared memory atomics on NPU requires redesigning the attention score accumulation to use only local memory operations\n- (B) The 192KB on-chip memory limit requires more aggressive block tiling compared to GPU's larger shared memory, potentially impacting the algorithm's ability to keep attention matrices on-chip\n- (C) The separation of cube and vector cores requires splitting the attention computation into separate matrix multiplication and softmax kernels\n- (D) The CANN runtime's lack of dynamic parallelism support prevents implementing the adaptive block scheduling used in GPU FlashAttention",
+      "explanation": "This tests understanding of architectural constraints in complex algorithms. From HighPerformanceGuide.md's memory constraints and the FlashAttention example in tutorials: (B) is correct - the 192KB limit is significantly smaller than GPU shared memory (e.g., 48-164KB per SM on NVIDIA GPUs, but with many SMs), requiring more careful tiling to keep the working set on-chip. This is the fundamental challenge. (A) is incorrect - atomics are available. (C) is incorrect - mixed operations can execute in a single kernel. (D) is incorrect - the block-level parallelism model is similar. This requires understanding HighPerformanceGuide.md's memory constraints, the FlashAttention algorithm's memory requirements, and comparing NPU vs GPU memory hierarchies.",
+      "pred_raw": "Let's analyze each option step by step:\n\n- (A) The lack of shared memory atomics on NPU: While NPUs might not have shared memory atomics, this is not the primary architectural challenge for FlashAttention. FlashAttention on GPU uses atomic operations for backward pass but not necessarily for forward pass. Moreover, the forward pass can be redesigned without atomics.\n- (B) The 192KB on-chip memory limit: This is a key difference. GPUs (like NVIDIA A100) have 192KB of shared memory per SM, but Ascend NPUs (like 910B) have a similar on-chip buffer size (UB size ~192KB). However, the real challenge is that NPUs have a fixed memory hierarchy and require careful tiling to avoid frequent data movement. The limited on-chip memory indeed requires more aggressive tiling to keep attention matrices on-chip, which can impact performance and algorithm design. This is a well-known issue when porting FlashAttention to NPUs.\n- (C) The separation of cube and vector cores: Ascend NPUs have separate compute units for matrix multiplication (cube cores) and vector operations (vector cores). This requires splitting the attention computation (e.g., matmul and softmax) into separate kernels, which breaks the fusion advantage of FlashAttention. This is a major architectural difference from GPUs (which have unified cores) and directly impacts kernel design.\n- (D) The CANN runtime's lack of dynamic parallelism: While dynamic parallelism might be limited on NPUs, it is not the primary challenge for FlashAttention. FlashAttention on GPU does not rely heavily on dynamic parallelism; it uses static grid and block scheduling.\n\nComparing all options, (C) is the most critical and primary architectural challenge. The separation of cube and vector cores in Ascend NPU forces the decomposition of the fused FlashAttention kernel into multiple smaller kernels (e.g., matmul done on cube core, softmax on vector core), leading to repeated data transfers between memory hierarchies and losing the fusion benefit. This is fundamentally different from GPU implementations where both matmul and softmax can be efficiently fused within the same kernel using unified cores.\n\nThus, (C) is the correct choice.\n\\boxed{C}",
+      "pred_letters": [
+        "C"
+      ],
+      "gt_letters": [
+        "B"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 22,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Which mechanisms enable the triton-ascend compiler to provide meaningful error messages when compilation fails due to resource constraints?\n\n- (A) The HIVM compiler's error reporting that indicates which resources (memory, registers) exceeded limits\n- (B) The triton-adapter's validation passes that check tensor sizes against known hardware limits before HIVM compilation\n- (C) The TRITON_ASCEND_COMPILE_SPEED_OPT environment variable that controls whether compilation failures are treated as errors or warnings\n- (D) The debug mode that dumps intermediate IR at each compilation stage, allowing developers to identify where resource allocation fails\n- (E) The autotune framework that automatically retries compilation with smaller block sizes when resource limits are exceeded",
+      "explanation": "This tests understanding of error handling and debugging mechanisms. From compiler.py and utils.py: (A) is correct - HIVM reports resource constraint violations. (C) is correct - this env var controls error handling behavior. (D) is correct - debug mode enables IR dumping for diagnosis. (B) is incorrect - triton-adapter doesn't validate against hardware limits; HIVM does. (E) is incorrect - autotune explores configurations but doesn't automatically retry on failures. This requires understanding compiler.py's debug mode and dump_manager, utils.py's environment variable handling, and the overall error propagation through the compilation pipeline.",
+      "pred_raw": "**Reasoning:**\n\nThe question asks about mechanisms that enable the Triton-Ascend compiler to provide meaningful error messages when compilation fails due to resource constraints. Let's evaluate each option:\n\n- (A) The HIVM compiler's error reporting directly indicates which specific resources (e.g., memory, registers) exceeded limits. This provides clear and actionable feedback to developers, making it a meaningful error message mechanism.\n- (B) The Triton-adapter's validation passes check tensor sizes against known hardware limits *before* HIVM compilation. This preemptive check can catch potential resource issues early and generate relevant error messages, thus contributing to meaningful feedback.\n- (C) The TRITON_ASCEND_COMPILE_SPEED_OPT environment variable controls whether failures are treated as errors or warnings, but it does not inherently provide meaningful error messages; it only changes the severity of the response.\n- (D) The debug mode that dumps intermediate IR is useful for developers to manually diagnose issues, but it is not an automated mechanism for providing direct, meaningful error messages; it requires additional analysis.\n- (E) The autotune framework automatically retries with smaller block sizes to avoid resource limits, but it is a workaround rather than a mechanism for providing error messages. It focuses on recovery, not error reporting.\n\nThus, the mechanisms that directly enable meaningful error messages are (A) and (B): (A) gives explicit resource exceedance details, and (B) provides early validation with hardware-aware checks.\n\n\\boxed{A,B}",
+      "pred_letters": [
+        "A",
+        "B"
+      ],
+      "gt_letters": [
+        "A",
+        "C",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 24,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Which design decisions in the Linalg-to-HIVM lowering process enable efficient mapping to Ascend NPU's memory hierarchy?\n\n- (A) The bubble-up-operation pass that reorders operations to expose opportunities for keeping data in on-chip memory across operations\n- (B) The enable-hivm-inject-barrier-all-sync flag that controls insertion of memory barriers to ensure correct ordering\n- (C) The enable-nd2nz-on-vector flag that controls data layout transformations for vector operations\n- (D) The tile-mix-vector-loop and tile-mix-cube-loop parameters that control how loops are tiled for different memory levels\n- (E) The one-shot-bufferize pass that determines which tensors are allocated in on-chip vs global memory",
+      "explanation": "This tests understanding of memory hierarchy mapping. From compiler.py's compilation options and passes: (A) is correct - bubble-up exposes optimization opportunities. (B) is correct - barrier insertion affects memory ordering. (C) is correct - data layout impacts memory efficiency. (D) is correct - loop tiling directly affects memory hierarchy usage. (E) is incorrect - one-shot-bufferize is in the CPU backend path (linalg_to_llir), not the NPU path. This requires understanding compiler.py's ttir_to_linalg passes, the HIVM compilation options in linalg_to_bin_enable_npu_compile, and how these transformations affect memory hierarchy utilization.",
+      "pred_raw": "Let's analyze each option in the context of efficiently mapping to Ascend NPU's memory hierarchy:\n\n- (A) Reordering operations via a bubble-up pass can help keep data in on-chip memory longer, reducing transfers to slower global memory. This directly optimizes for memory hierarchy.\n- (B) Inserting memory barriers ensures correctness but does not inherently improve memory efficiency; it may even introduce overhead. This is more about synchronization than optimization.\n- (C) Data layout transformations (like ND to NZ) for vector operations can improve data locality and alignment with the NPU's vector units, leading to better memory access patterns.\n- (D) Tiling loops for different memory levels (e.g., vector and cube loops) is a classic technique to exploit hierarchical memory, enabling data reuse in faster memories like caches or buffers.\n- (E) One-shot bufferize determines memory allocation (on-chip vs global), which is crucial for placing frequently accessed data in faster on-chip memory, directly leveraging the memory hierarchy.\n\nThus, options (A), (C), (D), and (E) directly contribute to efficient memory hierarchy mapping by optimizing data placement, layout, and reuse. Option (B) is primarily for correctness, not efficiency.\n\n\\boxed{A,C,D,E}",
+      "pred_letters": [
+        "A",
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 25,
+      "dataset": "triton-ascend",
+      "instruction": "choose ONE option",
+      "stem": "Why does the tensor kind metadata system distinguish between INPUT_OUTPUT (2) tensors and separate INPUT (0) + OUTPUT (1) tensors in the profiling infrastructure?\n\n- (A) INPUT_OUTPUT tensors require special memory allocation that supports both read and write operations, while INPUT/OUTPUT tensors can use read-only or write-only memory\n- (B) The profiling system reports INPUT_OUTPUT tensors twice (once as input, once as output) to accurately reflect their contribution to both input and output bandwidth\n- (C) INPUT_OUTPUT tensors indicate in-place operations that have different performance characteristics and memory traffic patterns than separate input/output tensors\n- (D) The CANN runtime uses tensor kind to determine whether to perform memory prefetching, which is only beneficial for INPUT tensors",
+      "explanation": "This tests understanding of the tensor kind system's semantics. From driver.py's MsprofTensorInfo reporting: (B) is correct - the code explicitly shows that INPUT_OUTPUT tensors are reported twice, once as MSPROF_GE_TENSOR_TYPE_INPUT and once as MSPROF_GE_TENSOR_TYPE_OUTPUT, to accurately reflect their dual role in bandwidth analysis. (A) is incorrect - memory allocation doesn't depend on tensor_kind. (C) is partially true but not the primary reason for the distinction. (D) is incorrect - tensor_kind is for profiling, not runtime optimization. This requires understanding driver.py's profiling code that iterates over tensor_kinds and reports them to MsProf.",
+      "pred_raw": "Step-by-step reasoning:\n1. The question is about why the tensor kind metadata system distinguishes between INPUT_OUTPUT (2) tensors and separate INPUT (0) + OUTPUT (1) tensors in profiling infrastructure.\n2. Option (A) suggests that INPUT_OUTPUT tensors require special memory allocation for both read and write, while INPUT/OUTPUT can use read-only or write-only. This is plausible because in-place operations (where the same tensor is both input and output) need memory that supports both operations.\n3. Option (B) claims that INPUT_OUTPUT tensors are reported twice for bandwidth accuracy. However, profiling systems typically avoid double-counting to prevent misleading metrics.\n4. Option (C) states that INPUT_OUTPUT tensors indicate in-place operations with different performance characteristics and memory traffic patterns. This is correct because in-place operations reduce memory usage and can have different latency and bandwidth profiles compared to separate tensors.\n5. Option (D) says tensor kind is used for prefetching decisions (only for INPUT). While prefetching might be input-specific, this doesn't directly explain why INPUT_OUTPUT is distinguished from separate INPUT and OUTPUT.\n6. The key reason is that in-place operations (INPUT_OUTPUT) have unique behavior: they reuse memory, which affects performance profiling (e.g., lower memory footprint, potential for conflicts). Profiling infrastructure needs to track this to accurately analyze memory traffic and operations.\n7. Thus, option (C) is the best answer as it directly addresses the performance characteristics and memory traffic patterns difference.\n\n\\boxed{C}",
+      "pred_letters": [
+        "C"
+      ],
+      "gt_letters": [
+        "B"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 26,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Which factors influence the effectiveness of the HIVM scheduler's automatic cube-vector balance optimization?\n\n- (A) The ratio of compute-intensive operations (matrix multiplications) to memory-intensive operations (element-wise ops) in the kernel\n- (B) The enable-hivm-auto-cv-balance compilation flag that enables the analysis and optimization\n- (C) The availability of sufficient on-chip memory to buffer data being transferred between cube and vector cores\n- (D) The kernel's control flow structure, as complex branching limits the scheduler's ability to statically analyze workload distribution\n- (E) The unit-flag synchronization parameter that controls fine-grained synchronization between cube and vector operations",
+      "explanation": "This tests understanding of HIVM's load balancing mechanisms. From compiler.py's HIVM options: (A) is correct - the operation mix determines the theoretical optimal balance. (B) is correct - this flag enables the optimization. (D) is correct - static analysis is limited by control flow complexity. (C) is incorrect - while memory matters, it's not specific to CV balance. (E) is incorrect - unit-flag is for synchronization, not load balancing. This requires understanding compiler.py's enable_hivm_auto_cv_balance and related options, and the general principles of static workload analysis in compilers.",
+      "pred_raw": "### Step-by-Step Reasoning:\n\n1. **Understanding the Question**: The question asks about factors that influence the effectiveness of the HIVM scheduler's automatic cube-vector balance optimization. This optimization aims to distribute work efficiently between cube (matrix multiplication) and vector (element-wise) cores.\n\n2. **Analyzing Each Option**:\n   - **(A) The ratio of compute-intensive operations (matrix multiplications) to memory-intensive operations (element-wise ops) in the kernel**: This is crucial because the optimization balances workloads between cube and vector cores. If the ratio is skewed (e.g., too many matrix multiplications or too many element-wise ops), it may affect how well the scheduler can distribute the work. This likely influences effectiveness.\n   - **(B) The enable-hivm-auto-cv-balance compilation flag that enables the analysis and optimization**: This flag enables the optimization, but it does not directly influence its *effectiveness*. It is a prerequisite, not a factor that determines how well the optimization performs. Thus, it is not a correct choice.\n   - **(C) The availability of sufficient on-chip memory to buffer data being transferred between cube and vector cores**: This is important because data movement between cores requires buffering. Insufficient on-chip memory could lead to bottlenecks (e.g., spills to slower memory), reducing the effectiveness of the balance optimization.\n   - **(D) The kernel's control flow structure, as complex branching limits the scheduler's ability to statically analyze workload distribution**: The HIVM scheduler relies on static analysis for workload distribution. Complex control flow (e.g., conditionals, loops with dynamic bounds) can make it hard to predict workloads accurately, thus limiting the optimization's effectiveness.\n   - **(E) The unit-flag synchronization parameter that controls fine-grained synchronization between cube and vector operations**: Synchronization is key to avoiding stalls and ensuring overlap between cube and vector operations. If synchronization is not properly managed, it could lead to inefficiencies (e.g., one core waiting for another), affecting the balance optimization's effectiveness.\n\n3. **Conclusion**: Options (A), (C), (D), and (E) directly impact how well the scheduler can balance workloads between cube and vector cores. Option (B) is merely an enabler and does not influence effectiveness once enabled.\n\n\\boxed{A,C,D,E}",
+      "pred_letters": [
+        "A",
+        "C",
+        "D",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "D"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 28,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Which aspects of the compilation pipeline are affected by the choice between reg-based and non-reg-based HIVM compilation modes?\n\n- (A) The instruction scheduling strategy used by the HIVM backend\n- (B) The memory allocation strategy for intermediate values\n- (C) The compilation flags passed to bishengir-compile (--reg-based vs --enable-hivm-compile)\n- (D) The binary format of the generated kernel object file\n- (E) The runtime performance characteristics of the compiled kernel",
+      "explanation": "This tests understanding of HIVM compilation modes. From compiler.py's linalg_to_bin_enable_npu_compile and utils.py's _check_bishengir_is_regbased: (C) is correct - different flags are passed. (A), (B), (E) are all correct - reg-based vs non-reg-based represents fundamentally different compilation strategies that affect scheduling, allocation, and performance. (D) is incorrect - the binary format (kernel.o vs kernel_reloc.o) is determined by API version, not reg-based mode. This requires understanding compiler.py's bishengir_hivm_opt selection and the implications of different HIVM compilation strategies.",
+      "pred_raw": "### Step-by-Step Reasoning:\n\n1. **Understanding the Question**: The question asks which aspects of the compilation pipeline are affected by choosing between register-based (reg-based) and non-reg-based HIVM (Heterogeneous Intermediate Virtual Machine) compilation modes. HIVM is an intermediate representation used in some compilers (e.g., for GPUs or accelerators), and the choice of mode impacts how the code is compiled.\n\n2. **Option (A): The instruction scheduling strategy used by the HIVM backend**  \n   - In reg-based mode, the virtual machine uses a register-based instruction set, which may require different scheduling (e.g., to manage register pressure) compared to a stack-based (non-reg-based) approach. This is likely affected.\n\n3. **Option (B): The memory allocation strategy for intermediate values**  \n   - Reg-based mode uses registers to store intermediate values, while non-reg-based (e.g., stack-based) uses a stack. This directly changes how memory is allocated for intermediates, so this is affected.\n\n4. **Option (C): The compilation flags passed to bishengir-compile (--reg-based vs --enable-hivm-compile)**  \n   - This is the user's choice that triggers the mode; it is not an aspect *affected by* the choice but rather the choice itself. The flags are input to the compiler and do not change based on the mode—they define the mode. Thus, this is not affected.\n\n5. **Option (D): The binary format of the generated kernel object file**  \n   - The binary format (e.g., ELF, etc.) is typically standardized and not changed by the compilation mode. The mode might affect the content (e.g., instructions) but not the overall format. However, in some contexts, the format might differ (e.g., if reg-based mode uses different encodings). But generally, the format remains the same; only the internal structure changes. This is probably not affected.\n\n6. **Option (E): The runtime performance characteristics of the compiled kernel**  \n   - Reg-based compilation often leads to better performance due to reduced memory accesses (using registers instead of stack), while non-reg-based might have more overhead. This is a key reason for the choice and is definitely affected.\n\n7. **Conclusion**:  \n   - Affected aspects: (A), (B), and (E).  \n   - Not affected: (C) (it is the input flag, not an outcome) and (D) (binary format is typically unchanged).\n\n\\boxed{A,B,E}",
+      "pred_letters": [
+        "A",
+        "B",
+        "E"
+      ],
+      "gt_letters": [
+        "A",
+        "B",
+        "C",
+        "E"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 29,
+      "dataset": "triton-ascend",
+      "instruction": "choose ONE option",
+      "stem": "When the OpCommand task queue integration is enabled (TRITON_ENABLE_TASKQUEUE=true), what is the primary benefit compared to direct rtKernelLaunch calls?\n\n- (A) OpCommand enables automatic kernel fusion by batching multiple kernel launches into a single NPU submission\n- (B) OpCommand integrates with PyTorch's execution graph, enabling better scheduling and overlap with other PyTorch operations\n- (C) OpCommand provides automatic error recovery and retry mechanisms for failed kernel launches\n- (D) OpCommand reduces kernel launch overhead by caching compiled kernels more efficiently",
+      "explanation": "This tests understanding of OpCommand integration. From driver.py's generate_npu_wrapper_src: (B) is correct - OpCommand integrates with PyTorch NPU's execution model (at_npu::native::OpCommand), allowing the kernel to participate in PyTorch's graph scheduling and enabling better overlap with other operations. (A) is incorrect - fusion is not automatic. (C) is incorrect - no automatic retry. (D) is incorrect - caching is separate. This requires understanding driver.py's conditional OpCommand usage and the broader PyTorch NPU execution model.",
+      "pred_raw": "Let's break this down.\n\nThe OpCommand task queue is a Triton mechanism that collects multiple kernel launches into a queue before submitting them together to the NPU (neural processing unit).  \n- (A) mentions kernel fusion, but that generally happens at compilation time, not by batching kernel launches in a queue.  \n- (B) talks about PyTorch execution graph integration, but the task queue mainly affects submission batching on the NPU side, not PyTorch scheduling specifically.  \n- (C) suggests error recovery and retry mechanisms — not the primary purpose.  \n- (D) says it reduces kernel launch overhead by caching kernels more efficiently — while kernel caching is part of Triton, the **primary** benefit of the task queue is batching multiple kernel launches into a single NPU submission, which directly avoids repeated launch overhead. That matches the description in (A) more closely because batching submissions reduces synchronization and launch latency.  \n\nBetween options, the best choice is **(A)** since submitting multiple kernels in one go is the main advantage of enabling the task queue.  \n\n\\boxed{A}",
+      "pred_letters": [
+        "A"
+      ],
+      "gt_letters": [
+        "B"
+      ],
+      "is_correct": false
+    },
+    {
+      "id": 30,
+      "dataset": "triton-ascend",
+      "instruction": "choose MULTIPLE options",
+      "stem": "Which compilation pipeline stages must successfully complete before the workspace_size metadata can be determined for a kernel?\n\n- (A) The triton-to-linalg pass that converts high-level operations into structured loop nests\n- (B) The HIVM compilation that analyzes memory requirements and generates the workspace inference callback\n- (C) The bishengir-compile invocation that produces the libkernel.so containing workspace inference functions\n- (D) The LLVM IR generation that determines stack frame sizes\n- (E) The kernel binary generation that finalizes the memory layout",
+      "explanation": "This tests understanding of workspace size determination. From compiler.py's linalg_to_bin_enable_npu_compile: (B) and (C) are correct - workspace_size is determined by calling the _infer_workspace_shape_function callback from libkernel.so, which is generated by bishengir-compile during HIVM compilation. (A) is incorrect - Linalg conversion doesn't determine workspace size. (D) is incorrect - LLVM IR is not in the NPU path. (E) is incorrect - workspace size is determined before final binary generation. This requires understanding compiler.py's __get_metadata_attr_by_callback mechanism and when libkernel.so becomes available in the compilation pipeline.",
+      "pred_raw": "Let’s reason this through:  \n\n1. Workspace size in Triton/HIP-like compilation is related to **memory requirements** for a kernel — often temporary buffer size determined after certain optimization passes.  \n2. Before knowing the workspace size, we must first convert the kernel into a structured intermediate form (like **triton → linalg** or MLIR dialects) so memory access patterns are explicit.  \n3. Then, a **memory planning** stage (here, HIVM compilation) analyzes these patterns to determine shared memory usage and generates a **workspace inference callback** — so (B) must complete.  \n4. But actually computing workspace size can require **stack frame** and **dynamic memory layout finalized** in later LLVM stages — but the question asks which stages *must* complete *before* workspace size can be *determined*.  \n   - The key is that workspace size is usually finalized after **memory allocation analysis** in HIVM stage and before **final binary generation**.  \n   - Option (B) directly mentions “analyzes memory requirements and generates the workspace inference callback” — so clearly B must be done.  \n   - Option (A) (triton-to-linalg) must precede HIVM’s analysis — without it, structured memory ops aren’t visible — so A must complete before workspace determination.  \n5. Option (C) producing libkernel.so happens after workspace size is already determined — not needed *before* determining it.  \n6. Option (D) LLVM IR stack frame sizing — workspace here usually refers to dynamically allocated shared memory, not stack frames, so not necessary.  \n7. Option (E) kernel binary generation is final step — definitely after workspace is known — so no.  \n\nThus, only **A and B** must complete before workspace size is determined.  \n\n\\boxed{A,B}",
+      "pred_letters": [
+        "A",
+        "B"
+      ],
+      "gt_letters": [
+        "B",
+        "C"
+      ],
+      "is_correct": false
+    }
+  ]
+}

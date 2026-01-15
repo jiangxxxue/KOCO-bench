@@ -1,0 +1,126 @@
+# NOTE: Make sure this file is consistent with .gitlab/tests.yml
+name: Unit tests
+
+on:
+  pull_request:
+    branches: [main, release/*]
+  push:
+    branches: [main, release/*]
+    paths:
+      - ".github/workflows/unit_tests.yml"
+      - "modelopt/**"
+      - "tests/unit/**"
+      - "setup.py"
+      - "tox.ini"
+  schedule:
+    - cron: "0 0 * * *" # Nightly
+  workflow_dispatch: # On-demand
+
+# Cancel previous runs if new commit is pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  check-dco:
+    uses: ./.github/workflows/_wait_for_checks.yml
+    permissions:
+      checks: read
+    secrets: inherit
+    with:
+      match_pattern: '^DCO$'
+  linux:
+    needs: [check-dco]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: pip install tox && COV_ARGS="--cov" tox -e py312-torch28-tf_latest-unit
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+          verbose: true
+  windows:
+    if: github.event_name == 'pull_request'
+    needs: [linux]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests (without coverage)
+        run: pip install tox && tox -e py312-torch28-tf_latest-unit
+  multi-py:
+    if: github.event_name == 'pull_request'
+    needs: [linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        py: [10, 11]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.${{ matrix.py }}"
+      - name: Run unit tests
+        run: pip install tox && tox -e py3${{ matrix.py }}-torch28-tf_latest-unit
+  multi-torch:
+    if: github.event_name == 'pull_request'
+    needs: [linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        torch: [26, 27]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: pip install tox && tox -e py312-torch${{ matrix.torch }}-tf_latest-unit
+  multi-transformers:
+    if: github.event_name == 'pull_request'
+    needs: [linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        tf: [min]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: pip install tox && tox -e py312-torch28-tf_${{ matrix.tf }}-unit
+  partial-install:
+    if: github.event_name == 'pull_request'
+    needs: [linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        test-env: [onnx, torch]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: pip install tox && tox -e py312-partial-unit-${{ matrix.test-env }}
+  unit-pr-required-check:
+    if: github.event_name == 'pull_request'
+    needs: [linux, windows, multi-py, multi-torch, multi-transformers, partial-install]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All PR unit test jobs completed"

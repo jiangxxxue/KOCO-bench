@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|RmsNormBackwardOperation1|4997.81|4997.81
+2|RmsNormBackwardOperation2|677.02|677.02
+3|RmsNormBackwardOperation3|236.015|236.015
+4|RmsNormBackwardOperation4|10340.13|10340.13

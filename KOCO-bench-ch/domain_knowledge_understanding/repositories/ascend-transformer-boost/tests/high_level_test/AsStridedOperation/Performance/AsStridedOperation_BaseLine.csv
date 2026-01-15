@@ -1,0 +1,5 @@
+CaseNum|CaseName|BaseLine(us)|TotalTime_RC3(us)
+1|AsStridedOperation1|152.345|152.345
+2|AsStridedOperation2|153.375|153.375
+3|AsStridedOperation3|385.02|385.02
+4|AsStridedOperation4|153.165|153.165

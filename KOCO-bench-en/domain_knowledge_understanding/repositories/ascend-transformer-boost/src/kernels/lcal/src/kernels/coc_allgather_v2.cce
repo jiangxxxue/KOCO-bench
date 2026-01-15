@@ -1,0 +1,367 @@
+/*
+ * Copyright (c) 2024 Huawei Technologies Co., Ltd.
+ * This file is a part of the CANN Open Software.
+ * Licensed under CANN Open Software License Agreement Version 1.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+#ifdef __DAV_C220_VEC__
+#include "coc_internal.cce"
+#include "coc_comm_base.cce"
+#include "kernel_operator.h"
+using namespace AscendC;
+
+template <bool WRITE, TEMPLATE_ARGS_FUN()>
+class AllGatherV2 : public AllGather<HAVE_BIAS, T, T> {
+public:
+    __aicore__ explicit AllGatherV2(){};
+    FORCE_INLINE_AICORE void SetArgs(COC_ARGS_FUN(T))
+    {
+        AllGather<HAVE_BIAS, T, T>::SetArgs(COC_ARGS_CALL());
+        max_move_m = max_ub_ping_pong_size > max_move_k ? max_ub_ping_pong_size / max_move_k : 1;
+        gm_allgather = gm_allgather_out;
+    }
+
+    FORCE_INLINE_AICORE void MoveResultFromPeerMemToOut(__gm__ T *gm_src, __gm__ T *gm_dst, int32_t actual_m)
+    {
+        int32_t ping_pong_move_count = (actual_m + max_move_m - 1) / max_move_m;
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);  // MTE2等MTE3
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);  // MTE2等MTE3
+        for (int32_t move_idx = 0; move_idx < ping_pong_move_count; ++move_idx) {
+            int32_t actual_move_m = max_move_m;
+            if (move_idx == ping_pong_move_count - 1) {
+                actual_move_m = actual_m - move_idx * max_move_m;
+            }
+            auto event_id = (move_idx & 1) ? EVENT_ID0 : EVENT_ID1;
+            auto ub_buff_st = (move_idx & 1) ? output_UB_T[0] : output_UB_T[1];
+            int32_t k_move_count = (k_align + max_move_k - 1) / max_move_k;
+            for (int32_t k_move_idx = 0; k_move_idx < k_move_count; ++k_move_idx) {
+                int32_t actual_k_move_num_in_peer_mem = max_move_k;
+                int32_t actual_k_move_num_in_out = max_move_k;
+                if (k_move_idx == k_move_count - 1) {
+                    actual_k_move_num_in_peer_mem = k_align - k_move_idx * max_move_k;
+                    actual_k_move_num_in_out = k - k_move_idx * max_move_k;
+                }
+                WaitFlag<HardEvent::MTE3_MTE2>(event_id);
+                CopyGmToUbuf(ub_buff_st, gm_src + move_idx * max_move_m * k_align + k_move_idx * max_move_k,
+                             actual_move_m, actual_k_move_num_in_peer_mem * sizeof(T) / 32,
+                             (k_align - actual_k_move_num_in_peer_mem) * sizeof(T) / 32, 0);
+                SetFlag<HardEvent::MTE2_MTE3>(event_id);
+                WaitFlag<HardEvent::MTE2_MTE3>(event_id);
+                if (ALIGN) {
+                    CopyUbufToGm(gm_dst + move_idx * max_move_m * k + k_move_idx * max_move_k, ub_buff_st,
+                                 actual_move_m, actual_k_move_num_in_out * sizeof(T) / 32,
+                                 (actual_k_move_num_in_peer_mem - actual_k_move_num_in_out) * sizeof(T) / 32,
+                                 (k - actual_k_move_num_in_out) * sizeof(T) / 32);
+                } else {
+                    CopyUbufToGmAlignB16(gm_dst + move_idx * max_move_m * k + k_move_idx * max_move_k, ub_buff_st,
+                                         actual_move_m, actual_k_move_num_in_out * sizeof(T),
+                                         (actual_k_move_num_in_peer_mem - actual_k_move_num_in_out) * sizeof(T) / 32,
+                                         (k - actual_k_move_num_in_out) * sizeof(T));
+                }
+                SetFlag<HardEvent::MTE3_MTE2>(event_id);
+            }
+        }
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID0);  // MTE2等MTE3
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID1);  // MTE2等MTE3
+    }
+
+    FORCE_INLINE_AICORE void Run()
+    {
+        // Padding
+        preprocessor.Run();
+
+        ResetIpcFlags(2);
+        PipeBarrier<PIPE_ALL>();
+
+        for (int32_t cal_idx = 0; cal_idx < cal_count + MAX_BLOCK_COUNT; ++cal_idx) {
+            uint64_t flag_idx = cal_idx % MAX_BLOCK_COUNT;
+            int32_t actual_m = p_value * m0;
+            if (cal_idx == cal_count - 1) {
+                actual_m = m - cal_idx * p_value * m0;
+            }
+            // wait aic
+            int32_t cal_done_idx = cal_idx - MAX_BLOCK_COUNT;
+            if (cal_done_idx >= 0) {
+                WaitEvent(flag_idx);
+            }
+
+            // aiv之间同步
+            SetAndWaitAivSync(flag_idx);
+            if (cal_idx < cal_count && aiv_idx == 0 && core_idx < rank_size) {
+                int64_t src_offset = cal_idx * p_value * m0 * k_align;
+                int32_t rank_offset = flag_idx * gm_a_pingpong_size + rank * p_value * m0 * k_align;
+                CrossRankSyncV1(FLAG_ZERO_IDX, cal_idx + 1);
+
+                if (other_rank != rank) {
+                    MoveResultFromSrcToDst(gm_out + src_offset, buff[other_rank] + rank_offset, actual_m * k_align);
+                }
+                CrossRankSyncV2(FLAG_ONE_IDX, cal_idx + 1);
+            } else if (cal_idx > 0 && cal_idx < cal_count + 1 && aiv_idx == 1 && core_idx >= rank_size &&
+                       core_idx < rank_size * 2) {  // peermem to out
+                uint64_t s2_flag_idx = (cal_idx - 1) % MAX_BLOCK_COUNT;
+                int32_t s2_other_rank = core_idx - rank_size;
+                int64_t src_offset = (cal_idx - 1) * p_value * m0 * k_align;
+                int32_t other_rank_offset = s2_flag_idx * gm_a_pingpong_size + s2_other_rank * p_value * m0 * k_align;
+                int64_t dst_offset = s2_other_rank * static_cast<int64_t>(m) * k + (cal_idx - 1) * p_value * m0 * k;
+                int32_t s2_actual_m = p_value * m0;
+                if (cal_idx == cal_count) {
+                    s2_actual_m = m - (cal_idx - 1) * p_value * m0;
+                }
+                if (s2_other_rank != rank) {
+                    MoveResultFromPeerMemToOut(buff[rank] + other_rank_offset, gm_allgather + dst_offset, s2_actual_m);
+                } else {
+                    MoveResultFromPeerMemToOut(gm_out + src_offset, gm_allgather + dst_offset, s2_actual_m);
+                }
+            }
+
+            // aiv之间同步
+            SetAndWaitAivSync(flag_idx);
+
+            // 发送aic同步
+            SetAicSync(flag_idx);
+        }
+
+        EndFlagsAndBias();
+    }
+
+
+    FORCE_INLINE_AICORE void RunWithSplit()
+    {
+        // Padding
+        preprocessor.Run();
+
+        ResetIpcFlags(2);
+        PipeBarrier<PIPE_ALL>();
+
+        int64_t data_len = static_cast<int64_t>(m) * k_align; // 数据量
+        int32_t num_per_rank_move = m0 * k0 * p_value * k_loop;  // 每轮搬运到其他卡的数据量
+        int32_t core_count = comm_npu_split * comm_data_split;   // 每张卡上使用的核数
+        int64_t src_offset = 0;                                  // 当前份数据的起始位置
+        int64_t rank_offset = rank * num_per_rank_move;
+        for (int32_t cal_idx = 0; cal_idx < cal_count + MAX_BLOCK_COUNT; ++cal_idx) {
+            uint64_t flag_idx = cal_idx % MAX_BLOCK_COUNT;
+            if (cal_idx == cal_count - 1) {
+                num_per_rank_move = data_len - src_offset;
+            }
+
+            // wait aic
+            if (cal_idx >= MAX_BLOCK_COUNT) {
+                WaitEvent(flag_idx);
+            }
+            // aiv之间同步
+            SetAndWaitAivSync(flag_idx);
+            if (cal_idx < cal_count) {
+                CrossRankSyncV1(FLAG_ZERO_IDX, cal_idx + 1);
+            }
+            SetAndWaitAivSync(flag_idx);
+            if (cal_idx < cal_count && aiv_idx == 0 && core_idx < core_count) {
+                int64_t gm_rank_offset = flag_idx * gm_a_pingpong_size + rank_offset;
+                MoveWithSplit(gm_out + src_offset, gm_rank_offset, num_per_rank_move);
+                src_offset += num_per_rank_move;
+            } else if (cal_idx > 0 && cal_idx < cal_count + 1 && aiv_idx == 1 &&
+            core_idx >= core_count && core_idx < rank_size + core_count) { // peermem to out
+                // 如果剩余的core数不够，则循环搬运
+                int32_t other_core_num = get_block_num() - core_count; // 剩余的core数
+                int32_t cycle_num = (other_core_num + rank_size - 1) / other_core_num; // 循环次数
+                uint64_t s2_flag_idx = (cal_idx - 1) % MAX_BLOCK_COUNT;
+                int64_t src_offset = (cal_idx - 1) * p_value * m0 * k_align;
+                int32_t s2_actual_m = cal_idx == cal_count ? m - (cal_idx - 1) * p_value * m0 : p_value * m0;
+                for (int32_t cycle_idx = 0; cycle_idx < cycle_num; ++cycle_idx) {
+                    int32_t s2_other_rank = core_idx - core_count + cycle_idx * other_core_num;
+                    int32_t other_rank_offset = s2_flag_idx * gm_a_pingpong_size + s2_other_rank * p_value * m0 * k_align;
+                    int64_t dst_offset = s2_other_rank * static_cast<int64_t>(m) * k + (cal_idx - 1) * p_value * m0 * k;
+                    if (s2_other_rank >= rank_size) {
+                        break;
+                    }
+                    if (s2_other_rank != rank) {
+                        MoveResultFromPeerMemToOut(buff[rank] + other_rank_offset, gm_allgather + dst_offset, s2_actual_m);
+                    } else {
+                        MoveResultFromPeerMemToOut(gm_out + src_offset, gm_allgather + dst_offset, s2_actual_m);
+                    }
+                }
+            }
+            SetAndWaitAivSync(flag_idx);
+            if (cal_idx < cal_count) {
+                CrossRankSyncV2(FLAG_ONE_IDX, cal_idx + 1);
+            }
+
+            // aiv之间同步
+            SetAndWaitAivSync(flag_idx);
+
+            // 发送aic同步
+            SetAicSync(flag_idx);
+        }
+
+        EndFlagsAndBias();
+    }
+
+public:
+    using AllGather<HAVE_BIAS, T, T>::SetAicSync;
+    using AllGather<HAVE_BIAS, T, T>::SetAndWaitAivSync;
+    using AllGather<HAVE_BIAS, T, T>::SetBuffFlag;
+    using AllGather<HAVE_BIAS, T, T>::SetBuffFlagByAdd;
+    using AllGather<HAVE_BIAS, T, T>::CheckBuffFlag;
+    using AllGather<HAVE_BIAS, T, T>::ResetIpcFlags;
+    using AllGather<HAVE_BIAS, T, T>::EndFlagsAndBias;
+    using AllGather<HAVE_BIAS, T, T>::CrossRankSyncV1;
+    using AllGather<HAVE_BIAS, T, T>::CrossRankSyncV2;
+    using AllGather<HAVE_BIAS, T, T>::buff;
+    using AllGather<HAVE_BIAS, T, T>::gm_out;
+    using AllGather<HAVE_BIAS, T, T>::ctrl_flags_UB;
+    using AllGather<HAVE_BIAS, T, T>::output_UB_T;
+    using AllGather<HAVE_BIAS, T, T>::batch_size;
+    using AllGather<HAVE_BIAS, T, T>::m;
+    using AllGather<HAVE_BIAS, T, T>::k;
+    using AllGather<HAVE_BIAS, T, T>::n;
+    using AllGather<HAVE_BIAS, T, T>::m0;
+    using AllGather<HAVE_BIAS, T, T>::k0;
+    using AllGather<HAVE_BIAS, T, T>::n0;
+    using AllGather<HAVE_BIAS, T, T>::m_loop;
+    using AllGather<HAVE_BIAS, T, T>::n_loop;
+    using AllGather<HAVE_BIAS, T, T>::k_loop;
+    using AllGather<HAVE_BIAS, T, T>::core_loop;
+    using AllGather<HAVE_BIAS, T, T>::core_idx;
+    using AllGather<HAVE_BIAS, T, T>::rank;
+    using AllGather<HAVE_BIAS, T, T>::rank_size;
+    using AllGather<HAVE_BIAS, T, T>::tiling_key;
+    using AllGather<HAVE_BIAS, T, T>::swizzl_count;
+    using AllGather<HAVE_BIAS, T, T>::p_value;
+    using AllGather<HAVE_BIAS, T, T>::aiv_idx;
+    using AllGather<HAVE_BIAS, T, T>::other_rank;
+    using AllGather<HAVE_BIAS, T, T>::max_ub_single_dma_size;
+    using AllGather<HAVE_BIAS, T, T>::max_ub_ping_pong_size;
+    using AllGather<HAVE_BIAS, T, T>::m_align;
+    using AllGather<HAVE_BIAS, T, T>::k_align;
+    using AllGather<HAVE_BIAS, T, T>::n_align;
+    using AllGather<HAVE_BIAS, T, T>::aligned_a;
+    using AllGather<HAVE_BIAS, T, T>::aligned_b;
+    using AllGather<HAVE_BIAS, T, T>::cal_count;
+    using AllGather<HAVE_BIAS, T, T>::gm_a_pingpong_size;
+    using AllGather<HAVE_BIAS, T, T>::preprocessor;
+    using AllGather<HAVE_BIAS, T, T>::add_bias_runner;
+    using AllGather<HAVE_BIAS, T, T>::MoveResultFromSrcToDst;
+    using AllGather<HAVE_BIAS, T, T>::comm_npu_split;
+    using AllGather<HAVE_BIAS, T, T>::comm_data_split;
+    using AllGather<HAVE_BIAS, T, T>::comm_direct;
+    using AllGather<HAVE_BIAS, T, T>::len_per_loop;
+    using AllGather<HAVE_BIAS, T, T>::MoveWithSplit;
+    using AllGather<HAVE_BIAS, T, T>::local_expert_nums;
+    using AllGather<HAVE_BIAS, T, T>::is_moe;
+    using AllGather<HAVE_BIAS, T, T>::is_moe_averaged;
+    using AllGather<HAVE_BIAS, T, T>::is_alltoallvc;
+    using AllGather<HAVE_BIAS, T, T>::EP;
+    using AllGather<HAVE_BIAS, T, T>::TP;
+    int32_t max_move_m;
+    int32_t max_move_k = 20480;
+    int32_t copy_core_num;
+    int32_t m_k_num;
+    int32_t num_per_rank_move;
+    int32_t core_count;
+    int32_t first_step_core_num;
+    int32_t num_per_move;
+    __gm__ T *gm_allgather;
+};
+
+constexpr int32_t NO_BIAS_MASK5 = 0b000000 | 0b100000 | 0b010000 | 0b110000 | 0b001000 | 0b101000 | 0b011000 | 0b111000;
+constexpr int32_t BIAS_MASK5 = 0b000010 | 0b100010 | 0b010010 | 0b110010 | 0b001010 | 0b101010 | 0b011010 | 0b111010;
+
+template <typename T>
+FORCE_INLINE_AICORE void RunAllGatherV2Align16(int32_t tiling_key, COC_ARGS_FUN(T))
+{
+    // 16 align
+    AllGatherV2<true, true, false, false, T> allgather_write_align_16_without_bias;
+    AllGatherV2<true, true, false, true, T> allgather_write_align_16_with_bias;
+    switch (tiling_key) {
+        case 0b000000:
+        case 0b100000:
+        case 0b010000:
+        case 0b110000:
+        case 0b001000:
+        case 0b101000:
+        case 0b011000:
+        case 0b111000:
+            allgather_write_align_16_without_bias.SetArgs(COC_ARGS_CALL());
+            allgather_write_align_16_without_bias.RunWithSplit();
+            break;
+        case 0b000010:
+        case 0b100010:
+        case 0b010010:
+        case 0b110010:
+        case 0b001010:
+        case 0b101010:
+        case 0b011010:
+        case 0b111010:
+            allgather_write_align_16_with_bias.SetArgs(COC_ARGS_CALL());
+            allgather_write_align_16_with_bias.RunWithSplit();
+            break;
+        default:
+            break;
+    }
+}
+
+template <typename T>
+FORCE_INLINE_AICORE void RunAllGatherV2UnAlign16(int32_t tiling_key, COC_ARGS_FUN(T))
+{
+    // 16 unalign
+    AllGatherV2<true, false, false, false, T> allgather_write_unalign_16_without_bias;
+    AllGatherV2<true, false, false, true, T> allgather_write_unalign_16_with_bias;
+    switch (tiling_key) {
+        case 0b000000:
+        case 0b100000:
+        case 0b010000:
+        case 0b110000:
+        case 0b001000:
+        case 0b101000:
+        case 0b011000:
+        case 0b111000:
+            allgather_write_unalign_16_without_bias.SetArgs(COC_ARGS_CALL());
+            allgather_write_unalign_16_without_bias.RunWithSplit();
+            break;
+        case 0b000010:
+        case 0b100010:
+        case 0b010010:
+        case 0b110010:
+        case 0b001010:
+        case 0b101010:
+        case 0b011010:
+        case 0b111010:
+            allgather_write_unalign_16_with_bias.SetArgs(COC_ARGS_CALL());
+            allgather_write_unalign_16_with_bias.RunWithSplit();
+            break;
+        default :
+            break;
+    }
+}
+
+template <typename T>
+inline __aicore__ void CocAllGatherMatmulV2Aiv(COC_ARGS_FUN(T))
+{
+    // write
+    AllGatherV2<true, true, false, false, T> allgather_write_align_16_without_bias;
+    AllGatherV2<true, true, false, true, T> allgather_write_align_16_with_bias;
+    AllGatherV2<true, false, false, false, T> allgather_write_unalign_16_without_bias;
+    AllGatherV2<true, false, false, true, T> allgather_write_unalign_16_with_bias;
+
+    SetAtomicNone();
+    SetMaskNormImpl();
+    SetSyncBaseAddr((uint64_t)ffts_addr);
+    SetVectorMask<T>((uint64_t)-1, (uint64_t)-1);
+
+    auto para = reinterpret_cast<__gm__ Lcal::CoCKernelParam *>(para_gm);
+    auto cocTilingData = &para->cocTilingData;
+    int32_t k = cocTilingData->k;
+    int32_t tiling_key = cocTilingData->tilingKey;
+    int32_t write_to_other_rank = cocTilingData->write2OtherRank;
+    // swizzl = 0 transa = 0 transb = 0 splitk = 0 bias = 0 int8 = 0
+    if (k % BLOCK_SIZE_16 == 0) {
+        RunAllGatherV2Align16(tiling_key, COC_ARGS_CALL());
+    } else {
+        RunAllGatherV2UnAlign16(tiling_key, COC_ARGS_CALL());
+    }
+    PipeBarrier<PIPE_ALL>();
+}
+
+#endif
