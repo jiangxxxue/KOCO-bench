@@ -1,0 +1,5 @@
+{
+  "framework_name": "RAGAnything",
+  "framework_description": "RAGAnything is a comprehensive multimodal Retrieval-Augmented Generation (RAG) system built on top of LightRAG by HKUDS. It enables seamless processing and querying of diverse content types including text, images, tables, and equations. The framework leverages advanced multimodal understanding capabilities to extract and integrate information from various document elements, providing a unified approach to knowledge retrieval and generation across different modalities."
+}
+

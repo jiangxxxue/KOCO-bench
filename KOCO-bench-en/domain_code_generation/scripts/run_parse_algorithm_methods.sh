@@ -6,7 +6,7 @@
 # ========================================
 
 # 框架名称（verl, tensorrt_model_optimizer）
-FRAMEWORK="${FRAMEWORK:-raganything}"
+FRAMEWORK="${FRAMEWORK:-verl}"
 
 # 测试示例名称（为空则处理所有）
 TEST_EXAMPLE="${TEST_EXAMPLE:-}"
