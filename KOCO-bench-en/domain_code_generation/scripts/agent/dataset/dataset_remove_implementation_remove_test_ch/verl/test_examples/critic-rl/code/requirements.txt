@@ -1,0 +1,4 @@
+deepspeed==0.15.0
+sandbox-fusion
+git+https://github.com/volcengine/verl.git@483fa8ac76fc4d149feeff4368d380a93e4246be
+git+https://github.com/zhxieml/rayinfer.git

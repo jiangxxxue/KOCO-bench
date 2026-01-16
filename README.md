@@ -51,6 +51,7 @@ KOCO-bench/
 │   │       ├── execution_evaluation_pure.py
 │   │       ├── aggregate_metrics.py
 │   │       ├── LLM_eval_openrouter.sh  # One-click evaluation
+│   │       ├── agent/                  # agent inference
 │   │       ├── apicall/                # OpenRouter API integration
 │   │       ├── sft/                    # Supervised fine-tuning
 │   │       ├── lora/                   # LoRA training & inference
@@ -238,6 +239,7 @@ bash stop_inference_server.sh
 - **[Quick Start: Aggregating Metrics](KOCO-bench-en/domain_code_generation/scripts/QUICK_START_AGGREGATE.md)**: Guide for metrics aggregation and comparison
 - **[LoRA Training Guide](KOCO-bench-en/domain_code_generation/scripts/lora/README.md)**: LoRA fine-tuning documentation
 - **[Inference Server Guide](KOCO-bench-en/domain_code_generation/scripts/inference/INFERENCE_SERVER_README.md)**: Local model serving
+- **[Agent Guide](KOCO-bench-en/domain_code_generation/scripts/agent/README.md)**: Agent documentation
 
 ### Knowledge Understanding Documentation
 - **[Knowledge Understanding Scripts README](KOCO-bench-en/domain_knowledge_understanding/scripts/README.md)**: Guide for running MCQ evaluation

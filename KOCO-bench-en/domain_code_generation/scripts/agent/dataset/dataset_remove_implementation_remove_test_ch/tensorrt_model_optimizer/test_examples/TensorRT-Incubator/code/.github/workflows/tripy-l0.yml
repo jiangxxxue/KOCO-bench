@@ -1,0 +1,93 @@
+name: Tripy CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [synchronize, opened, reopened, ready_for_review]
+    paths: ['tripy/**']
+
+env:
+  REGISTRY: ghcr.io
+  DEFAULT_IMAGE: ghcr.io/nvidia/tensorrt-incubator/tripy:latest
+  NEW_TEST_IMAGE: test-image:latest
+
+
+jobs:
+  tripy-l0:
+    if: github.event.pull_request.draft == false
+    runs-on: tripy-self-hosted
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dorny/paths-filter@v3
+      id: filter
+      with:
+        filters: |
+          local_container:
+            - 'tripy/Dockerfile'
+            - 'tripy/pyproject.toml'
+
+    - if: steps.filter.outputs.local_container == 'true'
+      run: echo "l0_image=${{ env.NEW_TEST_IMAGE }}" >> "$GITHUB_ENV"
+    - if: steps.filter.outputs.local_container != 'true'
+      run: echo "l0_image=${{ env.DEFAULT_IMAGE }}" >> "$GITHUB_ENV"
+
+    # Login against a Docker registry
+    # https://github.com/docker/login-action
+    - name: Log into registry ${{ env.REGISTRY }}
+      uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build new container
+      if: steps.filter.outputs.local_container == 'true'
+      uses: docker/build-push-action@v6
+      with:
+        context: tripy/
+        tags: ${{ env.NEW_TEST_IMAGE }}
+        push: false
+
+    - name: Pull latest container
+      if: steps.filter.outputs.local_container != 'true'
+      run: docker pull ${{ env.l0_image }}
+
+    - name: build-docs
+      uses: addnab/docker-run-action@v3
+      with:
+        image: ${{ env.l0_image }}
+        options: --gpus all -v ${{ github.workspace }}/tripy:/tripy
+        run: |
+          python3 docs/generate_rsts.py
+          sphinx-build build/doc_sources build/docs -c docs/ -j 4 -W -n
+
+    - name: Run tests
+      uses: addnab/docker-run-action@v3
+      with:
+        image: ${{ env.l0_image }}
+        options: --gpus all -v ${{ github.workspace }}/tripy:/tripy
+        run: |
+          pytest --cov=nvtripy/ --cov-config=.coveragerc tests/ -v -m "not l1" -n 4 --durations=15 --ignore tests/performance
+
+    - name: Run performance benchmarks
+      uses: addnab/docker-run-action@v3
+      with:
+        image: ${{ env.l0_image }}
+        options: --gpus all -v ${{ github.workspace }}/tripy:/tripy
+        run: |
+          pytest tests/performance -v -m "not l1" --benchmark-warmup=on --benchmark-json benchmark.json
+
+    - name: Check benchmark result
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        tool: 'pytest'
+        output-file-path: ${{ github.workspace }}/tripy/benchmark.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: ${{ !github.event.pull_request.head.repo.fork }}
+        # Show alert with commit comment on detecting possible performance regression
+        alert-threshold: '110%'
+        comment-on-alert: true
+        fail-on-alert: true
+        gh-pages-branch: benchmarks

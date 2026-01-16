@@ -1,0 +1,114 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "toolbrain"
+version = "0.1.3"
+description = "A framework for training LLM-powered agents to use tools more effectively using Reinforcement Learning"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+authors = [
+    {name = "ToolBrain Team", email = "team@toolbrain.ai"}
+]
+keywords = ["llm", "agents", "reinforcement-learning", "tools", "ai"]
+
+dependencies = [
+    "smolagents>=0.1.0",
+    "openai>=1.0.0",
+    "typing-extensions>=4.0.0",
+    "python-dotenv>=1.0.0",
+    "peft>=0.17.0",
+    "litellm",
+    "google-generativeai",
+    "gradio",
+    "datasets>=3.4.1,<4.0.0",
+    "langchain>=1.0.0a10",
+    "langchain-huggingface",
+    "langgraph",
+    "langchain_core",
+    "bitsandbytes"
+]
+
+[project.optional-dependencies]
+# --- OPTIONAL DEPENDENCIES (Extras) ---
+
+# Extra for core ML libraries
+torch = [
+    "torch",
+    "accelerate", # Often needed with torch and transformers
+]
+
+# Extra for Hugging Face Transformers
+transformers = [
+    "transformers",
+    "toolbrain[torch]", # This extra depends on the 'torch' extra
+]
+
+# 'unsloth' extra for GPU-accelerated training
+unsloth = [
+    "unsloth",
+    "bitsandbytes",
+    "xformers",
+    "toolbrain[transformers]", # Unsloth needs transformers and torch
+]
+
+# 'dev' extra for development and testing tools
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "isort>=5.0.0",
+    "mypy>=1.0.0",
+]
+
+# Basic dependencies for running simple examples and plotting
+examples-base = [
+    "pandas",
+    "matplotlib",
+    "seaborn",
+    "toolbrain[transformers]", # Most examples will need transformers
+]
+
+# Full dependencies for running all examples, including advanced ones
+examples-full = [
+    "toolbrain[examples-base]",
+    "toolbrain[unsloth]", # Add the GPU-specific dependencies
+]
+
+# 'all' extra to install everything for a full development environment
+all = [
+    "toolbrain[dev, examples-full]", # 'all' now includes everything
+]
+
+[project.urls]
+Homepage = "https://github.com/toolbrain/toolbrain"
+Documentation = "https://toolbrain.readthedocs.io"
+Repository = "https://github.com/toolbrain/toolbrain"
+Issues = "https://github.com/toolbrain/toolbrain/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["toolbrain*"]
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true 

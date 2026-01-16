@@ -1,0 +1,28 @@
+{
+  "clients": 4,
+  "batch_sizes": [
+    2
+  ],
+  "converter_options": {
+    "precision": "",
+    "enable_insert_remap": false
+  },
+  "compiler_options": {
+    "batches_per_step": 128,
+    "enable_prefetch_datastreams": true,
+    "use_128bit_conv_unit_load": true,
+    "group_host_sync": false,
+    "stream_buffering_depth": 2,
+    "enable_fast_reduce": true,
+    "rearrange_anchors_on_host": false,
+    "available_memory_proportion": 0.2
+  },
+  "fp8_configs": {
+    "converter_options": {
+      "enable_insert_remap": true
+    },
+    "batch_sizes": [
+      4
+    ]
+  }
+}

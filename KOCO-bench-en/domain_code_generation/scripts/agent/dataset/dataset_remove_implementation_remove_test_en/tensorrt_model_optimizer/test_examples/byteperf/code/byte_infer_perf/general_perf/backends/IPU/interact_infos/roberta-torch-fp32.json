@@ -1,0 +1,24 @@
+{
+  "clients": 1,
+  "batch_sizes": [
+    1
+  ],
+  "pack_config": {
+    "batch_size": 40,
+    "input_names": ["input_ids.1", "attention_mask.1", "token_type_ids.1"],
+    "dynamic_input_name" : "input_ids.1",
+    "mask_name": "attention_mask.1",
+    "max_pack_num": 100,
+    "timeout_microseconds": 15000
+  },
+  "converter_options": {
+    "used_passes": [
+      "insert_attention_mask"
+    ],
+    "precision": "fp16",
+    "disable_fast_norm": true
+  },
+  "compiler_options": {
+    "available_memory_proportion": 0.4
+  }
+}

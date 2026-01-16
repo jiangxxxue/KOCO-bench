@@ -1,0 +1,47 @@
+# Ensure that documentation builds and run L1 tests.
+name: Tripy L1
+
+on:
+  # Runs at 2am pst (9am utc) every day
+  schedule:
+    - cron: "0 9 * * *"
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  l1-test:
+    runs-on: tripy-self-hosted
+    container:
+      image: ghcr.io/nvidia/tensorrt-incubator/tripy:latest
+      volumes:
+        - ${{ github.workspace }}/tripy:/tripy
+      options: --gpus all
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: build-docs
+      run: |
+        cd /tripy/
+        python3 docs/generate_rsts.py
+        sphinx-build build/doc_sources build/docs -c docs/ -j 4 -W -n
+
+    - name: l1-test
+      run: |
+        cd /tripy/
+        pytest --cov=nvtripy/ --cov-config=.coveragerc tests/ -v -m "l1" --durations=15 --ignore tests/performance
+
+    # For some tests, we want to use the public build instead of the latest commit.
+    - name: l1-test-release-package
+      run: |
+        cd /tripy/
+        unset PYTHONPATH
+        pip uninstall nvtripy -y
+        python3 -m pip install nvtripy -f https://nvidia.github.io/TensorRT-Incubator/packages.html
+        pytest --cov=nvtripy/ --cov-config=.coveragerc tests/ -v -m "l1_release_package" --durations=15 --ignore tests/performance

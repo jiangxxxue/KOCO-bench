@@ -1,0 +1,105 @@
+{
+  "version": 6,
+  "include": [],
+  "configurePresets": [
+    {
+      "name": "base",
+      "generator": "Ninja",
+      "binaryDir": "build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LLVM_ENABLE_ASSERTIONS": "ON",
+        "CPM_SOURCE_CACHE": "${sourceDir}/.cache.cpm",
+        "CPM_USE_NAMED_CACHE_DIRECTORIES": "ON",
+        "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "${sourceDir}/DependencyProvider.cmake"
+      }
+    },
+    {
+      "name": "ninja-llvm",
+      "displayName": "Ninja RelWithDebInfo LLVM",
+      "generator": "Ninja",
+      "binaryDir": "build",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "LLVM_USE_LINKER": "lld"
+      }
+    },
+    {
+      "name": "github-cicd",
+      "displayName": "GitHub CICD configuration",
+      "generator": "Ninja",
+      "binaryDir": "build",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "LLVM_USE_LINKER": "lld",
+        "MLIR_TRT_ENABLE_TORCH": "ON",
+        "MLIR_EXECUTOR_ENABLE_GPU_INTEGRATION_TESTS": "OFF",
+        "CPM_SOURCE_CACHE": "$env{CPM_SOURCE_CACHE}",
+        "ENABLE_ASAN": "$env{ENABLE_ASAN}",
+        "LLVM_LIT_ARGS": "$env{LLVM_LIT_ARGS}",
+        "MLIR_TRT_DOWNLOAD_TENSORRT_VERSION": "$env{DOWNLOAD_TENSORRT_VERSION}"
+      }
+    },
+    {
+      "name": "ninja-llvm-release",
+      "inherits": "ninja-llvm",
+      "displayName": "Ninja Release LLVM",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "ninja-llvm-debug",
+      "inherits": "ninja-llvm",
+      "displayName": "Ninja Release LLVM",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "ninja-gcc",
+      "displayName": "Ninja RelWithDebInfo GCC",
+      "generator": "Ninja",
+      "binaryDir": "build-gcc",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "ninja-clang-wheels",
+      "displayName": "Ninja clang wheels",
+      "generator": "Ninja",
+      "binaryDir": "build",
+      "inherits": "ninja-llvm-release",
+      "cacheVariables": {
+        "LLVM_ENABLE_ASSERTIONS": "OFF",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PLATFORM_NO_VERSIONED_SONAME": "ON",
+        "LLVM_MINIMUM_PYTHON_VERSION": "$env{PY_VERSION}",
+        "MLIR_TRT_ENABLE_NCCL": "OFF",
+        "MLIR_TRT_DOWNLOAD_TENSORRT_VERSION": "$env{DOWNLOAD_TENSORRT_VERSION}"
+      }
+    },
+    {
+      "name": "ninja-release-wheels",
+      "displayName": "Ninja release wheels",
+      "generator": "Ninja",
+      "binaryDir": "build",
+      "inherits": "ninja-gcc",
+      "cacheVariables": {
+        "LLVM_ENABLE_ASSERTIONS": "OFF",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PLATFORM_NO_VERSIONED_SONAME": "ON",
+        "LLVM_MINIMUM_PYTHON_VERSION": "$env{PY_VERSION}",
+        "MLIR_TRT_ENABLE_NCCL": "OFF",
+        "MLIR_TRT_DOWNLOAD_TENSORRT_VERSION": "$env{DOWNLOAD_TENSORRT_VERSION}"
+      }
+    }
+  ]
+}

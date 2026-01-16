@@ -1,0 +1,5 @@
+{
+  "framework_name": "smolagents",
+  "framework_description": "smolagents is a lightweight and powerful library for building AI agents that think in code. It provides a simple framework (~1,000 lines of core code) that enables agents to write their actions as executable Python code snippets, demonstrating 30% better efficiency compared to traditional tool-calling approaches. The library features first-class support for CodeAgent that writes actions in Python for secure execution in sandboxed environments (E2B, Modal, Docker, or WebAssembly), model-agnostic design supporting any LLM from local transformers/ollama models to cloud providers (OpenAI, Anthropic, OpenRouter, Azure, Bedrock), multimodal capabilities supporting text, vision, video, and audio inputs, flexible tool integration from MCP servers, LangChain, and Hugging Face Spaces, Hub-native sharing for instant deployment of agents and tools, and CLI commands for running agents from terminal. The library enables both CodeAgent (writes actions as Python code) and ToolCallingAgent (traditional JSON-based tool calling) patterns, with support for multi-agent hierarchies and remote code execution."
+}
+

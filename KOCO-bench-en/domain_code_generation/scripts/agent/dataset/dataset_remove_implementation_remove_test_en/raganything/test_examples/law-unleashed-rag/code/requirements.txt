@@ -1,0 +1,59 @@
+# Core FastAPI and web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart==0.0.6
+
+# Firebase and authentication
+firebase-admin==6.4.0
+google-auth==2.23.4
+google-auth-oauthlib==1.1.0
+google-auth-httplib2==0.1.1
+
+# Google Cloud Storage
+google-cloud-storage==2.10.0
+google-cloud-core==2.3.3
+
+# Data processing and storage
+pydantic>=2.8.0
+python-dotenv==1.0.0
+aiofiles==23.2.1
+
+# Monitoring and metrics
+prometheus-client==0.19.0
+
+# HTTP client
+httpx==0.25.2
+
+# Logging and utilities
+structlog==23.2.0
+tenacity==8.2.3
+
+# Development and testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-mock==3.12.0
+
+# RAG-Anything dependencies (installed separately to avoid conflicts)
+# Note: Install RAG-Anything manually after core dependencies are installed
+# pip install raganything
+
+# LlamaIndex dependencies removed - only using RAGAnything and Vertex AI services
+
+# OpenAI client for EvidenceSweep
+openai>=1.0.0
+
+# Vertex AI dependencies for RAG Vertex service (based on GCP RAG engine notebook)
+google-cloud-aiplatform>=1.38.0
+google-cloud-storage>=2.10.0
+google-generativeai>=0.3.0
+vertexai>=1.38.0
+
+# Additional dependencies for document processing
+pypdf>=3.0.0
+python-docx>=0.8.11
+
+# Evaluation framework dependencies
+sentence-transformers>=2.2.0
+scikit-learn>=1.3.0
+numpy>=1.24.0
+psutil>=5.9.0

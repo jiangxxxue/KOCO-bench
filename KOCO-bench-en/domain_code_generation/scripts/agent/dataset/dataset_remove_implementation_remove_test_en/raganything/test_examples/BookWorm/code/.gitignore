@@ -1,0 +1,48 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# BookWorm workspace files
+workspace/
+lightrag_workspace/
+
+# Log files
+logs/
+*.log
+
+# Environment files
+.env
+.env.local
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test and debug files
+test_debug.py
+*_test.py
+debug_*
+logs/bookworm.log
+/raganything_workspace
+/workspace copy
+/bookworm_workspace
+/logs
+uv.lock

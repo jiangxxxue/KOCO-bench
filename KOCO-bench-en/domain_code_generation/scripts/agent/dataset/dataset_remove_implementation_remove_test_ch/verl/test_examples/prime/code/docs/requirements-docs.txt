@@ -1,0 +1,29 @@
+<<<<<<< HEAD
+# markdown support
+recommonmark
+myst_parser
+# markdown table support
+sphinx-markdown-tables
+
+# theme default rtd
+
+# crate-docs-theme
+sphinx-rtd-theme
+
+# pin tokenizers version to avoid env_logger version req
+tokenizers==0.21
+=======
+# markdown support
+recommonmark
+myst_parser
+# markdown table support
+sphinx-markdown-tables
+
+# theme default rtd
+
+# crate-docs-theme
+sphinx-rtd-theme
+
+# pin tokenizers version to avoid env_logger version req
+tokenizers==0.21
+>>>>>>> 25c3c20f5ef9a94d948be6f9ac2d9b1c448aaefa

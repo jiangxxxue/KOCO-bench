@@ -1,0 +1,62 @@
+前端发送的body:
+{
+    "model": "Qwen3",
+    "modelId": "XXXXXX",
+    "messages": [
+        {
+            "chatCode": "1ywj4ox2uvb400",
+            "content": "语义图像如何构建",
+            "role": "user",
+            "msgTime": 1754528942728,
+            "contentType": "1",
+            "chatFiles": [],
+            "chatModelCode": "Qwen3",
+            "tokenCount": 0
+        }
+    ],
+    "temperature": 1,
+    "isRAG": true,
+    "similarity": 0.5,
+    "is_summary": false,
+    "stream": false,
+    "apiKey": "sk-6Xc1YUnHfPn98EbWXOE4zA"
+}
+
+isRAG：是否使用向量知识库
+similarity： 向量相似度筛选的阈值
+stream： 是否使用流式输出
+is_summary：是否对过往的会话历史进行总结并返回
+...
+
+
+后端返回的body:
+{
+    "choices": [
+        {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+                "chatCode": "1ywj4ox2uvb400",
+                "content": "您当前的问题表述较为模糊，若需帮助，请明确具体问题内容，例如技术咨询、操作指导或其他需求。我将为您尽力解答！",
+                "role": "assistant"
+            }
+        }
+    ],
+    "created": 1754556134,
+    "human": 0,
+    "id": "chatcmpl-1754556134248",
+    "model": "qwen3:8b",
+    "object": "chat.completion",
+    "usage": {
+        "completion_tokens": 54,
+        "prompt_tokens": 7,
+        "total_tokens": 61
+    }
+}
+
+chatCode:本轮会话的id,和前端发送的body的chatCode一致
+content：内容
+human：后端会分析用户意图进而确定是否转人工，0不转人工，1是转人工
+
+
+

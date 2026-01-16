@@ -1,0 +1,28 @@
+# RAG Evaluation Framework Dependencies
+# Core dependencies for the evaluation framework
+
+# HTTP client for API calls
+httpx>=0.25.0
+
+# Machine learning dependencies for evaluation metrics
+sentence-transformers>=2.2.0
+scikit-learn>=1.3.0
+numpy>=1.24.0
+
+# OpenAI client for LLM interactions
+openai>=1.0.0
+
+# Data processing
+pydantic>=2.0.0
+
+# System monitoring
+psutil>=5.9.0
+
+# Async support
+asyncio-mqtt>=0.13.0  # if needed for async operations
+
+# Optional: For advanced evaluation metrics
+# torch>=2.0.0  # Already included with sentence-transformers
+# transformers>=4.30.0  # Already included with sentence-transformers
+
+

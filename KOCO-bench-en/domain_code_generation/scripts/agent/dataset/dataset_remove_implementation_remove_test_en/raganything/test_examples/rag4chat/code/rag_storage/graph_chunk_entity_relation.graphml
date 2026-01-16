@@ -1,0 +1,899 @@
+<?xml version='1.0' encoding='utf-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd"><key id="d11" for="edge" attr.name="created_at" attr.type="long"/>
+<key id="d10" for="edge" attr.name="file_path" attr.type="string"/>
+<key id="d9" for="edge" attr.name="source_id" attr.type="string"/>
+<key id="d8" for="edge" attr.name="keywords" attr.type="string"/>
+<key id="d7" for="edge" attr.name="description" attr.type="string"/>
+<key id="d6" for="edge" attr.name="weight" attr.type="double"/>
+<key id="d5" for="node" attr.name="created_at" attr.type="long"/>
+<key id="d4" for="node" attr.name="file_path" attr.type="string"/>
+<key id="d3" for="node" attr.name="source_id" attr.type="string"/>
+<key id="d2" for="node" attr.name="description" attr.type="string"/>
+<key id="d1" for="node" attr.name="entity_type" attr.type="string"/>
+<key id="d0" for="node" attr.name="entity_id" attr.type="string"/>
+<graph edgedefault="undirected"><node id="ATP automatic protection">
+  <data key="d0">ATP automatic protection</data>
+  <data key="d1">category</data>
+  <data key="d2">A type of signal system fault related to train automatic protection mechanisms, involving ATP system anomalies or failures.</data>
+  <data key="d3">chunk-26ea0e49900b956ea175f23e1b02efb1</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665120</data>
+</node>
+<node id="自然灾害">
+  <data key="d0">自然灾害</data>
+  <data key="d1">category</data>
+  <data key="d2">Natural disasters refer to phenomena such as heavy rain or earthquakes that may cause train speed restrictions, service stoppages, or organized evacuations.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665120</data>
+</node>
+<node id="火灾报警">
+  <data key="d0">火灾报警</data>
+  <data key="d1">category</data>
+  <data key="d2">Fire alarm refers to emergencies where trains must stop immediately, activate fire suppression systems, and evacuate passengers.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665120</data>
+</node>
+<node id="乘客突发疾病">
+  <data key="d0">乘客突发疾病</data>
+  <data key="d1">category</data>
+  <data key="d2">Passenger sudden illness refers to medical emergencies requiring immediate medical assistance and search for medical personnel on board.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665120</data>
+</node>
+<node id="限速运行或停运">
+  <data key="d0">限速运行或停运</data>
+  <data key="d1">category</data>
+  <data key="d2">Speed restrictions or service stoppages are operational measures implemented in response to natural disasters or equipment failures.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665120</data>
+</node>
+<node id="组织疏散">
+  <data key="d0">组织疏散</data>
+  <data key="d1">category</data>
+  <data key="d2">Organized evacuation is a safety procedure to ensure passenger safety during emergencies such as disasters or fires.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665120</data>
+</node>
+<node id="启动灭火系统">
+  <data key="d0">启动灭火系统</data>
+  <data key="d1">category</data>
+  <data key="d2">Fire suppression system activation is an emergency response to extinguish fires and mitigate risks on trains.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665120</data>
+</node>
+<node id="乘客禁止行为">
+  <data key="d0">乘客禁止行为</data>
+  <data key="d1">category</data>
+  <data key="d2">Prohibited passenger behaviors include unauthorized door opening, smoking, tampering with safety equipment, and throwing objects out of windows.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665120</data>
+</node>
+<node id="紧急情况下的乘客应对">
+  <data key="d0">紧急情况下的乘客应对</data>
+  <data key="d1">category</data>
+  <data key="d2">Passenger response to emergencies involves following crew instructions, using emergency communication devices, and avoiding self-initiated actions.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665129</data>
+</node>
+<node id="查询类问题回复">
+  <data key="d0">查询类问题回复</data>
+  <data key="d1">category</data>
+  <data key="d2">Query responses provide information about train status via the 12306 App, including delays or operational changes.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665129</data>
+</node>
+<node id="故障解释类">
+  <data key="d0">故障解释类</data>
+  <data key="d1">category</data>
+  <data key="d2">Fault explanations inform passengers about technical issues causing delays or service disruptions.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665130</data>
+</node>
+<node id="退改签引导">
+  <data key="d0">退改签引导</data>
+  <data key="d1">category</data>
+  <data key="d2">Refund or rescheduling guidance directs passengers to use 12306 platforms for ticket adjustments.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665131</data>
+</node>
+<node id="安全提醒">
+  <data key="d0">安全提醒</data>
+  <data key="d1">category</data>
+  <data key="d2">Safety reminders warn passengers against interacting with emergency equipment and emphasize adherence to safety protocols.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665131</data>
+</node>
+<node id="CTC">
+  <data key="d0">CTC</data>
+  <data key="d1">category</data>
+  <data key="d2">CTC (Dispatch Concentration System) is a remote control system for managing train operations.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665131</data>
+</node>
+<node id="ATP">
+  <data key="d0">ATP</data>
+  <data key="d1">category</data>
+  <data key="d2">ATP (Train Automatic Protection System) prevents overspeeding and unauthorized train movements.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665132</data>
+</node>
+<node id="TEDS">
+  <data key="d0">TEDS</data>
+  <data key="d1">category</data>
+  <data key="d2">TEDS (Crack Detection System) monitors faults in high-speed train components using image analysis.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665132</data>
+</node>
+<node id="SCADA">
+  <data key="d0">SCADA</data>
+  <data key="d1">category</data>
+  <data key="d2">SCADA (Power Monitoring System) remotely oversees electrified rail networks.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665137</data>
+</node>
+<node id="PHM">
+  <data key="d0">PHM</data>
+  <data key="d1">category</data>
+  <data key="d2">PHM (Fault Prediction and Health Management) system analyzes train data to predict failures.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665138</data>
+</node>
+<node id="GSM-R">
+  <data key="d0">GSM-R</data>
+  <data key="d1">category</data>
+  <data key="d2">GSM-R (Railway Communication Network) provides secure communication for train operations.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665138</data>
+</node>
+<node id="LKJ">
+  <data key="d0">LKJ</data>
+  <data key="d1">category</data>
+  <data key="d2">LKJ (Train Operation Monitoring Recorder) records and monitors train speed and location for safety compliance.</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665138</data>
+</node>
+<node id="擅自打开车门">
+  <data key="d0">擅自打开车门</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d2">Unauthorized door opening is explicitly listed as a prohibited passenger behavior."|&gt;"prohibited action</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665142</data>
+</node>
+<node id="听从乘务员指挥">
+  <data key="d0">听从乘务员指挥</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d2">Passengers must follow crew instructions during emergencies to ensure orderly evacuations."|&gt;"emergency management</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665142</data>
+</node>
+<node id="12306 App">
+  <data key="d0">12306 App</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d2">Train status queries are resolved using the 12306 App for real-time information."|&gt;"customer service</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665142</data>
+</node>
+<node id="疏散乘客">
+  <data key="d0">疏散乘客</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d2">Fire alarms require passengers to be evacuated to minimize injury risks."|&gt;"emergency evacuation</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665147</data>
+</node>
+<node id="调度指令">
+  <data key="d0">调度指令</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d2">Fault explanations clarify that dispatch instructions are being followed to resolve technical issues."|&gt;"operational transparency</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665147</data>
+</node>
+<node id="12306官网或App">
+  <data key="d0">12306官网或App</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d2">Passengers are directed to 12306 platforms for ticket adjustments."|&gt;"service process</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665147</data>
+</node>
+<node id="吸烟">
+  <data key="d0">吸烟</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d2">Smoking (including e-cigarettes) is a prohibited activity on trains for safety reasons."|&gt;"safety regulation</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665147</data>
+</node>
+<node id="触碰安全设备">
+  <data key="d0">触碰安全设备</data>
+  <data key="d3">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d2">Passengers are warned against interacting with safety equipment to prevent accidents."|&gt;"safety protocol</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">knowladge.docx</data>
+  <data key="d5">1754665147</data>
+</node>
+<node id="&lt;供电系统运维要点&gt;">
+  <data key="d0">&lt;供电系统运维要点&gt;</data>
+  <data key="d1">category</data>
+  <data key="d2">Guidelines for maintaining and troubleshooting power supply systems. Description not available in text."</data>
+  <data key="d3">chunk-27a5b8b32239658c88716fc3a0eadca0</data>
+  <data key="d4">knowladge2.docx</data>
+  <data key="d5">1754665941</data>
+</node>
+<node id="乘务员">
+  <data key="d0">乘务员</data>
+  <data key="d1">person</data>
+  <data key="d2">The crew member responsible for resetting the handle and reporting to dispatch to resume operations.</data>
+  <data key="d3">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d4">knowladge2.docx</data>
+  <data key="d5">1754665941</data>
+</node>
+<node id="调度">
+  <data key="d0">调度</data>
+  <data key="d1">organization</data>
+  <data key="d2">The dispatch department responsible for overseeing train operations and authorizing resumption of service after an incident.</data>
+  <data key="d3">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d4">knowladge2.docx</data>
+  <data key="d5">1754665941</data>
+</node>
+<node id="处理">
+  <data key="d0">处理</data>
+  <data key="d1">event</data>
+  <data key="d2">The incident requiring the crew to reset the handle and report to dispatch to restore normal train operations.</data>
+  <data key="d3">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d4">knowladge2.docx</data>
+  <data key="d5">1754665941</data>
+</node>
+<node id="紧急制动装置">
+  <data key="d0">紧急制动装置</data>
+  <data key="d1">category</data>
+  <data key="d2">An emergency braking system on the train that is specifically designed for non-operational scenarios and should not be used in non-emergency conditions.</data>
+  <data key="d3">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d4">knowladge2.docx</data>
+  <data key="d5">1754665941</data>
+</node>
+<node id="客服说明">
+  <data key="d0">客服说明</data>
+  <data key="d1">category</data>
+  <data key="d2">A customer service notice explaining the purpose and usage guidelines of the emergency braking system on the train.</data>
+  <data key="d3">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d4">knowladge2.docx</data>
+  <data key="d5">1754665941</data>
+</node>
+<node id="安全">
+  <data key="d0">安全</data>
+  <data key="d1">category</data>
+  <data key="d2">The concept of safety, emphasized in the customer service notice as a critical aspect of the emergency braking system's design.</data>
+  <data key="d3">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d4">knowladge2.docx</data>
+  <data key="d5">1754665941</data>
+</node>
+<node id="&lt;知识库维护机制&gt;">
+  <data key="d0">&lt;知识库维护机制&gt;</data>
+  <data key="d1">&lt;category&gt;</data>
+  <data key="d2">A mechanism for maintaining the knowledge base, which involves organizing and updating data to support system operations and decision-making. Description not available in text."</data>
+  <data key="d3">chunk-0e317cca4782425b15ed639a67ab7db8</data>
+  <data key="d4">knowladge3.docx</data>
+  <data key="d5">1754666391</data>
+</node>
+<node id="偏远地区">
+  <data key="d0">偏远地区</data>
+  <data key="d3">chunk-9446bbdc50368a013850361d89808e15</data>
+  <data key="d2">High-speed rail stations are often located in remote areas due to geographical and logistical considerations</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">knowladge3.docx</data>
+  <data key="d5">1754666392</data>
+</node>
+<node id="高铁站">
+  <data key="d0">高铁站</data>
+  <data key="d3">chunk-9446bbdc50368a013850361d89808e15</data>
+  <data key="d2">High-speed rail stations are often located in remote areas due to geographical and logistical considerations</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">knowladge3.docx</data>
+  <data key="d5">1754666392</data>
+</node>
+<node id="极端天气应对">
+  <data key="d0">极端天气应对</data>
+  <data key="d1">event</data>
+  <data key="d2">An event involving the response to severe weather conditions that affects high-speed rail operations. Description not available in text.</data>
+  <data key="d3">chunk-60001152e9398589768175ace4b39c9a</data>
+  <data key="d4">knowladge4.docx</data>
+  <data key="d5">1754666713</data>
+</node>
+<node id="Bounding Box to Gaussian Parameters Mapping (equation)">
+  <data key="d0">Bounding Box to Gaussian Parameters Mapping (equation)</data>
+  <data key="d1">equation</data>
+  <data key="d2">This equation calculates Gaussian distribution parameters (mean and standard deviation) from bounding box coordinates to generate heatmaps for object localization. It enables scalable probabilistic representation of object positions and sizes, critical for target detection in structured scenes like train component analysis.</data>
+  <data key="d3">chunk-016be310d0c69e3c6d6eca09ff77c539</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755094794</data>
+</node>
+<node id="Semantic Range Definition for Gaussian Heatmaps (equation)">
+  <data key="d0">Semantic Range Definition for Gaussian Heatmaps (equation)</data>
+  <data key="d1">equation</data>
+  <data key="d2">This equation defines the spatial domain for pixels in a semantic image generated via Gaussian distributions. It establishes the range [μ ± 3σ] for x and y coordinates, ensuring the heatmap captures 99.7% of the Gaussian distribution. The equation is fundamental for constructing heatmaps in FFTNet, enabling precise localization of fixed components in multi-channel semantic images for computer vision tasks.</data>
+  <data key="d3">chunk-2be4c7bdb9a1ab1e4a17d14426a606fd</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755094794</data>
+</node>
+<node id="Heatmap with Color-Coded Grid Overlay (Digital Graphic)">
+  <data key="d0">Heatmap with Color-Coded Grid Overlay (Digital Graphic)</data>
+  <data key="d1">Digital Graphic</data>
+  <data key="d2">The image is a technical visualization, possibly used in a presentation or educational material to demonstrate the process of object detection and classification within computer vision tasks. It serves as an example of how visual data can be processed using algorithms like FFTNet.</data>
+  <data key="d3">chunk-1e0a895677c3411a348fcfbaa816a38f</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755094794</data>
+</node>
+<node id="Object detection algorithm steps (image composite)">
+  <data key="d0">Object detection algorithm steps (image composite)</data>
+  <data key="d1">image composite</data>
+  <data key="d2">This image sequence depicts a step-by-step process in an object detection system, specifically utilizing Gaussian heatmaps to identify and classify the object of interest within the input image.</data>
+  <data key="d3">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755094794</data>
+</node>
+<node id="Gaussian Distribution">
+  <data key="d0">Gaussian Distribution</data>
+  <data key="d1">category</data>
+  <data key="d2">"A mathematical model used to generate heatmaps in object detection, representing the probabilistic distribution of object localization with center coordinates and spatial scaling parameters"&gt;</data>
+  <data key="d3">chunk-016be310d0c69e3c6d6eca09ff77c539</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095268</data>
+</node>
+<node id="categories">
+  <data key="d0">categories</data>
+  <data key="d1">category</data>
+  <data key="d2">The categories represented on the grid, indicating different classes or types in the object detection process.</data>
+  <data key="d3">chunk-1e0a895677c3411a348fcfbaa816a38f</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095268</data>
+</node>
+<node id="Object Detection Algorithm">
+  <data key="d0">Object Detection Algorithm</data>
+  <data key="d1">category</data>
+  <data key="d2">The Object Detection Algorithm is a process used in image analysis to identify objects within an image, involving steps such as generating heatmaps and color representations of the image data.</data>
+  <data key="d3">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095268</data>
+</node>
+<node id="Input Image">
+  <data key="d0">Input Image</data>
+  <data key="d1">category</data>
+  <data key="d2">The Input Image represents the original image data used as the starting point for the object detection algorithm, containing a white helmet and construction equipment.</data>
+  <data key="d3">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095268</data>
+</node>
+<node id="Gaussian Heatmap">
+  <data key="d0">Gaussian Heatmap</data>
+  <data key="d1">category</data>
+  <data key="d2">The Gaussian Heatmap is an intermediate step in the object detection algorithm, highlighting potential object regions by applying a heatmap overlay to the original image.</data>
+  <data key="d3">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095268</data>
+</node>
+<node id="Color Representation">
+  <data key="d0">Color Representation</data>
+  <data key="d1">category</data>
+  <data key="d2">The Color Representation is an intermediate step in the object detection algorithm, displaying the heatmap applied to a different color-coded version of the same equipment.</data>
+  <data key="d3">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095268</data>
+</node>
+<node id="Mathematical Equation">
+  <data key="d0">Mathematical Equation</data>
+  <data key="d1">category</data>
+  <data key="d2">The Mathematical Equation represents the statistical formula provided in the text, defining calculations for mean (μ_x, μ_y) and standard deviation (σ_x, σ_y) based on minimum and maximum values of variables x and y.</data>
+  <data key="d3">chunk-343b2155226d01a3879a10c450c383c5</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095915</data>
+</node>
+<node id="equation_f759bbb2a701b96ec370db0c14f916f2"/>
+<node id="Mathematical Analysis">
+  <data key="d0">Mathematical Analysis</data>
+  <data key="d1">category</data>
+  <data key="d2">The Mathematical Analysis refers to the contextual interpretation and categorization of the provided equation, emphasizing its application in statistical calculations for variables x and y.</data>
+  <data key="d3">chunk-343b2155226d01a3879a10c450c383c5</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095915</data>
+</node>
+<node id="Gaussian Localization Bounds Equation (equation)">
+  <data key="d0">Gaussian Localization Bounds Equation (equation)</data>
+  <data key="d1">equation</data>
+  <data key="d2">Defines the spatial bounds for Gaussian distributions in semantic image construction, ensuring 99.7% probability mass coverage. Critical for encoding target localization and scale in fixed component detection within FFTNet, enabling probabilistic heat map generation for object-centric analysis.</data>
+  <data key="d3">chunk-89052acd4ef499209e00408d94859d18</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095337</data>
+</node>
+<node id="computer vision">
+  <data key="d0">computer vision</data>
+  <data key="d1">category</data>
+  <data key="d2">"computer vision is a field of study and application that utilizes mathematical equations for tasks like probabilistic target detection and spatial probability distributions in object detection."&gt;</data>
+  <data key="d3">chunk-89052acd4ef499209e00408d94859d18</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095915</data>
+</node>
+<node id="probabilistic target detection">
+  <data key="d0">probabilistic target detection</data>
+  <data key="d1">category</data>
+  <data key="d2">"probabilistic target detection is a computational method used in computer vision to model object positions and sizes through spatial probability distributions in the context of semantic image construction."&gt;</data>
+  <data key="d3">chunk-89052acd4ef499209e00408d94859d18</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095915</data>
+</node>
+<node id="Semantic Heatmap (Image Object)">
+  <data key="d0">Semantic Heatmap (Image Object)</data>
+  <data key="d1">Image Object</data>
+  <data key="d2">This image presents a grayscale representation of an FFTNet-based algorithm's output in the form of a semantic heatmap. The image appears to be part of a computer vision or image processing task, possibly related to object detection and classification.</data>
+  <data key="d3">chunk-903147ff7b6fe8693c6550a70f3696f2</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095525</data>
+</node>
+<node id="image_5a5d9bd7ebd488e0e6672f976a7bb5d9">
+  <data key="d0">image_5a5d9bd7ebd488e0e6672f976a7bb5d9</data>
+  <data key="d1">image</data>
+  <data key="d2"> ```json
+{
+    "detailed_description": {
+        "image_type": "screenshot",
+        "entity_info": ...</data>
+  <data key="d3">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095776</data>
+</node>
+<node id="Semantic Segmentation">
+  <data key="d0">Semantic Segmentation</data>
+  <data key="d1">category</data>
+  <data key="d2">Semantic Segmentation is a technique used in image processing to identify and classify objects within an image, as described in the context of automotive parts detection.</data>
+  <data key="d3">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095915</data>
+</node>
+<node id="Automotive Parts Detection">
+  <data key="d0">Automotive Parts Detection</data>
+  <data key="d1">category</data>
+  <data key="d2">Automotive Parts Detection refers to the identification of parts in vehicles, which is the context for the discussed heatmap construction process.</data>
+  <data key="d3">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095915</data>
+</node>
+<node id="Heatmap Construction">
+  <data key="d0">Heatmap Construction</data>
+  <data key="d1">category</data>
+  <data key="d2">Heatmap Construction refers to the process of creating heatmaps for semantic segmentation, as described in the context of automotive parts detection.</data>
+  <data key="d3">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095915</data>
+</node>
+<node id="Image Processing">
+  <data key="d0">Image Processing</data>
+  <data key="d1">category</data>
+  <data key="d2">Image Processing involves analyzing and manipulating visual data to extract meaningful information, as highlighted in the discussion of heatmap creation for automotive applications.</data>
+  <data key="d3">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095915</data>
+</node>
+<node id="Object Detection">
+  <data key="d0">Object Detection</data>
+  <data key="d1">category</data>
+  <data key="d2">Object Detection is the identification of objects within images, which is a key application of semantic segmentation in the context of automotive parts analysis.</data>
+  <data key="d3">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095917</data>
+</node>
+<node id="Computer Vision">
+  <data key="d0">Computer Vision</data>
+  <data key="d1">category</data>
+  <data key="d2">Computer Vision encompasses techniques for interpreting and understanding visual data, including the use of heatmaps and semantic segmentation for automotive part identification.</data>
+  <data key="d3">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095917</data>
+</node>
+<node id="Fixed Parts">
+  <data key="d0">Fixed Parts</data>
+  <data key="d1">category</data>
+  <data key="d2">Fixed Parts refers to components in an assembly that are stationary or immobile, as emphasized in the focus on the 'fixed' part of the assembly process.</data>
+  <data key="d3">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095917</data>
+</node>
+<node id="FFTNet-based algorithm">
+  <data key="d0">FFTNet-based algorithm</data>
+  <data key="d3">chunk-903147ff7b6fe8693c6550a70f3696f2</data>
+  <data key="d2">The heatmap is generated as part of the FFTNet-based algorithm's output</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095918</data>
+</node>
+<node id="Heatmap">
+  <data key="d0">Heatmap</data>
+  <data key="d3">chunk-903147ff7b6fe8693c6550a70f3696f2</data>
+  <data key="d2">The heatmap is generated as part of the FFTNet-based algorithm's output</data>
+  <data key="d1">UNKNOWN</data>
+  <data key="d4">test2.pdf</data>
+  <data key="d5">1755095918</data>
+</node>
+<edge source="自然灾害" target="限速运行或停运">
+  <data key="d6">9.0</data>
+  <data key="d7">Natural disasters directly lead to train speed restrictions or service stoppages as safety measures."|&gt;"disaster response, operational impact</data>
+  <data key="d8">9</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665142</data>
+</edge>
+<edge source="自然灾害" target="组织疏散">
+  <data key="d6">8.0</data>
+  <data key="d7">Natural disasters trigger organized evacuation procedures to ensure passenger safety."|&gt;"emergency protocol</data>
+  <data key="d8">8</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665153</data>
+</edge>
+<edge source="火灾报警" target="启动灭火系统">
+  <data key="d6">10.0</data>
+  <data key="d7">Fire alarms mandate the immediate activation of fire suppression systems to control onboard fires."|&gt;"fire response</data>
+  <data key="d8">10</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665142</data>
+</edge>
+<edge source="火灾报警" target="疏散乘客">
+  <data key="d6">9.0</data>
+  <data key="d7">Fire alarms require passengers to be evacuated to minimize injury risks."|&gt;"emergency evacuation</data>
+  <data key="d8">9</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665147</data>
+</edge>
+<edge source="乘客禁止行为" target="擅自打开车门">
+  <data key="d6">8.0</data>
+  <data key="d7">Unauthorized door opening is explicitly listed as a prohibited passenger behavior."|&gt;"prohibited action</data>
+  <data key="d8">8</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665142</data>
+</edge>
+<edge source="乘客禁止行为" target="吸烟">
+  <data key="d6">7.0</data>
+  <data key="d7">Smoking (including e-cigarettes) is a prohibited activity on trains for safety reasons."|&gt;"safety regulation</data>
+  <data key="d8">7</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665147</data>
+</edge>
+<edge source="紧急情况下的乘客应对" target="听从乘务员指挥">
+  <data key="d6">9.0</data>
+  <data key="d7">Passengers must follow crew instructions during emergencies to ensure orderly evacuations."|&gt;"emergency management</data>
+  <data key="d8">9</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665142</data>
+</edge>
+<edge source="查询类问题回复" target="12306 App">
+  <data key="d6">8.0</data>
+  <data key="d7">Train status queries are resolved using the 12306 App for real-time information."|&gt;"customer service</data>
+  <data key="d8">8</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665142</data>
+</edge>
+<edge source="故障解释类" target="调度指令">
+  <data key="d6">7.0</data>
+  <data key="d7">Fault explanations clarify that dispatch instructions are being followed to resolve technical issues."|&gt;"operational transparency</data>
+  <data key="d8">7</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665147</data>
+</edge>
+<edge source="退改签引导" target="12306官网或App">
+  <data key="d6">8.0</data>
+  <data key="d7">Passengers are directed to 12306 platforms for ticket adjustments."|&gt;"service process</data>
+  <data key="d8">8</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665147</data>
+</edge>
+<edge source="安全提醒" target="触碰安全设备">
+  <data key="d6">9.0</data>
+  <data key="d7">Passengers are warned against interacting with safety equipment to prevent accidents."|&gt;"safety protocol</data>
+  <data key="d8">9</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665147</data>
+</edge>
+<edge source="CTC" target="SCADA">
+  <data key="d6">8.0</data>
+  <data key="d7">CTC and SCADA systems are interconnected to monitor and control railway operations."|&gt;"technical integration</data>
+  <data key="d8">8</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665153</data>
+</edge>
+<edge source="ATP" target="PHM">
+  <data key="d6">9.0</data>
+  <data key="d7">ATP and PHM systems collaborate to ensure train safety through real-time monitoring and predictive maintenance."|&gt;"safety systems</data>
+  <data key="d8">9</data>
+  <data key="d9">chunk-7828323771fbf854b2477d46f3c22483</data>
+  <data key="d10">knowladge.docx</data>
+  <data key="d11">1754665154</data>
+</edge>
+<edge source="乘务员" target="调度">
+  <data key="d6">9.0</data>
+  <data key="d7">The crew member reports to the dispatch department to request authorization for resuming train operations after resolving the incident.</data>
+  <data key="d8">incident resolution,operational reporting</data>
+  <data key="d9">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d10">knowladge2.docx</data>
+  <data key="d11">1754665945</data>
+</edge>
+<edge source="乘务员" target="处理">
+  <data key="d6">7.0</data>
+  <data key="d7">The crew member is responsible for executing the incident handling process, including resetting the emergency braking system.</data>
+  <data key="d8">incident management,operational responsibility</data>
+  <data key="d9">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d10">knowladge2.docx</data>
+  <data key="d11">1754665948</data>
+</edge>
+<edge source="调度" target="处理">
+  <data key="d6">8.0</data>
+  <data key="d7">The event of handling the incident involves the dispatch department's role in approving the resumption of train operations.</data>
+  <data key="d8">incident resolution,operational authority</data>
+  <data key="d9">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d10">knowladge2.docx</data>
+  <data key="d11">1754665946</data>
+</edge>
+<edge source="处理" target="紧急制动装置">
+  <data key="d6">9.0</data>
+  <data key="d7">The incident relates to the emergency braking system, which was the focus of the crew's actions to restore train functionality.</data>
+  <data key="d8">safety protocol,system involvement</data>
+  <data key="d9">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d10">knowladge2.docx</data>
+  <data key="d11">1754665946</data>
+</edge>
+<edge source="处理" target="安全">
+  <data key="d6">5.0</data>
+  <data key="d7">The incident handling process involves verifying safety conditions before resuming normal operations.</data>
+  <data key="d8">procedural compliance,safety verification</data>
+  <data key="d9">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d10">knowladge2.docx</data>
+  <data key="d11">1754665947</data>
+</edge>
+<edge source="紧急制动装置" target="客服说明">
+  <data key="d6">8.0</data>
+  <data key="d7">The customer service notice provides information about the emergency braking system and its intended use in non-emergency situations.</data>
+  <data key="d8">safety protocol,system guidelines</data>
+  <data key="d9">chunk-81a0a79766374c7cf69b7631f8fb71fd</data>
+  <data key="d10">knowladge2.docx</data>
+  <data key="d11">1754665945</data>
+</edge>
+<edge source="偏远地区" target="高铁站">
+  <data key="d6">8.0</data>
+  <data key="d7">High-speed rail stations are often located in remote areas due to geographical and logistical considerations</data>
+  <data key="d8">geographical location,infrastructure development</data>
+  <data key="d9">chunk-9446bbdc50368a013850361d89808e15</data>
+  <data key="d10">knowladge3.docx</data>
+  <data key="d11">1754666392</data>
+</edge>
+<edge source="Bounding Box to Gaussian Parameters Mapping (equation)" target="Gaussian Distribution">
+  <data key="d6">10.0</data>
+  <data key="d7">Entity Gaussian Distribution belongs to Bounding Box to Gaussian Parameters Mapping (equation)</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-016be310d0c69e3c6d6eca09ff77c539</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095269</data>
+</edge>
+<edge source="Heatmap with Color-Coded Grid Overlay (Digital Graphic)" target="categories">
+  <data key="d6">10.0</data>
+  <data key="d7">Entity categories belongs to Heatmap with Color-Coded Grid Overlay (Digital Graphic)</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-1e0a895677c3411a348fcfbaa816a38f</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095269</data>
+</edge>
+<edge source="Object detection algorithm steps (image composite)" target="Input Image">
+  <data key="d6">10.0</data>
+  <data key="d7">Entity Input Image belongs to Object detection algorithm steps (image composite)</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095270</data>
+</edge>
+<edge source="Object detection algorithm steps (image composite)" target="Object Detection Algorithm">
+  <data key="d6">10.0</data>
+  <data key="d7">Entity Object Detection Algorithm belongs to Object detection algorithm steps (image composite)</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095271</data>
+</edge>
+<edge source="Object detection algorithm steps (image composite)" target="Gaussian Heatmap">
+  <data key="d6">10.0</data>
+  <data key="d7">Entity Gaussian Heatmap belongs to Object detection algorithm steps (image composite)</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095272</data>
+</edge>
+<edge source="Object detection algorithm steps (image composite)" target="Color Representation">
+  <data key="d6">10.0</data>
+  <data key="d7">Entity Color Representation belongs to Object detection algorithm steps (image composite)</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095272</data>
+</edge>
+<edge source="Object Detection Algorithm" target="Input Image">
+  <data key="d6">8.0</data>
+  <data key="d7">The Input Image is the initial data processed by the Object Detection Algorithm.</data>
+  <data key="d8">algorithm input,data processing</data>
+  <data key="d9">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095269</data>
+</edge>
+<edge source="Object Detection Algorithm" target="Gaussian Heatmap">
+  <data key="d6">9.0</data>
+  <data key="d7">The Gaussian Heatmap is a component of the Object Detection Algorithm used to identify potential object locations.</data>
+  <data key="d8">algorithm step,heatmap analysis</data>
+  <data key="d9">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095270</data>
+</edge>
+<edge source="Object Detection Algorithm" target="Color Representation">
+  <data key="d6">9.0</data>
+  <data key="d7">The Color Representation is a component of the Object Detection Algorithm showcasing heatmap application to a color-coded image.</data>
+  <data key="d8">algorithm step,visual analysis</data>
+  <data key="d9">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095270</data>
+</edge>
+<edge source="Input Image" target="Gaussian Heatmap">
+  <data key="d6">7.0</data>
+  <data key="d7">The Gaussian Heatmap is derived from the Input Image through heatmap generation.</data>
+  <data key="d8">data transformation,image processing</data>
+  <data key="d9">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095270</data>
+</edge>
+<edge source="Input Image" target="Color Representation">
+  <data key="d6">7.0</data>
+  <data key="d7">The Color Representation is a reprocessed version of the Input Image with color-coded adjustments.</data>
+  <data key="d8">color coding,image manipulation</data>
+  <data key="d9">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095271</data>
+</edge>
+<edge source="Gaussian Heatmap" target="Color Representation">
+  <data key="d6">8.0</data>
+  <data key="d7">The Gaussian Heatmap and Color Representation are both intermediate outputs of the Object Detection Algorithm, representing different visualizations of the same data.</data>
+  <data key="d8">algorithm outputs,visual comparison</data>
+  <data key="d9">chunk-1815c1d8e3e1c3c721ae730cab0a9c3d</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095272</data>
+</edge>
+<edge source="Mathematical Equation" target="equation_f759bbb2a701b96ec370db0c14f916f2">
+  <data key="d7">Entity Mathematical Equation belongs to equation_f759bbb2a701b96ec370db0c14f916f2</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-343b2155226d01a3879a10c450c383c5</data>
+  <data key="d6">20.0</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095919</data>
+</edge>
+<edge source="Mathematical Equation" target="Mathematical Analysis">
+  <data key="d6">9.0</data>
+  <data key="d7">The Mathematical Analysis involves interpreting and categorizing the provided mathematical equation, which defines statistical parameters for variables x and y.</data>
+  <data key="d8">equation categorization,statistical interpretation</data>
+  <data key="d9">chunk-343b2155226d01a3879a10c450c383c5</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095918</data>
+</edge>
+<edge source="equation_f759bbb2a701b96ec370db0c14f916f2" target="Mathematical Analysis">
+  <data key="d7">Entity Mathematical Analysis belongs to equation_f759bbb2a701b96ec370db0c14f916f2</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-343b2155226d01a3879a10c450c383c5</data>
+  <data key="d6">20.0</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095919</data>
+</edge>
+<edge source="Gaussian Localization Bounds Equation (equation)" target="computer vision">
+  <data key="d7">Entity computer vision belongs to Gaussian Localization Bounds Equation (equation)</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-89052acd4ef499209e00408d94859d18</data>
+  <data key="d6">20.0</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095918</data>
+</edge>
+<edge source="Gaussian Localization Bounds Equation (equation)" target="probabilistic target detection">
+  <data key="d7">Entity probabilistic target detection belongs to Gaussian Localization Bounds Equation (equation)</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-89052acd4ef499209e00408d94859d18</data>
+  <data key="d6">20.0</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095918</data>
+</edge>
+<edge source="image_5a5d9bd7ebd488e0e6672f976a7bb5d9" target="Semantic Segmentation">
+  <data key="d7">Entity Semantic Segmentation belongs to image_5a5d9bd7ebd488e0e6672f976a7bb5d9</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d6">20.0</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095918</data>
+</edge>
+<edge source="image_5a5d9bd7ebd488e0e6672f976a7bb5d9" target="Automotive Parts Detection">
+  <data key="d7">Entity Automotive Parts Detection belongs to image_5a5d9bd7ebd488e0e6672f976a7bb5d9</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d6">20.0</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095919</data>
+</edge>
+<edge source="image_5a5d9bd7ebd488e0e6672f976a7bb5d9" target="Heatmap Construction">
+  <data key="d7">Entity Heatmap Construction belongs to image_5a5d9bd7ebd488e0e6672f976a7bb5d9</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d6">20.0</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095919</data>
+</edge>
+<edge source="image_5a5d9bd7ebd488e0e6672f976a7bb5d9" target="Image Processing">
+  <data key="d7">Entity Image Processing belongs to image_5a5d9bd7ebd488e0e6672f976a7bb5d9</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d6">20.0</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095920</data>
+</edge>
+<edge source="image_5a5d9bd7ebd488e0e6672f976a7bb5d9" target="Object Detection">
+  <data key="d7">Entity Object Detection belongs to image_5a5d9bd7ebd488e0e6672f976a7bb5d9</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d6">20.0</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095920</data>
+</edge>
+<edge source="image_5a5d9bd7ebd488e0e6672f976a7bb5d9" target="Computer Vision">
+  <data key="d7">Entity Computer Vision belongs to image_5a5d9bd7ebd488e0e6672f976a7bb5d9</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d6">20.0</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095920</data>
+</edge>
+<edge source="image_5a5d9bd7ebd488e0e6672f976a7bb5d9" target="Fixed Parts">
+  <data key="d7">Entity Fixed Parts belongs to image_5a5d9bd7ebd488e0e6672f976a7bb5d9</data>
+  <data key="d8">belongs_to,contained_in,part_of</data>
+  <data key="d9">chunk-94d5be83c9bdae47bb081f81d5c5ce5b</data>
+  <data key="d6">20.0</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095921</data>
+</edge>
+<edge source="FFTNet-based algorithm" target="Heatmap">
+  <data key="d6">8.0</data>
+  <data key="d7">The heatmap is generated as part of the FFTNet-based algorithm's output</data>
+  <data key="d8">algorithm output,technical application</data>
+  <data key="d9">chunk-903147ff7b6fe8693c6550a70f3696f2</data>
+  <data key="d10">test2.pdf</data>
+  <data key="d11">1755095918</data>
+</edge>
+</graph></graphml>

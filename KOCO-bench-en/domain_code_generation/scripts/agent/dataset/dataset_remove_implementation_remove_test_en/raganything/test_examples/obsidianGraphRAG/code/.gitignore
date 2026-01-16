@@ -1,0 +1,135 @@
+# Obsidian RAG-Anything - Comprehensive .gitignore
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ===== Virtual Environments =====
+venv/
+env/
+ENV/
+.venv/
+virtualenv/
+
+# ===== RAG Storage & Databases =====
+rag_storage/
+test_rag_storage/
+
+# ===== Environment & Secrets =====
+.env
+.env.local
+.env.*.local
+*.key
+*_credentials.json
+api_keys.txt
+
+# ===== Model Caches =====
+.cache/
+models/
+*.safetensors
+*.pkl
+*.pth
+pytorch_model.bin
+
+# ===== Logs =====
+*.log
+logs/
+*.log.*
+rebuild_log.txt
+
+# ===== Testing =====
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+test_vault/
+
+# ===== Jupyter Notebooks =====
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# ===== IDE & Editors =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ===== OS Files =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ===== Temporary Files =====
+temp_*.md
+temp_*.py
+*.tmp
+*.bak
+*.backup
+
+# ===== MyPy =====
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ===== Database Files =====
+*.db
+*.sqlite
+*.sqlite3
+
+# ===== Large Binary Files =====
+WarpSetup.exe
+
+# ===== Project Specific - Exclude Old/Debug Files =====
+test_gemini_*.py
+test_gpt5_*.py
+test_openai_*.py
+test_initialization.py
+test_imports.py
+fix_*.py
+llm_function_fix.py
+debug_*.py
+
+# Keep these important files:
+# - README.md
+# - requirements.txt
+# - run_*.py (launcher scripts)
+# - setup_*.py (setup scripts)
+# - ui/ (web interface)
+# - src/ (source code)
+# - *.md (documentation)
