@@ -1,51 +1,52 @@
 #!/bin/bash
-#代码库 NTP 续训脚本（适配 finetuning.py）
+# Fine-tuning script for code repository NTP (Next Token Prediction)
+# Compatible with finetuning.py
 
-# 严格模式：遇错立即退出
+# Strict mode: exit on error
 set -euo pipefail
 
-# ========= 基础路径 =========
-MODEL_PATH="/home/shixianjie/models/Qwen2.5-Coder-7B-Instruct"
-FRAMEWORK="raganything"
+# ========= Basic Paths =========
+MODEL_PATH="${MODEL_PATH:-/path/to/your/model}"
+FRAMEWORK="${FRAMEWORK:-your_framework}"
 DATA_PATH="../data/${FRAMEWORK}/${FRAMEWORK}_training_dataset.jsonl"
-OUTPUT_DIR="../models/qwen2.5-coder-7b-${FRAMEWORK}-sft"
+OUTPUT_DIR="../models/${FRAMEWORK}-sft"
 
-# ========= 训练参数（NTP 优化）=========
+# ========= Training Parameters (NTP Optimized) =========
 MAX_SEQ_LENGTH=2048
 BATCH_SIZE=2
 GRADIENT_ACCUMULATION=4
 LEARNING_RATE=5e-6
 NUM_EPOCHS=2
 WARMUP_RATIO=0.03
-KEEP_FILE_TYPES="python,shell,yaml,markdown"     # 与 finetuning.py 的 ModelArguments 对齐
-STRIDE_FRACTION=0.125                            # 滑窗重叠比例 (= 1/8 * seq_len)
-ADD_FILE_PATH_HEADER="false"                     # 是否在样本前加“# File: path”注释
+KEEP_FILE_TYPES="python,shell,yaml,markdown"     # Aligned with ModelArguments in finetuning.py
+STRIDE_FRACTION=0.125                            # Sliding window overlap ratio (= 1/8 * seq_len)
+ADD_FILE_PATH_HEADER="false"                     # Whether to add "# File: path" comment at sample start
 
-# ========= GPU / 环境 =========
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+# ========= GPU / Environment =========
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export TOKENIZERS_PARALLELISM=false
-NUM_GPUS=4  # 使用的 GPU 数量
+NUM_GPUS="${NUM_GPUS:-4}"  # Number of GPUs to use
 
 echo "========================================================"
-echo "🚀 开始 ${FRAMEWORK} 代码库 NTP 续训（finetuning.py）"
+echo "🚀 Starting ${FRAMEWORK} codebase NTP fine-tuning (finetuning.py)"
 echo "========================================================"
-echo "模型: ${MODEL_PATH}"
-echo "数据: ${DATA_PATH}"
-echo "输出: ${OUTPUT_DIR}"
-echo "序列长度: ${MAX_SEQ_LENGTH}"
-echo "Batch大小: ${BATCH_SIZE} x ${GRADIENT_ACCUMULATION} = $((BATCH_SIZE * GRADIENT_ACCUMULATION))"
-echo "学习率: ${LEARNING_RATE}"
-echo "训练轮数: ${NUM_EPOCHS}"
-echo "文件类型白名单: ${KEEP_FILE_TYPES}"
-echo "滑窗重叠比例: ${STRIDE_FRACTION}"
-echo "样本头部注释: ${ADD_FILE_PATH_HEADER}"
+echo "Model: ${MODEL_PATH}"
+echo "Data: ${DATA_PATH}"
+echo "Output: ${OUTPUT_DIR}"
+echo "Sequence Length: ${MAX_SEQ_LENGTH}"
+echo "Batch Size: ${BATCH_SIZE} x ${GRADIENT_ACCUMULATION} = $((BATCH_SIZE * GRADIENT_ACCUMULATION))"
+echo "Learning Rate: ${LEARNING_RATE}"
+echo "Epochs: ${NUM_EPOCHS}"
+echo "File Type Whitelist: ${KEEP_FILE_TYPES}"
+echo "Stride Fraction: ${STRIDE_FRACTION}"
+echo "Add File Path Header: ${ADD_FILE_PATH_HEADER}"
 echo "========================================================"
 echo ""
 
 mkdir -p "${OUTPUT_DIR}"
 
-# --------- 单机多卡训练（DeepSpeed ZeRO-3 模型分片）---------
-# 适用于：模型太大，单卡放不下，需要多卡一起加载模型
+# --------- Multi-GPU Training (DeepSpeed ZeRO-3 Model Sharding) ---------
+# Suitable for: Models too large to fit on a single GPU, requiring multi-GPU model loading
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DS_CONFIG="${SCRIPT_DIR}/ds_config_zero3.json"
 
@@ -86,5 +87,5 @@ deepspeed --num_gpus=${NUM_GPUS} finetuning.py \
 
 echo ""
 echo "========================================================"
-echo "🎉 训练完成！模型保存在: ${OUTPUT_DIR}"
+echo "🎉 Training completed! Model saved to: ${OUTPUT_DIR}"
 echo "========================================================"

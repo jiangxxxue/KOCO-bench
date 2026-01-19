@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Dataset Builder for VERL Code Repository
-将VERL代码库中的有价值文件转换为LLM训练数据集
+Dataset Builder for Code Repository
+Convert valuable files from a code repository into LLM training dataset
 """
 
 import os
@@ -15,9 +15,9 @@ from datetime import datetime
 from transformers import AutoTokenizer
 
 class DatasetBuilder:
-    """VERL代码库数据集构建器"""
+    """Code repository dataset builder"""
     
-    # 支持的文件类型
+    # Supported file types
     SUPPORTED_EXTENSIONS = {
         '.py': 'python',
         '.md': 'markdown', 
@@ -35,14 +35,14 @@ class DatasetBuilder:
         '.requirements': 'requirements'
     }
     
-    # 需要排除的目录
+    # Directories to exclude
     EXCLUDED_DIRS = {
         '__pycache__', '.git', '.pytest_cache', 'node_modules', 
         '.vscode', '.idea', 'build', 'dist', '.tox', 'venv', 
         'env', '.env', 'logs', 'tmp', '.DS_Store'
     }
     
-    # 需要排除的文件
+    # Files to exclude
     EXCLUDED_FILES = {
         '.pyc', '.pyo', '.pyd', '.so', '.dylib', '.dll',
         '.exe', '.bin', '.log', '.tmp', '.swp', '~'
@@ -51,13 +51,13 @@ class DatasetBuilder:
     def __init__(self, source_dir: str, output_file: str, max_file_size: int = 1024*1024, 
                  tokenizer_path: Optional[str] = None):
         """
-        初始化数据集构建器
+        Initialize dataset builder
         
         Args:
-            source_dir: 源代码目录路径
-            output_file: 输出文件路径
-            max_file_size: 最大文件大小限制（字节）
-            tokenizer_path: tokenizer模型路径，用于统计token数
+            source_dir: Source code directory path
+            output_file: Output file path
+            max_file_size: Maximum file size limit (bytes)
+            tokenizer_path: Tokenizer model path for token counting
         """
         self.source_dir = Path(source_dir)
         self.output_file = Path(output_file)
@@ -65,7 +65,7 @@ class DatasetBuilder:
         self.processed_files = 0
         self.skipped_files = 0
         
-        # 初始化tokenizer
+        # Initialize tokenizer
         self.tokenizer = None
         if tokenizer_path:
             try:
@@ -77,38 +77,38 @@ class DatasetBuilder:
                 print("Token counting will be skipped.")
         
     def should_process_file(self, file_path: Path) -> bool:
-        """判断是否应该处理该文件"""
+        """Determine if the file should be processed"""
         
-        # 检查文件扩展名
+        # Check file extension
         if file_path.suffix.lower() not in self.SUPPORTED_EXTENSIONS:
-            # 检查特殊文件名
+            # Check special file names
             if file_path.name.lower() not in ['dockerfile', 'makefile', 'readme', 'license', 'requirements.txt']:
                 return False
         
-        # 检查文件大小
+        # Check file size
         try:
             if file_path.stat().st_size > self.max_file_size:
                 return False
         except OSError:
             return False
             
-        # 检查是否为排除的文件
+        # Check if file is excluded
         if any(excluded in file_path.name.lower() for excluded in self.EXCLUDED_FILES):
             return False
             
         return True
     
     def should_process_dir(self, dir_path: Path) -> bool:
-        """判断是否应该处理该目录"""
+        """Determine if the directory should be processed"""
         return dir_path.name not in self.EXCLUDED_DIRS
     
     def get_file_type(self, file_path: Path) -> str:
-        """获取文件类型"""
+        """Get file type"""
         ext = file_path.suffix.lower()
         if ext in self.SUPPORTED_EXTENSIONS:
             return self.SUPPORTED_EXTENSIONS[ext]
         
-        # 处理特殊文件名
+        # Handle special file names
         name = file_path.name.lower()
         if name == 'dockerfile':
             return 'dockerfile'
@@ -124,14 +124,14 @@ class DatasetBuilder:
             return 'unknown'
     
     def read_file_content(self, file_path: Path) -> Optional[str]:
-        """读取文件内容"""
+        """Read file content"""
         encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
         
         for encoding in encodings:
             try:
                 with open(file_path, 'r', encoding=encoding) as f:
                     content = f.read()
-                    # 基本内容验证
+                    # Basic content validation
                     if len(content.strip()) == 0:
                         return None
                     return content
@@ -145,14 +145,14 @@ class DatasetBuilder:
         return None
     
     def create_training_sample(self, file_path: Path, content: str) -> Dict[str, Any]:
-        """创建训练样本"""
+        """Create training sample"""
         relative_path = file_path.relative_to(self.source_dir)
         file_type = self.get_file_type(file_path)
         
-        # 生成文件内容哈希
+        # Generate file content hash
         content_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
         
-        # 计算token数
+        # Calculate token count
         token_count = 0
         if self.tokenizer is not None:
             try:
@@ -174,7 +174,7 @@ class DatasetBuilder:
             'created_at': datetime.now().isoformat()
         }
         
-        # 添加文件类型特定的元信息
+        # Add file type specific metadata
         if file_type == 'python':
             sample['language'] = 'python'
             sample['has_docstring'] = '"""' in content or "'''" in content
@@ -189,7 +189,7 @@ class DatasetBuilder:
         return sample
     
     def scan_directory(self) -> List[Dict[str, Any]]:
-        """扫描目录并生成训练样本"""
+        """Scan directory and generate training samples"""
         samples = []
         
         print(f"Scanning directory: {self.source_dir}")
@@ -197,7 +197,7 @@ class DatasetBuilder:
         for root, dirs, files in os.walk(self.source_dir):
             root_path = Path(root)
             
-            # 过滤目录
+            # Filter directories
             dirs[:] = [d for d in dirs if self.should_process_dir(root_path / d)]
             
             for file in files:
@@ -207,13 +207,13 @@ class DatasetBuilder:
                     self.skipped_files += 1
                     continue
                 
-                # 读取文件内容
+                # Read file content
                 content = self.read_file_content(file_path)
                 if content is None:
                     self.skipped_files += 1
                     continue
                 
-                # 创建训练样本
+                # Create training sample
                 try:
                     sample = self.create_training_sample(file_path, content)
                     samples.append(sample)
@@ -230,7 +230,7 @@ class DatasetBuilder:
         return samples
     
     def save_dataset(self, samples: List[Dict[str, Any]], format: str = 'jsonl') -> None:
-        """保存数据集"""
+        """Save dataset"""
         self.output_file.parent.mkdir(parents=True, exist_ok=True)
         
         if format.lower() == 'jsonl':
@@ -244,7 +244,7 @@ class DatasetBuilder:
             raise ValueError(f"Unsupported format: {format}")
     
     def generate_statistics(self, samples: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """生成数据集统计信息"""
+        """Generate dataset statistics"""
         file_types = {}
         total_size = 0
         total_lines = 0
@@ -276,24 +276,24 @@ class DatasetBuilder:
         return stats
     
     def build_dataset(self, output_format: str = 'jsonl') -> Dict[str, Any]:
-        """构建完整数据集"""
+        """Build complete dataset"""
         print(f"Building dataset from: {self.source_dir}")
         print(f"Output file: {self.output_file}")
         
-        # 扫描目录并生成样本
+        # Scan directory and generate samples
         samples = self.scan_directory()
         
         if not samples:
             print("No valid files found!")
             return {}
         
-        # 保存数据集
+        # Save dataset
         self.save_dataset(samples, output_format)
         
-        # 生成统计信息
+        # Generate statistics
         stats = self.generate_statistics(samples)
         
-        # 保存统计信息
+        # Save statistics
         stats_file = self.output_file.with_suffix('.stats.json')
         with open(stats_file, 'w', encoding='utf-8') as f:
             json.dump(stats, f, ensure_ascii=False, indent=2)
@@ -312,8 +312,8 @@ class DatasetBuilder:
         return stats
 
 def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(description='Build training dataset from VERL codebase')
+    """Main function"""
+    parser = argparse.ArgumentParser(description='Build training dataset from codebase')
     parser.add_argument('--source-dir', '-s', required=True,
                        help='Source directory containing VERL codebase')
     parser.add_argument('--output-file', '-o', required=True,
@@ -327,13 +327,13 @@ def main():
     
     args = parser.parse_args()
     
-    # 验证输入目录
+    # Validate input directory
     source_path = Path(args.source_dir)
     if not source_path.exists() or not source_path.is_dir():
         print(f"Error: Source directory does not exist: {source_path}")
         return 1
     
-    # 创建数据集构建器
+    # Create dataset builder
     builder = DatasetBuilder(
         source_dir=args.source_dir,
         output_file=args.output_file,
@@ -341,7 +341,7 @@ def main():
         tokenizer_path=args.tokenizer_path
     )
     
-    # 构建数据集
+    # Build dataset
     try:
         stats = builder.build_dataset(args.format)
         if stats:

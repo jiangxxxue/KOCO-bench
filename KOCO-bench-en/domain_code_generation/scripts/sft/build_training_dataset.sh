@@ -1,81 +1,78 @@
 #!/bin/bash
-# 构建框架训练数据集 - 支持多个框架/repo
+# Build framework training dataset - supports multiple frameworks/repos
 #
-# 使用方法:
-#   默认构建 verl 框架:
-#     ./scripts/build_verl_training_dataset.sh
+# Usage:
+#   Build default framework:
+#     ./scripts/build_training_dataset.sh
 #
-#   构建其他框架:
-#     FRAMEWORK=tensorrt_model_optimizer ./scripts/build_verl_training_dataset.sh
+#   Build other framework:
+#     FRAMEWORK=your_framework ./scripts/build_training_dataset.sh
 #
-#   指定特定的 repo 名称:
-#     FRAMEWORK=verl REPO_NAME=custom-repo ./scripts/build_verl_training_dataset.sh
+#   Specify specific repo name:
+#     FRAMEWORK=your_framework REPO_NAME=custom-repo ./scripts/build_training_dataset.sh
 #
-#   设置最大文件大小（字节）:
-#     MAX_FILE_SIZE=2097152 ./scripts/build_verl_training_dataset.sh
+#   Set maximum file size (bytes):
+#     MAX_FILE_SIZE=2097152 ./scripts/build_training_dataset.sh
 
 set -e
 
 # ========================================
-# 配置变量
+# Configuration Variables
 # ========================================
 
-# 框架名称
-FRAMEWORK="${FRAMEWORK:-verl}"
+# Framework name
+FRAMEWORK="${FRAMEWORK:-your_framework}"
 
-# Repo 名称（知识库中的目录名）
+# Repo name (directory name in knowledge corpus)
 REPO_NAME="${REPO_NAME:-${FRAMEWORK}-main}"
 
-FRAMEWORK=verl
-REPO_NAME=verl-main
-
-# 项目根目录
+# Project root directory
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="${PROJECT_ROOT}/scripts"
 
-# 源目录：知识库
+# Source directory: knowledge corpus
 SOURCE_DIR="${PROJECT_ROOT}/${FRAMEWORK}/knowledge_corpus/${REPO_NAME}"
 
-# 输出目录
+# Output directory
 OUTPUT_DIR="${PROJECT_ROOT}/scripts/data/${FRAMEWORK}"
 OUTPUT_FILE="${OUTPUT_DIR}/${FRAMEWORK}_training_dataset.jsonl"
 
-# 参数
+# Parameters
 MAX_FILE_SIZE="${MAX_FILE_SIZE:-1048576}"  # 1MB
-TOKENIZER_PATH="${TOKENIZER_PATH:-/workspace/data/models/Qwen2.5-Coder-7B-Instruct}"
+TOKENIZER_PATH="${TOKENIZER_PATH:-/path/to/your/tokenizer}"
 
 # ========================================
-# 执行构建
+# Execute Build
 # ========================================
 
 echo "========================================================"
-echo "构建训练数据集"
+echo "Building Training Dataset"
 echo "========================================================"
-echo "框架: ${FRAMEWORK}"
+echo "Framework: ${FRAMEWORK}"
 echo "Repo: ${REPO_NAME}"
-echo "源目录: ${SOURCE_DIR}"
-echo "输出文件: ${OUTPUT_FILE}"
-echo "最大文件大小: ${MAX_FILE_SIZE} bytes"
-echo "Tokenizer模型: ${TOKENIZER_PATH}"
+echo "Source Directory: ${SOURCE_DIR}"
+echo "Output File: ${OUTPUT_FILE}"
+echo "Max File Size: ${MAX_FILE_SIZE} bytes"
+echo "Tokenizer Model: ${TOKENIZER_PATH}"
 echo "========================================================"
 echo ""
 
-# 检查源目录
+# Check source directory
 if [ ! -d "$SOURCE_DIR" ]; then
-    echo "❌ 错误: 源目录不存在: $SOURCE_DIR"
+    echo "❌ Error: Source directory does not exist: $SOURCE_DIR"
     echo ""
-    echo "提示: 请确保以下路径存在:"
+    echo "Hint: Please ensure the following path exists:"
     echo "  ${PROJECT_ROOT}/${FRAMEWORK}/knowledge_corpus/${REPO_NAME}"
     echo ""
-    echo "或者使用环境变量指定其他框架/repo:"
-    echo "  FRAMEWORK=your_framework REPO_NAME=your_repo ./scripts/build_verl_training_dataset.sh"
+    echo "Or use environment variables to specify other framework/repo:"
+    echo "  FRAMEWORK=your_framework REPO_NAME=your_repo ./scripts/build_training_dataset.sh"
     exit 1
 fi
 
-# 创建输出目录
+# Create output directory
 mkdir -p "$OUTPUT_DIR"
 
-# 运行数据集构建器
+# Run dataset builder
 cd "${SCRIPT_DIR}/sft"
 python3 finetune_dataset_builder.py \
     --source-dir "$SOURCE_DIR" \
@@ -87,27 +84,27 @@ python3 finetune_dataset_builder.py \
 if [ $? -eq 0 ]; then
     echo ""
     echo "========================================================"
-    echo "✅ 数据集构建完成！"
+    echo "✅ Dataset build completed!"
     echo "========================================================"
-    echo "数据文件: ${OUTPUT_FILE}"
-    echo "统计文件: ${OUTPUT_FILE%.jsonl}.stats.json"
+    echo "Data file: ${OUTPUT_FILE}"
+    echo "Statistics file: ${OUTPUT_FILE%.jsonl}.stats.json"
     echo ""
     
-    # 显示统计信息
+    # Display statistics
     if [ -f "${OUTPUT_FILE%.jsonl}.stats.json" ]; then
-        echo "📊 数据集统计:"
+        echo "📊 Dataset Statistics:"
         cat "${OUTPUT_FILE%.jsonl}.stats.json" | python3 -c "
 import json, sys
 stats = json.load(sys.stdin)
-print(f\"  总文件数: {stats['total_files']}")
-print(f\"  处理成功: {stats['processed_files']}")
-print(f\"  跳过文件: {stats['skipped_files']}")
-print(f\"  总字符数: {stats['total_size_chars']:,}")
-print(f\"  总行数: {stats['total_lines']:,}")
+print(f\"  Total files: {stats['total_files']}")
+print(f\"  Processed: {stats['processed_files']}")
+print(f\"  Skipped: {stats['skipped_files']}")
+print(f\"  Total characters: {stats['total_size_chars']:,}")
+print(f\"  Total lines: {stats['total_lines']:,}")
 if 'total_tokens' in stats and stats['total_tokens'] > 0:
-    print(f\"  总Token数: {stats['total_tokens']:,}")
-    print(f\"  平均每文件Token数: {stats.get('average_tokens_per_file', 0):.1f}")
-print(f\"  文件类型分布:\")
+    print(f\"  Total tokens: {stats['total_tokens']:,}")
+    print(f\"  Average tokens per file: {stats.get('average_tokens_per_file', 0):.1f}")
+print(f\"  File type distribution:\")
 for ftype, count in sorted(stats['file_types'].items(), key=lambda x: x[1], reverse=True):
     print(f\"    {ftype}: {count}\")
 "
@@ -117,7 +114,7 @@ for ftype, count in sorted(stats['file_types'].items(), key=lambda x: x[1], reve
     echo "========================================================"
 else
     echo ""
-    echo "❌ 数据集构建失败"
+    echo "❌ Dataset build failed"
     exit 1
 fi
 

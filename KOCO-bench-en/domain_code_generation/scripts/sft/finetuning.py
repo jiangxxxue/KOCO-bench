@@ -1,20 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-finetuning.py — VERL 代码库的继续预训练（NTP）
-目标：让模型学习该仓库的语料分布、API习惯与编码风格，提升补全/读写稳定性。
 
-要点：
-- 直接用代码文本做 next-token prediction（无对话模板）
-- 长文本：return_overflowing_tokens=True + stride，并进行 packing/打包到固定 block_size
-- 训练稳定：bf16（优先）、梯度裁剪、可选 Deepspeed、gradient checkpointing
-- 数据：JSONL 每行来自你的构建器，至少包含 "content"；若有 "file_type"/"file_path" 会用于筛选/可选注释
-
-示例运行（单机）：
+Example usage (single machine):
 python finetuning.py \
-  --model_name_or_path /home/you/models/Qwen2.5-Coder-7B-Instruct \\
-  --dataset_path ../data/verl/verl_training_dataset.jsonl \\
-  --output_dir ../models/qwen25-coder7b-verl-ntp \\
+  --model_name_or_path /path/to/your/model \\
+  --dataset_path ../data/your_framework/training_dataset.jsonl \\
+  --output_dir ../models/your_framework-ntp \\
   --max_seq_length 1024 \
   --per_device_train_batch_size 1 \
   --gradient_accumulation_steps 8 \
@@ -28,8 +20,8 @@ python finetuning.py \
   --gradient_checkpointing true \
   --remove_unused_columns false
 
-若使用 Deepspeed：
-  …… 同上再加： --deepspeed ds_config.json
+With DeepSpeed:
+  ... same as above, plus: --deepspeed ds_config.json
 """
 
 import os
@@ -55,51 +47,51 @@ from transformers import (
 from datasets import Dataset
 import wandb
 
-# -------------------- 日志 --------------------
+# -------------------- Logging --------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("verl-ntp")
+logger = logging.getLogger("code-ntp")
 
-# -------------------- 参数 --------------------
+# -------------------- Arguments --------------------
 @dataclass
 class ModelArguments:
     model_name_or_path: str = field(
         default="Qwen/Qwen2.5-Coder-7B-Instruct",
-        metadata={"help": "预训练模型名称或本地路径"},
+        metadata={"help": "Pretrained model name or local path"},
     )
     max_seq_length: int = field(
         default=1024,
-        metadata={"help": "训练序列长度（打包后 block_size）"},
+        metadata={"help": "Training sequence length (block_size after packing)"},
     )
     add_file_path_header: bool = field(
         default=False,
-        metadata={"help": "是否在样本首行添加文件路径注释（默认 False）"},
+        metadata={"help": "Whether to add file path comment at the beginning of sample (default False)"},
     )
     keep_file_types: str = field(
         default="python,shell,yaml,markdown",
-        metadata={"help": "保留的 file_type 白名单，逗号分隔；为空表示不过滤"},
+        metadata={"help": "Whitelist of file_type to keep, comma-separated; empty means no filtering"},
     )
 
 @dataclass
 class DataArguments:
-    dataset_path: str = field(metadata={"help": "训练数据集 JSONL 路径"})
-    val_split_ratio: float = field(default=0.1, metadata={"help": "验证集比例（0~1）"})
-    max_samples: Optional[int] = field(default=None, metadata={"help": "最多读取的样本数（调试用）"})
+    dataset_path: str = field(metadata={"help": "Training dataset JSONL path"})
+    val_split_ratio: float = field(default=0.1, metadata={"help": "Validation set ratio (0~1)"})
+    max_samples: Optional[int] = field(default=None, metadata={"help": "Maximum number of samples to read (for debugging)"})
     stride_fraction: float = field(
         default=0.125,
-        metadata={"help": "滑窗重叠比例（max_seq_length * stride_fraction）"},
+        metadata={"help": "Sliding window overlap ratio (max_seq_length * stride_fraction)"},
     )
 
 @dataclass
 class TrainingArguments2(TrainingArguments):
-    use_wandb: bool = field(default=False, metadata={"help": "是否启用 wandb"})
-    project_name: str = field(default="verl-ntp", metadata={"help": "wandb 项目名"})
+    use_wandb: bool = field(default=False, metadata={"help": "Whether to enable wandb"})
+    project_name: str = field(default="code-ntp", metadata={"help": "wandb project name"})
 
-# -------------------- 数据处理 --------------------
-class VERLDataProcessor:
+# -------------------- Data Processing --------------------
+class CodeDataProcessor:
     def __init__(
         self,
         tokenizer: AutoTokenizer,
@@ -165,7 +157,7 @@ class VERLDataProcessor:
         logger.info(f"Loaded {len(samples)} usable samples.")
         return Dataset.from_list(samples)
 
-    # 先分词（允许溢出为多窗）
+    # Tokenize first (allow overflow to multiple windows)
     def tokenize_fn(self, examples: Dict[str, List[str]]) -> Dict[str, List[List[int]]]:
         return self.tokenizer(
             examples["text"],
@@ -177,9 +169,9 @@ class VERLDataProcessor:
             stride=self.stride_tokens,
         )
 
-    # 再打包为固定长度 block
+    # Then pack into fixed-length blocks
     def group_texts(self, examples: Dict[str, List[List[int]]]) -> Dict[str, List[List[int]]]:
-        # 把一个 batch 的若干段拼接为长序列
+        # Concatenate multiple segments in a batch into a long sequence
         concatenated: List[int] = []
         for seq in examples["input_ids"]:
             concatenated.extend(seq)
@@ -190,8 +182,8 @@ class VERLDataProcessor:
         labels = [ids[:] for ids in input_ids]
         return {"input_ids": input_ids, "labels": labels}
 
-# -------------------- 训练器 --------------------
-class VERLFineTuner:
+# -------------------- Trainer --------------------
+class CodeFineTuner:
     def __init__(self, model_args: ModelArguments, data_args: DataArguments, training_args: TrainingArguments2):
         self.margs = model_args
         self.dargs = data_args
@@ -203,7 +195,7 @@ class VERLFineTuner:
         if self.targs.use_wandb:
             wandb.init(
                 project=self.targs.project_name,
-                name=f"verl-ntp-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+                name=f"code-ntp-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
                 config={**vars(self.margs), **vars(self.dargs), **self.targs.to_dict()},
             )
 
@@ -215,7 +207,7 @@ class VERLFineTuner:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # torch dtype 决策：优先 bf16（若开启 & 支持），否则 fp16（若开启 & 支持），否则 fp32
+        # torch dtype decision: prefer bf16 (if enabled & supported), else fp16 (if enabled & supported), else fp32
         def decide_dtype() -> torch.dtype:
             if self.targs.bf16 and torch.cuda.is_available():
                 return torch.bfloat16
@@ -225,18 +217,18 @@ class VERLFineTuner:
 
         torch_dtype = decide_dtype()
 
-        # 检测是否使用 DeepSpeed（通过 --deepspeed 参数启动）
+        # Detect if using DeepSpeed (launched via --deepspeed parameter)
         use_deepspeed = self.targs.deepspeed is not None
         
         if use_deepspeed:
-            # DeepSpeed ZeRO-3：不使用 device_map，让 DeepSpeed 管理模型分片
+            # DeepSpeed ZeRO-3: do not use device_map, let DeepSpeed manage model sharding
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.margs.model_name_or_path,
                 torch_dtype=torch_dtype,
                 trust_remote_code=True,
             )
         else:
-            # 非 DeepSpeed 模式：使用 device_map="auto" 自动分配设备
+            # Non-DeepSpeed mode: use device_map="auto" for automatic device allocation
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.margs.model_name_or_path,
                 torch_dtype=torch_dtype,
@@ -244,7 +236,7 @@ class VERLFineTuner:
                 device_map="auto" if torch.cuda.is_available() else None,
             )
 
-        # 可选：梯度检查点
+        # Optional: gradient checkpointing
         if self.targs.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
 
@@ -252,7 +244,7 @@ class VERLFineTuner:
         keep_types = [t for t in self.margs.keep_file_types.split(",") if t.strip()] if self.margs.keep_file_types else None
         stride_tokens = max(1, int(self.margs.max_seq_length * self.dargs.stride_fraction))
 
-        processor = VERLDataProcessor(
+        processor = CodeDataProcessor(
             tokenizer=self.tokenizer,
             max_seq_length=self.margs.max_seq_length,
             add_file_path_header=self.margs.add_file_path_header,
@@ -268,7 +260,7 @@ class VERLFineTuner:
         else:
             train_ds, eval_ds = full, None
 
-        # 分词 + 打包
+        # Tokenization + packing
         logger.info("Tokenizing (sliding windows) …")
         train_tok = train_ds.map(
             processor.tokenize_fn,
@@ -290,14 +282,14 @@ class VERLFineTuner:
         train_blk = train_tok.map(
             processor.group_texts,
             batched=True,
-            remove_columns=train_tok.column_names,  # 移除旧的 attention_mask 等列
+            remove_columns=train_tok.column_names,  # Remove old attention_mask columns
             desc="Pack train",
         )
         if eval_tok is not None:
             eval_blk = eval_tok.map(
                 processor.group_texts,
                 batched=True,
-                remove_columns=eval_tok.column_names,  # 移除旧的 attention_mask 等列
+                remove_columns=eval_tok.column_names,  # Remove old attention_mask columns
                 desc="Pack eval",
             )
         else:
@@ -310,7 +302,7 @@ class VERLFineTuner:
         self.load_model_and_tokenizer()
         train_ds, eval_ds = self.prepare_datasets()
 
-        # collator：Causal LM（会对 pad 位置置 -100）
+        # collator: Causal LM (will set pad positions to -100)
         collator = DataCollatorForLanguageModeling(
             tokenizer=self.tokenizer, mlm=False, pad_to_multiple_of=8
         )
@@ -335,7 +327,7 @@ class VERLFineTuner:
         logger.info(f"Training done. final_loss={getattr(train_result, 'training_loss', None)}")
         return train_result
 
-# -------------------- main --------------------
+# -------------------- Main --------------------
 def main():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments2))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
@@ -343,12 +335,12 @@ def main():
     else:
         margs, dargs, targs = parser.parse_args_into_dataclasses()
 
-    # 输出目录兜底
+    # Fallback for output directory
     if not targs.output_dir:
-        targs.output_dir = f"./verl_ntp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        targs.output_dir = f"./code_ntp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     os.makedirs(targs.output_dir, exist_ok=True)
 
-    # TF32（如果传了）
+    # TF32 (if provided)
     if hasattr(targs, "tf32") and targs.tf32 and torch.cuda.is_available():
         try:
             torch.backends.cuda.matmul.allow_tf32 = True
@@ -363,9 +355,9 @@ def main():
     )
 
     try:
-        runner = VERLFineTuner(margs, dargs, targs)
+        runner = CodeFineTuner(margs, dargs, targs)
         runner.train()
-        # 额外保存配置
+        # Save additional configuration
         cfg = {
             "model_args": vars(margs),
             "data_args": vars(dargs),
