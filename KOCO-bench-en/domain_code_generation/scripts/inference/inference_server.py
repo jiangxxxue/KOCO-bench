@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-代码补全推理服务器
-使用 FastAPI 提供 HTTP API，只加载一次模型，持续提供推理服务
+Code completion inference server
+Provides HTTP API using FastAPI, loads model only once, continuously provides inference service
 """
 
 import json
@@ -16,7 +16,7 @@ import uvicorn
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# 日志配置
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -24,31 +24,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ========================================
-# 请求/响应模型
+# Request/Response Models
 # ========================================
 
 class GenerationRequest(BaseModel):
-    """生成请求"""
-    prompts: List[Any] = Field(..., description="待生成的 prompts 列表（支持字符串或对话格式）")
-    num_completions: int = Field(1, description="每个 prompt 生成的补全数量")
-    max_tokens: int = Field(512, description="每个补全的最大 token 数")
-    temperature: float = Field(0.2, description="采样温度")
-    top_p: float = Field(0.95, description="Top-p 采样参数")
+    """Generation request"""
+    prompts: List[Any] = Field(..., description="List of prompts to generate (supports string or conversation format)")
+    num_completions: int = Field(1, description="Number of completions per prompt")
+    max_tokens: int = Field(512, description="Maximum number of tokens per completion")
+    temperature: float = Field(0.2, description="Sampling temperature")
+    top_p: float = Field(0.95, description="Top-p sampling parameter")
 
 class GenerationResponse(BaseModel):
-    """生成响应"""
-    completions: List[List[str]] = Field(..., description="生成的补全列表")
-    model: str = Field(..., description="使用的模型")
-    status: str = Field("success", description="状态")
+    """Generation response"""
+    completions: List[List[str]] = Field(..., description="Generated completions list")
+    model: str = Field(..., description="Model used")
+    status: str = Field("success", description="Status")
 
 class HealthResponse(BaseModel):
-    """健康检查响应"""
+    """Health check response"""
     status: str = "healthy"
     model: str = ""
     device: str = ""
 
 # ========================================
-# 全局变量（模型和 tokenizer）
+# Global Variables (model and tokenizer)
 # ========================================
 
 model = None
@@ -57,18 +57,18 @@ model_name = ""
 device = ""
 
 # ========================================
-# FastAPI 应用
+# FastAPI Application
 # ========================================
 
 app = FastAPI(
-    title="代码补全推理服务",
-    description="提供代码补全推理的 HTTP API 服务",
+    title="Code Completion Inference Service",
+    description="HTTP API service for code completion inference",
     version="1.0.0"
 )
 
 @app.get("/", response_model=HealthResponse)
 async def root():
-    """根路径 - 健康检查"""
+    """Root path - health check"""
     return HealthResponse(
         status="healthy",
         model=model_name,
@@ -77,7 +77,7 @@ async def root():
 
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    """健康检查端点"""
+    """Health check endpoint"""
     return HealthResponse(
         status="healthy",
         model=model_name,
@@ -87,13 +87,13 @@ async def health():
 @app.post("/generate", response_model=GenerationResponse)
 async def generate(request: GenerationRequest):
     """
-    生成代码补全
+    Generate code completions
     
-    请求示例:
+    Request example:
     {
-        "prompts": ["def hello():\\n    "],  # 字符串格式
-        或
-        "prompts": [[{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]],  # 对话格式
+        "prompts": ["def hello():\\n    "],  # String format
+        or
+        "prompts": [[{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]],  # Conversation format
         "num_completions": 2,
         "max_tokens": 512,
         "temperature": 0.2,
@@ -102,19 +102,19 @@ async def generate(request: GenerationRequest):
     """
     try:
         if model is None or tokenizer is None:
-            raise HTTPException(status_code=500, detail="模型未加载")
+            raise HTTPException(status_code=500, detail="Model not loaded")
         
-        logger.info(f"收到生成请求: {len(request.prompts)} 个 prompts")
+        logger.info(f"Received generation request: {len(request.prompts)} prompts")
         
         all_completions = []
         
         for i, prompt in enumerate(request.prompts):
             if (i + 1) % 10 == 0:
-                logger.info(f"正在处理 {i+1}/{len(request.prompts)}...")
+                logger.info(f"Processing {i+1}/{len(request.prompts)}...")
             
-            # 处理 prompt 格式
+            # Process prompt format
             if isinstance(prompt, list):
-                # 对话格式：使用 chat template
+                # Conversation format: use chat template
                 if hasattr(tokenizer, 'apply_chat_template'):
                     try:
                         formatted_prompt = tokenizer.apply_chat_template(
@@ -123,27 +123,27 @@ async def generate(request: GenerationRequest):
                             add_generation_prompt=True
                         )
                     except Exception as e:
-                        logger.warning(f"样本 {i} 使用 chat template 失败: {e}，回退到拼接消息")
-                        # 回退：简单拼接消息内容
+                        logger.warning(f"Sample {i} failed to use chat template: {e}, falling back to message concatenation")
+                        # Fallback: simple message content concatenation
                         formatted_prompt = "\n\n".join(msg.get("content", "") for msg in prompt if msg.get("content"))
                 else:
-                    # 没有 chat template，简单拼接
+                    # No chat template, simple concatenation
                     formatted_prompt = "\n\n".join(msg.get("content", "") for msg in prompt if msg.get("content"))
             else:
-                # 字符串格式：直接使用
+                # String format: use directly
                 formatted_prompt = prompt
             
-            # Tokenize 输入
+            # Tokenize input
             inputs = tokenizer(
                 formatted_prompt,
                 return_tensors="pt",
                 truncation=True,
-                max_length=4096,  # 使用固定的最大长度
+                max_length=4096,  # Use fixed maximum length
             ).to(model.device)
             
             input_len = inputs.input_ids.shape[1]
             
-            # 生成多个补全
+            # Generate multiple completions
             completions = []
             for _ in range(request.num_completions):
                 with torch.no_grad():
@@ -159,14 +159,14 @@ async def generate(request: GenerationRequest):
                         repetition_penalty=1.0,
                     )
                 
-                # 只提取新生成的部分
+                # Extract only newly generated part
                 generated_tokens = outputs[0][input_len:]
                 generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
                 completions.append(generated_text)
             
             all_completions.append(completions)
         
-        logger.info(f"✓ 生成完成")
+        logger.info(f"✓ Generation completed")
         
         return GenerationResponse(
             completions=all_completions,
@@ -175,34 +175,34 @@ async def generate(request: GenerationRequest):
         )
     
     except Exception as e:
-        logger.error(f"生成失败: {e}")
+        logger.error(f"Generation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ========================================
-# 模型加载
+# Model Loading
 # ========================================
 
 def load_model(model_path: str, max_context_len: int = 4096):
-    """加载模型和 tokenizer"""
+    """Load model and tokenizer"""
     global model, tokenizer, model_name, device
     
     logger.info("="*60)
-    logger.info("正在启动推理服务器...")
+    logger.info("Starting inference server...")
     logger.info("="*60)
-    logger.info(f"模型路径: {model_path}")
-    logger.info(f"最大上下文长度: {max_context_len}")
+    logger.info(f"Model path: {model_path}")
+    logger.info(f"Max context length: {max_context_len}")
     
-    # 加载 tokenizer
-    logger.info("正在加载 tokenizer...")
+    # Load tokenizer
+    logger.info("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    logger.info("✓ Tokenizer 加载完成")
+    logger.info("✓ Tokenizer loaded")
     
-    # 加载模型
-    logger.info("正在加载模型...")
+    # Load model
+    logger.info("Loading model...")
     torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    logger.info(f"使用精度: {torch_dtype}")
+    logger.info(f"Using precision: {torch_dtype}")
     
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
@@ -215,35 +215,35 @@ def load_model(model_path: str, max_context_len: int = 4096):
     device = str(model.device)
     model_name = Path(model_path).name
     
-    logger.info(f"✓ 模型加载完成")
-    logger.info(f"设备: {device}")
-    logger.info(f"模型名称: {model_name}")
+    logger.info(f"✓ Model loaded")
+    logger.info(f"Device: {device}")
+    logger.info(f"Model name: {model_name}")
     logger.info("="*60)
-    logger.info("✅ 服务器准备就绪！")
+    logger.info("✅ Server ready!")
     logger.info("="*60)
 
 # ========================================
-# 主函数
+# Main Function
 # ========================================
 
 def main():
     parser = argparse.ArgumentParser(
-        description="代码补全推理服务器",
+        description="Code completion inference server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-示例用法:
-  # 启动服务器（默认端口 8000）
-  python inference_server.py --model_path ../models/qwen2.5-coder-7b-verl-ntp
+Example usage:
+  # Start server (default port 8000)
+  python inference_server.py --model_path ../models/your_model
 
-  # 指定端口
+  # Specify port
   python inference_server.py \\
-    --model_path ../models/qwen2.5-coder-7b-verl-ntp \\
+    --model_path ../models/your_model \\
     --port 8001
 
-  # 测试健康检查
+  # Test health check
   curl http://localhost:8000/health
 
-  # 测试生成
+  # Test generation
   curl -X POST http://localhost:8000/generate \\
     -H "Content-Type: application/json" \\
     -d '{"prompts": ["def hello():\\n    "], "num_completions": 1}'
@@ -254,40 +254,40 @@ def main():
         "--model_path",
         type=str,
         required=True,
-        help="本地模型路径"
+        help="Local model path"
     )
     parser.add_argument(
         "--port",
         type=int,
         default=8000,
-        help="服务器端口（默认: 8000）"
+        help="Server port (default: 8000)"
     )
     parser.add_argument(
         "--host",
         type=str,
         default="0.0.0.0",
-        help="服务器地址（默认: 0.0.0.0）"
+        help="Server address (default: 0.0.0.0)"
     )
     parser.add_argument(
         "--max_context_len",
         type=int,
         default=4096,
-        help="最大上下文长度（默认: 4096）"
+        help="Maximum context length (default: 4096)"
     )
     
     args = parser.parse_args()
     
-    # 验证模型路径
+    # Validate model path
     model_path = Path(args.model_path)
     if not model_path.exists():
-        logger.error(f"❌ 模型路径不存在: {model_path}")
+        logger.error(f"❌ Model path does not exist: {model_path}")
         return
     
-    # 加载模型
+    # Load model
     load_model(str(model_path), args.max_context_len)
     
-    # 启动服务器
-    logger.info(f"正在启动服务器: http://{args.host}:{args.port}")
+    # Start server
+    logger.info(f"Starting server: http://{args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port)
 
 if __name__ == "__main__":

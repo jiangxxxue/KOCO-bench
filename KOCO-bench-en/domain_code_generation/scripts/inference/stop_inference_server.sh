@@ -1,19 +1,19 @@
 #!/bin/bash
-# 停止推理服务器脚本
+# Script to stop inference server
 
 set -e
 
 cd "$(dirname "$0")"
 
 # ========================================
-# 配置
+# Configuration
 # ========================================
 
 PID_FILE="${PID_FILE:-../logs/inference_server.pid}"
 LOG_FILE="${LOG_FILE:-../logs/inference_server.log}"
 
 # ========================================
-# 颜色输出
+# Color Output
 # ========================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -22,45 +22,45 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # ========================================
-# 检查服务器是否运行
+# Check if server is running
 # ========================================
 
 if [ ! -f "$PID_FILE" ]; then
-    echo -e "${YELLOW}⚠️  推理服务器未运行（PID 文件不存在）${NC}"
+    echo -e "${YELLOW}⚠️  Inference server is not running (PID file does not exist)${NC}"
     exit 0
 fi
 
 pid=$(cat "$PID_FILE")
 
 if ! ps -p "$pid" > /dev/null 2>&1; then
-    echo -e "${YELLOW}⚠️  推理服务器未运行（进程 ${pid} 不存在）${NC}"
-    echo "清理 PID 文件..."
+    echo -e "${YELLOW}⚠️  Inference server is not running (process ${pid} does not exist)${NC}"
+    echo "Cleaning up PID file..."
     rm -f "$PID_FILE"
     exit 0
 fi
 
 # ========================================
-# 停止服务器
+# Stop server
 # ========================================
 
 echo ""
 echo "========================================================"
-echo -e "${BLUE}🛑 停止推理服务器${NC}"
+echo -e "${BLUE}🛑 Stopping inference server${NC}"
 echo "========================================================"
 echo "PID: ${pid}"
-echo "日志: ${LOG_FILE}"
+echo "Log: ${LOG_FILE}"
 echo "========================================================"
 echo ""
 
-echo -e "${BLUE}正在停止服务器...${NC}"
+echo -e "${BLUE}Stopping server...${NC}"
 
-# 发送 SIGTERM 信号
+# Send SIGTERM signal
 kill "$pid" 2>/dev/null || {
-    echo -e "${RED}❌ 无法停止进程 ${pid}${NC}"
+    echo -e "${RED}❌ Failed to stop process ${pid}${NC}"
     exit 1
 }
 
-# 等待进程结束
+# Wait for process to terminate
 max_wait=10
 for i in $(seq 1 $max_wait); do
     if ! ps -p "$pid" > /dev/null 2>&1; then
@@ -69,17 +69,17 @@ for i in $(seq 1 $max_wait); do
     sleep 1
 done
 
-# 检查是否成功停止
+# Check if successfully stopped
 if ps -p "$pid" > /dev/null 2>&1; then
-    echo -e "${YELLOW}⚠️  进程未响应 SIGTERM，发送 SIGKILL...${NC}"
+    echo -e "${YELLOW}⚠️  Process did not respond to SIGTERM, sending SIGKILL...${NC}"
     kill -9 "$pid" 2>/dev/null || true
     sleep 1
 fi
 
-# 清理 PID 文件
+# Clean up PID file
 rm -f "$PID_FILE"
 
-echo -e "${GREEN}✅ 推理服务器已停止${NC}"
+echo -e "${GREEN}✅ Inference server stopped${NC}"
 echo ""
 
 exit 0

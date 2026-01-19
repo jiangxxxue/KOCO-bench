@@ -1,33 +1,30 @@
 #!/bin/bash
-# 批量代码生成脚本（使用推理服务器）
-# 自动遍历所有输入文件，通过请求推理服务器为每个文件生成代码
+# Batch code generation script (using inference server)
+# Automatically iterate through all input files and generate code for each file via inference server
 
 set -eo pipefail
 
 cd "$(dirname "$0")"
 
 # ========================================
-# 配置
+# Configuration
 # ========================================
-# 绕过代理（避免 tinyproxy 干扰）
-export NO_PROXY="localhost,127.0.0.1"
-export no_proxy="localhost,127.0.0.1"
-FRAMEWORK="${FRAMEWORK:-tensorrt_model_optimizer}"
-MODEL_NAME="${MODEL_NAME:-qwen2.5-coder-7b-modelopt-sft}"
+FRAMEWORK="${FRAMEWORK:-your_framework}"
+MODEL_NAME="${MODEL_NAME:-your_model}"
 SERVER_URL="${SERVER_URL:-http://localhost:8000}"
 
-# 生成参数
+# Generation parameters
 NUM_COMPLETIONS="${NUM_COMPLETIONS:-1}"
 MAX_TOKENS="${MAX_TOKENS:-2048}"
 TEMPERATURE="${TEMPERATURE:-0.7}"
 TOP_P="${TOP_P:-0.95}"
-BATCH_SIZE="${BATCH_SIZE:-1}"  # 批处理大小
+BATCH_SIZE="${BATCH_SIZE:-1}"  # Batch size
 
-# 行为控制
-SKIP_EXISTING="${SKIP_EXISTING:-false}"  # 默认覆盖已存在的文件
+# Behavior control
+SKIP_EXISTING="${SKIP_EXISTING:-false}"  # Default: overwrite existing files
 
 # ========================================
-# 颜色输出
+# Color Output
 # ========================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -36,76 +33,76 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # ========================================
-# 环境检查
+# Environment Check
 # ========================================
-echo -e "${BLUE}🔍 检查环境...${NC}"
+echo -e "${BLUE}🔍 Checking environment...${NC}"
 
-# 检查 Python 环境
+# Check Python environment
 if ! python -c "import requests; print('✅ requests')" 2>/dev/null; then
-    echo -e "${RED}❌ 错误: 无法导入 requests${NC}"
-    echo "请安装 requests: pip install requests"
+    echo -e "${RED}❌ Error: Cannot import requests${NC}"
+    echo "Please install requests: pip install requests"
     exit 1
 fi
 
-# 检查脚本文件
+# Check script file
 if [ ! -f "inference_client.py" ]; then
-    echo -e "${RED}❌ 错误: 找不到 inference_client.py${NC}"
+    echo -e "${RED}❌ Error: inference_client.py not found${NC}"
     exit 1
 fi
 
 # ========================================
-# 检查服务器健康状态
+# Check server health status
 # ========================================
 
-echo -e "${BLUE}🔍 检查推理服务器...${NC}"
+echo -e "${BLUE}🔍 Checking inference server...${NC}"
 
 if ! curl -s "${SERVER_URL}/health" > /dev/null 2>&1; then
-    echo -e "${RED}❌ 错误: 无法连接到推理服务器: ${SERVER_URL}${NC}"
+    echo -e "${RED}❌ Error: Cannot connect to inference server: ${SERVER_URL}${NC}"
     echo ""
-    echo "请先启动推理服务器:"
+    echo "Please start inference server first:"
     echo "  bash scripts/inference/start_inference_server.sh"
     echo ""
-    echo "或者设置自定义服务器地址:"
+    echo "Or set custom server address:"
     echo "  export SERVER_URL=http://your-server:8000"
     exit 1
 fi
 
-# 获取服务器信息
+# Get server information
 server_info=$(curl -s "${SERVER_URL}/health" 2>/dev/null)
 server_model=$(echo "$server_info" | python -c "import sys, json; print(json.load(sys.stdin).get('model', 'unknown'))" 2>/dev/null || echo "unknown")
 
-echo -e "${GREEN}✅ 服务器连接成功${NC}"
-echo "  地址: ${SERVER_URL}"
-echo "  模型: ${server_model}"
+echo -e "${GREEN}✅ Server connection successful${NC}"
+echo "  Address: ${SERVER_URL}"
+echo "  Model: ${server_model}"
 
 # ========================================
-# 查找输入文件
+# Find input files
 # ========================================
 
 DATA_DIR="../data/${FRAMEWORK}"
 MODEL_OUTPUT_DIR="${DATA_DIR}/${MODEL_NAME}"
 
 if [ ! -d "$DATA_DIR" ]; then
-    echo -e "${RED}❌ 错误: 数据目录不存在: ${DATA_DIR}${NC}"
+    echo -e "${RED}❌ Error: Data directory does not exist: ${DATA_DIR}${NC}"
     exit 1
 fi
 
-# 创建模型输出目录
+# Create model output directory
 mkdir -p "${MODEL_OUTPUT_DIR}"
 
 echo ""
 echo "========================================================"
-echo -e "${BLUE}🚀 批量代码生成（使用推理服务器）${NC}"
+echo -e "${BLUE}🚀 Batch Code Generation (using inference server)${NC}"
 echo "========================================================"
-echo "框架: ${FRAMEWORK}"
-echo "模型名称: ${MODEL_NAME}"
-echo "服务器: ${SERVER_URL}"
-echo "数据目录: ${DATA_DIR}"
-echo "输出目录: ${MODEL_OUTPUT_DIR}"
+echo "Framework: ${FRAMEWORK}"
+echo "Model name: ${MODEL_NAME}"
+echo "Server: ${SERVER_URL}"
+echo "Data directory: ${DATA_DIR}"
+echo "Output directory: ${MODEL_OUTPUT_DIR}"
 echo "========================================================"
 echo ""
 
-# 查找所有输入文件（排除已生成的输出文件）
+# Find all input files (exclude already generated output files)
 mapfile -t input_files < <(find "$DATA_DIR" -maxdepth 1 -name "algorithm_methods_data_*.jsonl" \
     ! -name "*_output.jsonl" \
     ! -name "*.result*" \
@@ -113,24 +110,24 @@ mapfile -t input_files < <(find "$DATA_DIR" -maxdepth 1 -name "algorithm_methods
     -type f | sort)
 
 if [ ${#input_files[@]} -eq 0 ]; then
-    echo -e "${RED}❌ 错误: 未找到任何输入文件${NC}"
-    echo "目录: ${DATA_DIR}"
-    echo "匹配模式: algorithm_methods_data_*.jsonl"
+    echo -e "${RED}❌ Error: No input files found${NC}"
+    echo "Directory: ${DATA_DIR}"
+    echo "Pattern: algorithm_methods_data_*.jsonl"
     exit 1
 fi
 
-echo -e "${GREEN}找到 ${#input_files[@]} 个测试实例:${NC}"
+echo -e "${GREEN}Found ${#input_files[@]} test instances:${NC}"
 for file in "${input_files[@]}"; do
     basename=$(basename "$file")
     example=$(echo "$basename" | sed 's/algorithm_methods_data_\(.*\)\.jsonl/\1/')
     echo "  ✓ $example"
 done
 echo ""
-echo "开始批量处理..."
+echo "Starting batch processing..."
 echo ""
 
 # ========================================
-# 批量处理
+# Batch processing
 # ========================================
 
 SUCCESS_COUNT=0
@@ -150,38 +147,38 @@ for file in "${input_files[@]}"; do
     example=$(echo "$basename" | sed 's/algorithm_methods_data_\(.*\)\.jsonl/\1/')
     
     echo "========================================"
-    echo -e "${BLUE}[${current}/${total}] 处理: ${example}${NC}"
+    echo -e "${BLUE}[${current}/${total}] Processing: ${example}${NC}"
     echo "========================================"
-    echo "输入文件: $file"
+    echo "Input file: $file"
     
-    # 检查文件是否存在且非空
+    # Check if file exists and is not empty
     if [ ! -s "$file" ]; then
-        echo -e "${YELLOW}⚠️  跳过: 文件为空或不存在${NC}"
+        echo -e "${YELLOW}⚠️  Skipping: file is empty or does not exist${NC}"
         SKIP_COUNT=$((SKIP_COUNT + 1))
         SKIP_LIST+=("$example")
         echo ""
         continue
     fi
     
-    # 检查是否已经生成过
+    # Check if already generated
     expected_output="${MODEL_OUTPUT_DIR}/${basename%.jsonl}_output.jsonl"
     if [ -f "$expected_output" ]; then
-        echo -e "${YELLOW}⚠️  输出文件已存在: $(basename $expected_output)${NC}"
+        echo -e "${YELLOW}⚠️  Output file already exists: $(basename $expected_output)${NC}"
         
-        # 根据配置决定行为
+        # Decide behavior based on configuration
         if [ "$SKIP_EXISTING" = "true" ]; then
-            echo "自动跳过 ${example}"
+            echo "Auto-skipping ${example}"
             SKIP_COUNT=$((SKIP_COUNT + 1))
             SKIP_LIST+=("$example")
             echo ""
             continue
         else
-            # 覆盖已存在的文件
-            echo "将覆盖已存在的文件"
+            # Overwrite existing file
+            echo "Will overwrite existing file"
         fi
     fi
     
-    # 执行生成（禁用 set -e 以捕获错误）
+    # Execute generation (disable set -e to catch errors)
     set +e
     
     python inference_client.py \
@@ -199,14 +196,14 @@ for file in "${input_files[@]}"; do
     
     set -e
     
-    # 检查结果
+    # Check results
     if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}✅ ${example} 生成成功${NC}"
+        echo -e "${GREEN}✅ ${example} generation successful${NC}"
         SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
         SUCCESS_LIST+=("$example")
     else
-        echo -e "${RED}❌ ${example} 生成失败 (退出码: $exit_code)${NC}"
-        echo "日志已保存到: /tmp/gen_${example}.log"
+        echo -e "${RED}❌ ${example} generation failed (exit code: $exit_code)${NC}"
+        echo "Log saved to: /tmp/gen_${example}.log"
         FAIL_COUNT=$((FAIL_COUNT + 1))
         FAIL_LIST+=("$example")
     fi
@@ -215,22 +212,22 @@ for file in "${input_files[@]}"; do
 done
 
 # ========================================
-# 输出总结
+# Output summary
 # ========================================
 
 echo ""
 echo "========================================================"
-echo -e "${BLUE}📊 批量生成完成${NC}"
+echo -e "${BLUE}📊 Batch generation completed${NC}"
 echo "========================================================"
-echo "总数: ${total}"
-echo -e "${GREEN}✅ 成功: ${SUCCESS_COUNT}${NC}"
-echo -e "${RED}❌ 失败: ${FAIL_COUNT}${NC}"
-echo -e "${YELLOW}⊗ 跳过: ${SKIP_COUNT}${NC}"
+echo "Total: ${total}"
+echo -e "${GREEN}✅ Success: ${SUCCESS_COUNT}${NC}"
+echo -e "${RED}❌ Failed: ${FAIL_COUNT}${NC}"
+echo -e "${YELLOW}⊗ Skipped: ${SKIP_COUNT}${NC}"
 echo "========================================================"
 
 if [ ${SUCCESS_COUNT} -gt 0 ]; then
     echo ""
-    echo -e "${GREEN}成功的测试实例:${NC}"
+    echo -e "${GREEN}Successful test instances:${NC}"
     for item in "${SUCCESS_LIST[@]}"; do
         echo "  ✓ $item"
     done
@@ -238,7 +235,7 @@ fi
 
 if [ ${FAIL_COUNT} -gt 0 ]; then
     echo ""
-    echo -e "${RED}失败的测试实例:${NC}"
+    echo -e "${RED}Failed test instances:${NC}"
     for item in "${FAIL_LIST[@]}"; do
         echo "  ✗ $item"
     done
@@ -246,30 +243,30 @@ fi
 
 if [ ${SKIP_COUNT} -gt 0 ]; then
     echo ""
-    echo -e "${YELLOW}跳过的测试实例:${NC}"
+    echo -e "${YELLOW}Skipped test instances:${NC}"
     for item in "${SKIP_LIST[@]}"; do
         echo "  ⊗ $item"
     done
 fi
 
 echo ""
-echo "输出目录: ${DATA_DIR}/${MODEL_NAME}/"
+echo "Output directory: ${DATA_DIR}/${MODEL_NAME}/"
 
-# 显示生成的文件
+# Display generated files
 if [ -d "${DATA_DIR}/${MODEL_NAME}" ]; then
     echo ""
-    echo "已生成的文件:"
-    ls -lh "${DATA_DIR}/${MODEL_NAME}/"*_output.jsonl 2>/dev/null || echo "  (暂无)"
+    echo "Generated files:"
+    ls -lh "${DATA_DIR}/${MODEL_NAME}/"*_output.jsonl 2>/dev/null || echo "  (none)"
 fi
 
 echo ""
 
-# 根据结果设置退出码
+# Set exit code based on results
 if [ $FAIL_COUNT -gt 0 ]; then
-    echo -e "${YELLOW}⚠️  有 ${FAIL_COUNT} 个测试实例生成失败${NC}"
+    echo -e "${YELLOW}⚠️  ${FAIL_COUNT} test instances failed${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}🎉 所有代码生成完成！${NC}"
+echo -e "${GREEN}🎉 All code generation completed!${NC}"
 exit 0
 

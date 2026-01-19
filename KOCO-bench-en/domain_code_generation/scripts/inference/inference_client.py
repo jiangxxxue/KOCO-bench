@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-代码补全推理客户端
-通过 HTTP 请求调用推理服务器生成代码补全
+Code completion inference client
+Call inference server via HTTP requests to generate code completions
 """
 
 import json
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 import time
 
-# 日志配置
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -20,11 +20,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ========================================
-# 辅助函数
+# Helper Functions
 # ========================================
 
 def load_jsonl(file_path: str) -> List[Dict[str, Any]]:
-    """加载 JSONL 文件"""
+    """Load JSONL file"""
     data = []
     with open(file_path, 'r', encoding='utf-8') as f:
         for line_num, line in enumerate(f, 1):
@@ -33,29 +33,29 @@ def load_jsonl(file_path: str) -> List[Dict[str, Any]]:
                 try:
                     data.append(json.loads(line))
                 except json.JSONDecodeError as e:
-                    logger.warning(f"跳过第 {line_num} 行（JSON 解析错误）: {e}")
+                    logger.warning(f"Skipping line {line_num} (JSON parse error): {e}")
     return data
 
 def save_jsonl(data: List[Dict[str, Any]], file_path: str):
-    """保存为 JSONL 文件"""
+    """Save as JSONL file"""
     output_path = Path(file_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     with open(file_path, 'w', encoding='utf-8') as f:
         for item in data:
             f.write(json.dumps(item, ensure_ascii=False) + '\n')
-    logger.info(f"✓ 结果已保存到 {file_path}")
+    logger.info(f"✓ Results saved to {file_path}")
 
 def prepare_prompts(data: List[Dict[str, Any]], prompt_field: str = "prompt") -> List[Any]:
     """
-    准备推理的 prompts
+    Prepare prompts for inference
     
-    支持的输入格式：
-    1. {"prompt": [{"role": "user", "content": "..."}]} - 对话格式（保持原样发送）
-    2. {"prompt": "def hello():\\n    "} - 直接代码前缀
-    3. {"prefix": "def hello():\\n    "} - 使用 prefix 字段
+    Supported input formats:
+    1. {"prompt": [{"role": "user", "content": "..."}]} - Conversation format (send as-is)
+    2. {"prompt": "def hello():\\n    "} - Direct code prefix
+    3. {"prefix": "def hello():\\n    "} - Use prefix field
     
-    注意：对话格式会原样发送到服务器，由服务器端使用 tokenizer.apply_chat_template 处理
+    Note: Conversation format is sent as-is to server, server will use tokenizer.apply_chat_template to process
     """
     prompts = []
     
@@ -64,40 +64,40 @@ def prepare_prompts(data: List[Dict[str, Any]], prompt_field: str = "prompt") ->
             prompt_value = sample.get(prompt_field) or sample.get("prefix") or sample.get("code")
             
             if prompt_value is None:
-                logger.warning(f"样本 {i} 缺少有效的 prompt 字段，使用空字符串")
+                logger.warning(f"Sample {i} missing valid prompt field, using empty string")
                 prompts.append("")
                 continue
             
-            # 格式1: 对话格式 - 直接发送原始格式到服务器
-            # 服务器端会使用 tokenizer.apply_chat_template 处理
+            # Format 1: Conversation format - send original format to server
+            # Server will use tokenizer.apply_chat_template to process
             if isinstance(prompt_value, list):
                 prompts.append(prompt_value)
             
-            # 格式2: 直接的代码字符串
+            # Format 2: Direct code string
             elif isinstance(prompt_value, str):
                 prompts.append(prompt_value)
             
             else:
-                logger.warning(f"样本 {i} 的 prompt 格式不支持，使用空字符串")
+                logger.warning(f"Sample {i} prompt format not supported, using empty string")
                 prompts.append("")
         
         except Exception as e:
-            logger.error(f"处理样本 {i} 时出错: {e}")
+            logger.error(f"Error processing sample {i}: {e}")
             prompts.append("")
     
     return prompts
 
 def check_server_health(server_url: str, max_retries: int = 5, retry_delay: int = 2) -> bool:
     """
-    检查服务器是否健康
+    Check if server is healthy
     
     Args:
-        server_url: 服务器 URL
-        max_retries: 最大重试次数
-        retry_delay: 重试延迟（秒）
+        server_url: Server URL
+        max_retries: Maximum retry count
+        retry_delay: Retry delay (seconds)
     
     Returns:
-        服务器是否健康
+        Whether server is healthy
     """
     health_url = f"{server_url}/health"
     
@@ -106,21 +106,21 @@ def check_server_health(server_url: str, max_retries: int = 5, retry_delay: int 
             response = requests.get(health_url, timeout=5)
             if response.status_code == 200:
                 data = response.json()
-                logger.info(f"✓ 服务器健康检查通过")
-                logger.info(f"  模型: {data.get('model', 'N/A')}")
-                logger.info(f"  设备: {data.get('device', 'N/A')}")
+                logger.info(f"✓ Server health check passed")
+                logger.info(f"  Model: {data.get('model', 'N/A')}")
+                logger.info(f"  Device: {data.get('device', 'N/A')}")
                 return True
             else:
-                logger.warning(f"服务器返回异常状态码: {response.status_code}")
+                logger.warning(f"Server returned abnormal status code: {response.status_code}")
         except requests.exceptions.ConnectionError:
             if i < max_retries - 1:
-                logger.warning(f"无法连接到服务器，{retry_delay} 秒后重试... ({i+1}/{max_retries})")
+                logger.warning(f"Cannot connect to server, retrying in {retry_delay} seconds... ({i+1}/{max_retries})")
                 time.sleep(retry_delay)
             else:
-                logger.error(f"❌ 无法连接到服务器: {server_url}")
+                logger.error(f"❌ Cannot connect to server: {server_url}")
                 return False
         except Exception as e:
-            logger.error(f"健康检查失败: {e}")
+            logger.error(f"Health check failed: {e}")
             return False
     
     return False
@@ -135,36 +135,36 @@ def generate_completions(
     batch_size: int = 1
 ) -> List[List[str]]:
     """
-    通过 HTTP 请求生成代码补全
+    Generate code completions via HTTP requests
     
     Args:
-        prompts: 待生成的 prompts 列表
-        server_url: 服务器 URL
-        num_completions: 每个 prompt 生成的补全数量
-        max_tokens: 每个补全的最大 token 数
-        temperature: 采样温度
-        top_p: Top-p 采样参数
-        batch_size: 批次大小（每次请求的 prompts 数量）
+        prompts: List of prompts to generate
+        server_url: Server URL
+        num_completions: Number of completions per prompt
+        max_tokens: Maximum number of tokens per completion
+        temperature: Sampling temperature
+        top_p: Top-p sampling parameter
+        batch_size: Batch size (number of prompts per request)
     
     Returns:
-        生成的补全列表
+        Generated completions list
     """
     generate_url = f"{server_url}/generate"
     all_completions = []
     
     total = len(prompts)
-    logger.info(f"开始生成 {total} 个样本的补全（批次大小: {batch_size}）...")
+    logger.info(f"Starting generation for {total} samples (batch size: {batch_size})...")
     
-    # 分批处理
+    # Batch processing
     for i in range(0, total, batch_size):
         batch_prompts = prompts[i:i+batch_size]
         batch_num = i // batch_size + 1
         total_batches = (total + batch_size - 1) // batch_size
         
-        logger.info(f"正在处理批次 {batch_num}/{total_batches} ({len(batch_prompts)} 个 prompts)...")
+        logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch_prompts)} prompts)...")
         
         try:
-            # 构造请求
+            # Construct request
             request_data = {
                 "prompts": batch_prompts,
                 "num_completions": num_completions,
@@ -173,33 +173,33 @@ def generate_completions(
                 "top_p": top_p
             }
             
-            # 发送请求
+            # Send request
             response = requests.post(
                 generate_url,
                 json=request_data,
-                timeout=600  # 10 分钟超时
+                timeout=600  # 10 minute timeout
             )
             
-            # 检查响应
+            # Check response
             if response.status_code == 200:
                 result = response.json()
                 batch_completions = result["completions"]
                 all_completions.extend(batch_completions)
-                logger.info(f"✓ 批次 {batch_num} 完成")
+                logger.info(f"✓ Batch {batch_num} completed")
             else:
-                logger.error(f"❌ 批次 {batch_num} 失败: {response.status_code}")
-                logger.error(f"错误信息: {response.text}")
-                # 添加空补全
+                logger.error(f"❌ Batch {batch_num} failed: {response.status_code}")
+                logger.error(f"Error message: {response.text}")
+                # Add empty completions
                 all_completions.extend([[""] * num_completions] * len(batch_prompts))
         
         except requests.exceptions.Timeout:
-            logger.error(f"❌ 批次 {batch_num} 超时")
+            logger.error(f"❌ Batch {batch_num} timeout")
             all_completions.extend([[""] * num_completions] * len(batch_prompts))
         except Exception as e:
-            logger.error(f"❌ 批次 {batch_num} 出错: {e}")
+            logger.error(f"❌ Batch {batch_num} error: {e}")
             all_completions.extend([[""] * num_completions] * len(batch_prompts))
     
-    logger.info(f"✓ 生成完成")
+    logger.info(f"✓ Generation completed")
     return all_completions
 
 # ========================================
