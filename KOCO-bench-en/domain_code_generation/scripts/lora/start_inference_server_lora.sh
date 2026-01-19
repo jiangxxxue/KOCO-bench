@@ -1,35 +1,35 @@
 #!/bin/bash
-# 启动 LoRA 推理服务器脚本
-# 后台运行推理服务，加载基础模型 + LoRA adapter
+# Script to start LoRA inference server
+# Run inference service in background, loading base model + LoRA adapter
 
 set -e
 
 cd "$(dirname "$0")"
 
 # ========================================
-# 配置
+# Configuration
 # ========================================
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-# 基础模型路径（必须指定）
-BASE_MODEL_PATH="${BASE_MODEL_PATH:-/home/shixianjie/models/Qwen2.5-Coder-7B-Instruct}"
+# Base model path (must be specified)
+BASE_MODEL_PATH="${BASE_MODEL_PATH:-/path/to/your/base/model}"
 
-# LoRA adapter 路径
-LORA_ADAPTER_PATH="${LORA_ADAPTER_PATH:-../models/qwen2.5-coder-7b-verl-lora}"
+# LoRA adapter path
+LORA_ADAPTER_PATH="${LORA_ADAPTER_PATH:-../models/your_framework-lora}"
 
-# 服务器配置
-SERVER_PORT="${SERVER_PORT:-8001}"  # 使用不同端口避免和 SFT 服务器冲突
+# Server configuration
+SERVER_PORT="${SERVER_PORT:-8001}"  # Use different port to avoid conflict with SFT server
 SERVER_HOST="${SERVER_HOST:-0.0.0.0}"
 MAX_CONTEXT_LEN="${MAX_CONTEXT_LEN:-4096}"
 TORCH_DTYPE="${TORCH_DTYPE:-bfloat16}"
 
-# 日志文件
+# Log files
 LOG_FILE="${LOG_FILE:-../logs/inference_server_lora.log}"
 PID_FILE="${PID_FILE:-../logs/inference_server_lora.pid}"
 
 # ========================================
-# 颜色输出
+# Color Output
 # ========================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -38,130 +38,130 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # ========================================
-# 创建日志目录
+# Create log directories
 # ========================================
 mkdir -p "$(dirname "$LOG_FILE")"
 mkdir -p "$(dirname "$PID_FILE")"
 
 # ========================================
-# 检查是否已经运行
+# Check if already running
 # ========================================
 
 check_server_running() {
     if [ -f "$PID_FILE" ]; then
         pid=$(cat "$PID_FILE")
         if ps -p "$pid" > /dev/null 2>&1; then
-            return 0  # 运行中
+            return 0  # Running
         else
-            # PID 文件存在但进程不存在，清理 PID 文件
+            # PID file exists but process doesn't, clean up PID file
             rm -f "$PID_FILE"
-            return 1  # 未运行
+            return 1  # Not running
         fi
     else
-        return 1  # 未运行
+        return 1  # Not running
     fi
 }
 
 # ========================================
-# 健康检查
+# Health check
 # ========================================
 
 check_server_health() {
-    local max_retries=600  # 最多等待 1200 秒（20分钟，LoRA加载较慢）
+    local max_retries=600  # Maximum wait 1200 seconds (20 minutes, LoRA loading is slow)
     local retry_delay=2
     
     for i in $(seq 1 $max_retries); do
         if curl -s "http://localhost:${SERVER_PORT}/health" > /dev/null 2>&1; then
-            return 0  # 健康
+            return 0  # Healthy
         fi
         sleep $retry_delay
     done
     
-    return 1  # 不健康
+    return 1  # Unhealthy
 }
 
 # ========================================
-# 环境检查
+# Environment check
 # ========================================
 
-echo -e "${BLUE}🔍 检查环境...${NC}"
+echo -e "${BLUE}🔍 Checking environment...${NC}"
 
 if ! python -c "import torch; print(f'✅ PyTorch {torch.__version__}')" 2>/dev/null; then
-    echo -e "${RED}❌ 错误: 无法导入 PyTorch${NC}"
-    echo "请先激活正确的 conda 环境"
+    echo -e "${RED}❌ Error: Cannot import PyTorch${NC}"
+    echo "Please activate the correct conda environment"
     exit 1
 fi
 
 if ! python -c "import fastapi; print('✅ FastAPI')" 2>/dev/null; then
-    echo -e "${RED}❌ 错误: 无法导入 FastAPI${NC}"
-    echo "请安装 FastAPI: pip install fastapi uvicorn"
+    echo -e "${RED}❌ Error: Cannot import FastAPI${NC}"
+    echo "Please install FastAPI: pip install fastapi uvicorn"
     exit 1
 fi
 
 if ! python -c "import peft; print('✅ PEFT')" 2>/dev/null; then
-    echo -e "${RED}❌ 错误: 无法导入 PEFT${NC}"
-    echo "请安装 PEFT: pip install peft"
+    echo -e "${RED}❌ Error: Cannot import PEFT${NC}"
+    echo "Please install PEFT: pip install peft"
     exit 1
 fi
 
 if [ ! -f "inference_server_lora.py" ]; then
-    echo -e "${RED}❌ 错误: 找不到 inference_server_lora.py${NC}"
+    echo -e "${RED}❌ Error: inference_server_lora.py not found${NC}"
     exit 1
 fi
 
 if [ ! -d "$BASE_MODEL_PATH" ]; then
-    echo -e "${RED}❌ 错误: 基础模型路径不存在: ${BASE_MODEL_PATH}${NC}"
-    echo "请设置正确的 BASE_MODEL_PATH 环境变量"
+    echo -e "${RED}❌ Error: Base model path does not exist: ${BASE_MODEL_PATH}${NC}"
+    echo "Please set the correct BASE_MODEL_PATH environment variable"
     exit 1
 fi
 
 if [ ! -d "$LORA_ADAPTER_PATH" ]; then
-    echo -e "${RED}❌ 错误: LoRA adapter 路径不存在: ${LORA_ADAPTER_PATH}${NC}"
-    echo "请设置正确的 LORA_ADAPTER_PATH 环境变量"
+    echo -e "${RED}❌ Error: LoRA adapter path does not exist: ${LORA_ADAPTER_PATH}${NC}"
+    echo "Please set the correct LORA_ADAPTER_PATH environment variable"
     exit 1
 fi
 
 # ========================================
-# 检查现有服务器
+# Check existing server
 # ========================================
 
 if check_server_running; then
     pid=$(cat "$PID_FILE")
-    echo -e "${YELLOW}⚠️  LoRA 推理服务器已经在运行中 (PID: ${pid})${NC}"
+    echo -e "${YELLOW}⚠️  LoRA inference server is already running (PID: ${pid})${NC}"
     echo ""
-    echo "服务器信息:"
-    echo "  地址: http://localhost:${SERVER_PORT}"
-    echo "  日志: ${LOG_FILE}"
-    echo "  PID 文件: ${PID_FILE}"
+    echo "Server information:"
+    echo "  Address: http://localhost:${SERVER_PORT}"
+    echo "  Log: ${LOG_FILE}"
+    echo "  PID file: ${PID_FILE}"
     echo ""
-    echo "如果需要重启服务器，请先停止："
+    echo "To restart the server, please stop it first:"
     echo "  kill ${pid}"
-    echo "  或者运行: bash scripts/lora/stop_inference_server_lora.sh"
+    echo "  or run: bash scripts/lora/stop_inference_server_lora.sh"
     exit 0
 fi
 
 # ========================================
-# 启动服务器
+# Start server
 # ========================================
 
 echo ""
 echo "========================================================"
-echo -e "${BLUE}🚀 启动 LoRA 推理服务器${NC}"
+echo -e "${BLUE}🚀 Starting LoRA inference server${NC}"
 echo "========================================================"
-echo "基础模型: ${BASE_MODEL_PATH}"
+echo "Base model: ${BASE_MODEL_PATH}"
 echo "LoRA adapter: ${LORA_ADAPTER_PATH}"
-echo "服务器地址: http://${SERVER_HOST}:${SERVER_PORT}"
-echo "最大上下文长度: ${MAX_CONTEXT_LEN}"
-echo "数据类型: ${TORCH_DTYPE}"
-echo "日志文件: ${LOG_FILE}"
+echo "Server address: http://${SERVER_HOST}:${SERVER_PORT}"
+echo "Max context length: ${MAX_CONTEXT_LEN}"
+echo "Data type: ${TORCH_DTYPE}"
+echo "Log file: ${LOG_FILE}"
 echo "========================================================"
 echo ""
 
-echo -e "${BLUE}正在启动服务器（后台运行）...${NC}"
-echo "这可能需要几分钟时间来加载基础模型和 LoRA adapter..."
+echo -e "${BLUE}Starting server (background mode)...${NC}"
+echo "This may take a few minutes to load the base model and LoRA adapter..."
 echo ""
 
-# 启动服务器（后台运行）
+# Start server (background mode)
 nohup python inference_server_lora.py \
     --base_model "$BASE_MODEL_PATH" \
     --lora_adapter "$LORA_ADAPTER_PATH" \
@@ -171,52 +171,52 @@ nohup python inference_server_lora.py \
     --torch_dtype "$TORCH_DTYPE" \
     > "$LOG_FILE" 2>&1 &
 
-# 保存 PID
+# Save PID
 server_pid=$!
 echo $server_pid > "$PID_FILE"
 
-echo -e "${GREEN}✓ 服务器已启动 (PID: ${server_pid})${NC}"
+echo -e "${GREEN}✓ Server started (PID: ${server_pid})${NC}"
 echo ""
 
 # ========================================
-# 等待服务器就绪
+# Wait for server to be ready
 # ========================================
 
-echo -e "${BLUE}等待服务器就绪...${NC}"
-echo "你可以通过以下命令查看日志："
+echo -e "${BLUE}Waiting for server to be ready...${NC}"
+echo "You can view logs with:"
 echo "  tail -f ${LOG_FILE}"
 echo ""
 
 if check_server_health; then
-    echo -e "${GREEN}✅ LoRA 服务器启动成功！${NC}"
+    echo -e "${GREEN}✅ LoRA server started successfully!${NC}"
     echo ""
-    echo "服务器信息:"
-    echo "  健康检查: http://localhost:${SERVER_PORT}/health"
-    echo "  生成接口: http://localhost:${SERVER_PORT}/generate"
-    echo "  日志文件: ${LOG_FILE}"
-    echo "  PID 文件: ${PID_FILE}"
+    echo "Server information:"
+    echo "  Health check: http://localhost:${SERVER_PORT}/health"
+    echo "  Generate endpoint: http://localhost:${SERVER_PORT}/generate"
+    echo "  Log file: ${LOG_FILE}"
+    echo "  PID file: ${PID_FILE}"
     echo ""
-    echo "测试健康检查:"
+    echo "Test health check:"
     echo "  curl http://localhost:${SERVER_PORT}/health"
     echo ""
-    echo "停止服务器:"
+    echo "Stop server:"
     echo "  kill ${server_pid}"
-    echo "  或者运行: bash scripts/lora/stop_inference_server_lora.sh"
+    echo "  or run: bash scripts/lora/stop_inference_server_lora.sh"
     echo ""
 else
-    echo -e "${RED}❌ 服务器启动失败或超时${NC}"
+    echo -e "${RED}❌ Server startup failed or timed out${NC}"
     echo ""
-    echo "请检查日志文件: ${LOG_FILE}"
+    echo "Please check log file: ${LOG_FILE}"
     echo ""
-    echo "最后 20 行日志:"
+    echo "Last 20 lines of log:"
     echo "========================================"
-    tail -n 20 "$LOG_FILE" 2>/dev/null || echo "日志文件为空或不存在"
+    tail -n 20 "$LOG_FILE" 2>/dev/null || echo "Log file is empty or does not exist"
     echo "========================================"
     
-    # 清理
+    # Cleanup
     if ps -p "$server_pid" > /dev/null 2>&1; then
         echo ""
-        echo "正在停止失败的服务器进程..."
+        echo "Stopping failed server process..."
         kill "$server_pid" 2>/dev/null || true
     fi
     rm -f "$PID_FILE"
@@ -224,6 +224,6 @@ else
     exit 1
 fi
 
-echo -e "${GREEN}🎉 LoRA 推理服务器准备就绪！${NC}"
+echo -e "${GREEN}🎉 LoRA inference server is ready!${NC}"
 exit 0
 

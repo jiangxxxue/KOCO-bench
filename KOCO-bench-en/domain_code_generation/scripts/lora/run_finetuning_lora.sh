@@ -1,55 +1,55 @@
 #!/bin/bash
-# LoRA 微调脚本（适配 finetuning_lora.py）
-# 基于原版 run_finetuning.sh，调整为 LoRA 参数高效微调
+# LoRA fine-tuning script (compatible with finetuning_lora.py)
+# Based on the original run_finetuning.sh, adapted for LoRA parameter-efficient fine-tuning
 
-# 严格模式：遇错立即退出
+# Strict mode: exit on error
 set -euo pipefail
 
-# ========= 基础路径 =========
-MODEL_PATH="/home/shixianjie/models/Qwen2.5-Coder-7B-Instruct"
-FRAMEWORK="smolagents"
+# ========= Basic Paths =========
+MODEL_PATH="${MODEL_PATH:-/path/to/your/model}"
+FRAMEWORK="${FRAMEWORK:-your_framework}"
 DATA_PATH="../data/${FRAMEWORK}/${FRAMEWORK}_training_dataset.jsonl"
-OUTPUT_DIR="../models/qwen2.5-coder-7b-${FRAMEWORK}-lora"
+OUTPUT_DIR="../models/${FRAMEWORK}-lora"
 
-# ========= LoRA 参数 =========
-LORA_R=16                                        # LoRA rank，建议 8-64
-LORA_ALPHA=32                                    # LoRA alpha，通常为 2*r
+# ========= LoRA Parameters =========
+LORA_R=16                                        # LoRA rank, recommended 8-64
+LORA_ALPHA=32                                    # LoRA alpha, typically 2*r
 LORA_DROPOUT=0.05                                # LoRA dropout
-TARGET_MODULES="q_proj,v_proj,k_proj,o_proj"    # 应用 LoRA 的模块
-USE_RSLORA=false                                 # 是否使用 Rank-Stabilized LoRA
-USE_DORA=false                                   # 是否使用 DoRA
+TARGET_MODULES="q_proj,v_proj,k_proj,o_proj"    # Modules to apply LoRA
+USE_RSLORA=false                                 # Whether to use Rank-Stabilized LoRA
+USE_DORA=false                                   # Whether to use DoRA
 
-# ========= 训练参数（针对 LoRA 优化）=========
+# ========= Training Parameters (Optimized for LoRA) =========
 MAX_SEQ_LENGTH=2048
-BATCH_SIZE=4                                     # LoRA 显存占用更少，可适当增大
-GRADIENT_ACCUMULATION=2                          # 相应减少梯度累积
-LEARNING_RATE=1e-4                               # LoRA 通常使用更大的学习率（1e-4 到 3e-4）
-NUM_EPOCHS=5                                     # LoRA 收敛快，可适当增加轮数
+BATCH_SIZE=4                                     # LoRA uses less memory, can increase batch size
+GRADIENT_ACCUMULATION=2                          # Reduce gradient accumulation accordingly
+LEARNING_RATE=1e-4                               # LoRA typically uses larger learning rate (1e-4 to 3e-4)
+NUM_EPOCHS=5                                     # LoRA converges faster, can increase epochs
 WARMUP_RATIO=0.03
 KEEP_FILE_TYPES="python,shell,yaml,markdown"
 STRIDE_FRACTION=0.125
 ADD_FILE_PATH_HEADER="false"
 
-# ========= GPU / 环境 =========
-export CUDA_VISIBLE_DEVICES=4,5
+# ========= GPU / Environment =========
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 export TOKENIZERS_PARALLELISM=false
 
-# 禁用 flash-attention 自动检测（避免 GLIBC 问题）
+# Disable flash-attention auto-detection (avoid GLIBC issues)
 export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
 export DISABLE_FLASH_ATTN=1
 
 echo "========================================================"
-echo "🚀 开始 ${FRAMEWORK} 代码库 LoRA 微调（finetuning_lora.py）"
+echo "🚀 Starting ${FRAMEWORK} codebase LoRA fine-tuning (finetuning_lora.py)"
 echo "========================================================"
-echo "模型: ${MODEL_PATH}"
-echo "数据: ${DATA_PATH}"
-echo "输出: ${OUTPUT_DIR}"
-echo "序列长度: ${MAX_SEQ_LENGTH}"
-echo "Batch大小: ${BATCH_SIZE} x ${GRADIENT_ACCUMULATION} = $((BATCH_SIZE * GRADIENT_ACCUMULATION))"
-echo "学习率: ${LEARNING_RATE}"
-echo "训练轮数: ${NUM_EPOCHS}"
+echo "Model: ${MODEL_PATH}"
+echo "Data: ${DATA_PATH}"
+echo "Output: ${OUTPUT_DIR}"
+echo "Sequence Length: ${MAX_SEQ_LENGTH}"
+echo "Batch Size: ${BATCH_SIZE} x ${GRADIENT_ACCUMULATION} = $((BATCH_SIZE * GRADIENT_ACCUMULATION))"
+echo "Learning Rate: ${LEARNING_RATE}"
+echo "Epochs: ${NUM_EPOCHS}"
 echo "========================================================"
-echo "LoRA 配置:"
+echo "LoRA Configuration:"
 echo "  - Rank (r): ${LORA_R}"
 echo "  - Alpha: ${LORA_ALPHA}"
 echo "  - Dropout: ${LORA_DROPOUT}"
@@ -61,10 +61,10 @@ echo ""
 
 mkdir -p "${OUTPUT_DIR}"
 
-# 切换到 lora 目录执行
+# Switch to lora directory
 cd "$(dirname "$0")"
 
-# --------- LoRA 微调（单机多卡或单卡）---------
+# --------- LoRA Fine-tuning (Single or Multi-GPU) ---------
 python finetuning_lora.py \
   --model_name_or_path "${MODEL_PATH}" \
   --dataset_path "${DATA_PATH}" \
@@ -106,10 +106,10 @@ python finetuning_lora.py \
 
 echo ""
 echo "========================================================"
-echo "🎉 LoRA 微调完成！Adapter 保存在: ${OUTPUT_DIR}"
+echo "🎉 LoRA fine-tuning completed! Adapter saved to: ${OUTPUT_DIR}"
 echo "========================================================"
 echo ""
-echo "💡 使用方法："
+echo "💡 Usage:"
 echo "from peft import PeftModel"
 echo "from transformers import AutoModelForCausalLM, AutoTokenizer"
 echo ""

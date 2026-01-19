@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-inference_server_lora.py — LoRA 模型推理服务器
+inference_server_lora.py — LoRA model inference server
 
-基于 FastAPI 提供代码生成服务，支持 LoRA adapter 加载
+Provides code generation service based on FastAPI, supports LoRA adapter loading
 """
 
 import os
@@ -21,7 +21,7 @@ from peft import PeftModel
 
 
 # ========================================
-# 全局变量
+# Global Variables
 # ========================================
 model = None
 tokenizer = None
@@ -31,36 +31,36 @@ lora_adapter_path = None
 
 
 # ========================================
-# 请求/响应模型
+# Request/Response Models
 # ========================================
 
 class GenerationRequest(BaseModel):
-    """生成请求"""
-    prompts: List[Any] = Field(..., description="输入提示列表（可以是字符串或对话列表）")
-    num_completions: int = Field(1, ge=1, le=10, description="每个提示生成的补全数量")
-    max_tokens: int = Field(512, ge=1, le=4096, description="生成的最大token数")
-    temperature: float = Field(0.7, ge=0.0, le=2.0, description="温度参数")
-    top_p: float = Field(0.95, ge=0.0, le=1.0, description="Top-p采样")
-    do_sample: bool = Field(True, description="是否使用采样")
+    """Generation request"""
+    prompts: List[Any] = Field(..., description="Input prompt list (can be strings or conversation lists)")
+    num_completions: int = Field(1, ge=1, le=10, description="Number of completions per prompt")
+    max_tokens: int = Field(512, ge=1, le=4096, description="Maximum number of tokens to generate")
+    temperature: float = Field(0.7, ge=0.0, le=2.0, description="Temperature parameter")
+    top_p: float = Field(0.95, ge=0.0, le=1.0, description="Top-p sampling")
+    do_sample: bool = Field(True, description="Whether to use sampling")
 
 
 class GenerationResponse(BaseModel):
-    """生成响应"""
-    completions: List[List[str]] = Field(..., description="生成结果，外层列表对应输入提示，内层列表对应每个提示的多个补全")
-    model: str = Field(..., description="使用的模型")
+    """Generation response"""
+    completions: List[List[str]] = Field(..., description="Generation results, outer list corresponds to input prompts, inner list corresponds to multiple completions per prompt")
+    model: str = Field(..., description="Model used")
 
 
 class HealthResponse(BaseModel):
-    """健康检查响应"""
-    status: str = Field("healthy", description="服务状态")
-    model: str = Field(..., description="加载的模型")
-    base_model: str = Field(..., description="基础模型路径")
-    lora_adapter: str = Field(..., description="LoRA adapter路径")
-    device: str = Field(..., description="设备信息")
+    """Health check response"""
+    status: str = Field("healthy", description="Service status")
+    model: str = Field(..., description="Loaded model")
+    base_model: str = Field(..., description="Base model path")
+    lora_adapter: str = Field(..., description="LoRA adapter path")
+    device: str = Field(..., description="Device information")
 
 
 # ========================================
-# 模型加载
+# Model Loading
 # ========================================
 
 def load_lora_model(
@@ -71,21 +71,21 @@ def load_lora_model(
     max_context_len: int = 4096,
 ):
     """
-    加载基础模型 + LoRA adapter
+    Load base model + LoRA adapter
     
     Args:
-        base_model: 基础模型路径
-        lora_adapter: LoRA adapter 路径
-        device: 设备，"auto" 或 "cuda:0" 等
-        torch_dtype: 数据类型
-        max_context_len: 最大上下文长度
+        base_model: Base model path
+        lora_adapter: LoRA adapter path
+        device: Device, "auto" or "cuda:0" etc.
+        torch_dtype: Data type
+        max_context_len: Maximum context length
     
     Returns:
         model, tokenizer, generation_config
     """
-    print(f"📦 加载基础模型: {base_model}")
+    print(f"📦 Loading base model: {base_model}")
     
-    # 处理 torch_dtype
+    # Process torch_dtype
     if torch_dtype == "auto":
         dtype = "auto"
     elif torch_dtype == "bfloat16":
@@ -95,40 +95,40 @@ def load_lora_model(
     else:
         dtype = torch.float32
     
-    # 加载基础模型
+    # Load base model
     base = AutoModelForCausalLM.from_pretrained(
         base_model,
         torch_dtype=dtype,
         device_map=device,
         trust_remote_code=True,
-        attn_implementation="eager",  # 避免 flash-attention 问题
+        attn_implementation="eager",  # Avoid flash-attention issues
     )
     
-    print(f"📦 加载 LoRA adapter: {lora_adapter}")
+    print(f"📦 Loading LoRA adapter: {lora_adapter}")
     
-    # 加载 LoRA adapter
+    # Load LoRA adapter
     model = PeftModel.from_pretrained(
         base,
         lora_adapter,
         torch_dtype=dtype,
     )
     
-    # 合并 LoRA 权重以提高推理速度（可选）
+    # Merge LoRA weights to improve inference speed (optional)
     # model = model.merge_and_unload()
     
-    print(f"📦 加载 tokenizer: {base_model}")
+    print(f"📦 Loading tokenizer: {base_model}")
     tokenizer = AutoTokenizer.from_pretrained(
         base_model,
         trust_remote_code=True,
-        padding_side="left",  # 批量生成时需要左填充
+        padding_side="left",  # Left padding needed for batch generation
     )
     
-    # 设置 pad_token
+    # Set pad_token
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
-    # 生成配置
+    # Generation configuration
     gen_config = GenerationConfig(
         max_new_tokens=512,
         do_sample=True,
@@ -138,8 +138,8 @@ def load_lora_model(
         eos_token_id=tokenizer.eos_token_id,
     )
     
-    print("✅ 模型加载完成")
-    print(f"  - 基础模型: {base_model}")
+    print("✅ Model loading completed")
+    print(f"  - Base model: {base_model}")
     print(f"  - LoRA adapter: {lora_adapter}")
     print(f"  - Device: {device}")
     print(f"  - Dtype: {dtype}")
@@ -148,26 +148,26 @@ def load_lora_model(
 
 
 # ========================================
-# 生成函数
+# Generation Functions
 # ========================================
 
 def format_prompt(prompt_data: Any) -> str:
     """
-    格式化 prompt 为字符串
+    Format prompt to string
     
     Args:
-        prompt_data: 可以是字符串或对话列表
+        prompt_data: Can be a string or conversation list
     
     Returns:
-        格式化后的字符串
+        Formatted string
     """
     global tokenizer
     
     if isinstance(prompt_data, str):
         return prompt_data
     elif isinstance(prompt_data, list):
-        # 对话列表格式：[{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
-        # 使用 tokenizer 的 apply_chat_template 方法（如果可用）
+        # Conversation list format: [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
+        # Use tokenizer's apply_chat_template method if available
         if hasattr(tokenizer, 'apply_chat_template'):
             try:
                 return tokenizer.apply_chat_template(
@@ -176,10 +176,10 @@ def format_prompt(prompt_data: Any) -> str:
                     add_generation_prompt=True
                 )
             except Exception:
-                # 如果失败，回退到简单格式化
+                # Fallback to simple formatting if failed
                 pass
         
-        # 简单格式化
+        # Simple formatting
         formatted_parts = []
         for message in prompt_data:
             role = message.get("role", "user")
@@ -204,33 +204,33 @@ def generate_completions(
     do_sample: bool = True,
 ) -> List[List[str]]:
     """
-    批量生成代码补全
+    Batch generate code completions
     
     Args:
-        prompts: 提示列表（可以是字符串或对话列表）
-        num_completions: 每个提示生成的补全数量
-        max_tokens: 最大生成token数
-        temperature: 温度参数
-        top_p: Top-p采样
-        do_sample: 是否采样
+        prompts: Prompt list (can be strings or conversation lists)
+        num_completions: Number of completions per prompt
+        max_tokens: Maximum number of tokens to generate
+        temperature: Temperature parameter
+        top_p: Top-p sampling
+        do_sample: Whether to sample
     
     Returns:
-        补全列表，外层对应每个提示，内层对应每个提示的多个补全
+        Completion list, outer list corresponds to each prompt, inner list corresponds to multiple completions per prompt
     """
     global model, tokenizer, generation_config
     
     if model is None or tokenizer is None:
-        raise RuntimeError("模型未加载")
+        raise RuntimeError("Model not loaded")
     
     results = []
     
     for prompt_data in prompts:
         prompt_completions = []
         
-        # 格式化 prompt
+        # Format prompt
         prompt = format_prompt(prompt_data)
         
-        # 为每个补全单独生成
+        # Generate separately for each completion
         for _ in range(num_completions):
             # Tokenize
             inputs = tokenizer(
@@ -240,7 +240,7 @@ def generate_completions(
                 truncation=True,
             ).to(model.device)
             
-            # 生成
+            # Generate
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
@@ -252,7 +252,7 @@ def generate_completions(
                     eos_token_id=tokenizer.eos_token_id,
                 )
             
-            # 解码
+            # Decode
             input_length = inputs["input_ids"].shape[1]
             generated_tokens = outputs[0][input_length:]
             completion = tokenizer.decode(generated_tokens, skip_special_tokens=True)
@@ -265,17 +265,17 @@ def generate_completions(
 
 
 # ========================================
-# FastAPI 应用
+# FastAPI Application
 # ========================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
-    # 启动时加载模型
+    """Application lifecycle management"""
+    # Load model on startup
     global model, tokenizer, generation_config, base_model_path, lora_adapter_path
     
     print("=" * 60)
-    print("🚀 启动 LoRA 推理服务器")
+    print("🚀 Starting LoRA inference server")
     print("=" * 60)
     
     model, tokenizer, generation_config = load_lora_model(
@@ -287,18 +287,18 @@ async def lifespan(app: FastAPI):
     )
     
     print("=" * 60)
-    print("✅ 服务器启动完成")
+    print("✅ Server startup completed")
     print("=" * 60)
     
     yield
     
-    # 关闭时清理
-    print("🛑 关闭服务器...")
+    # Cleanup on shutdown
+    print("🛑 Shutting down server...")
 
 
 app = FastAPI(
-    title="LoRA 代码生成推理服务器",
-    description="支持 LoRA adapter 的代码补全推理服务",
+    title="LoRA Code Generation Inference Server",
+    description="Code completion inference service supporting LoRA adapter",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -306,9 +306,9 @@ app = FastAPI(
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """健康检查端点"""
+    """Health check endpoint"""
     if model is None:
-        raise HTTPException(status_code=503, detail="模型未加载")
+        raise HTTPException(status_code=503, detail="Model not loaded")
     
     device_name = str(next(model.parameters()).device)
     
@@ -323,7 +323,7 @@ async def health_check():
 
 @app.post("/generate", response_model=GenerationResponse)
 async def generate(request: GenerationRequest):
-    """代码生成端点"""
+    """Code generation endpoint"""
     try:
         completions = generate_completions(
             prompts=request.prompts,
@@ -340,100 +340,100 @@ async def generate(request: GenerationRequest):
         )
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
 
 # ========================================
-# 主函数
+# Main Function
 # ========================================
 
 def main():
     parser = argparse.ArgumentParser(
-        description="LoRA 代码补全推理服务器",
+        description="LoRA code completion inference server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-示例用法:
-  # 启动服务器（默认端口 8000）
+Example usage:
+  # Start server (default port 8000)
   python inference_server_lora.py \\
     --base_model /path/to/base/model \\
-    --lora_adapter ../models/qwen2.5-coder-7b-verl-lora
+    --lora_adapter ../models/your_framework-lora
 
-  # 指定端口
+  # Specify port
   python inference_server_lora.py \\
     --base_model /path/to/base/model \\
-    --lora_adapter ../models/qwen2.5-coder-7b-verl-lora \\
+    --lora_adapter ../models/your_framework-lora \\
     --port 8001
 
-  # 测试健康检查
+  # Test health check
   curl http://localhost:8000/health
 
-  # 测试生成
+  # Test generation
   curl -X POST http://localhost:8000/generate \\
     -H "Content-Type: application/json" \\
     -d '{"prompts": ["def hello():\\n    "], "num_completions": 1}'
 """
     )
     
-    # 模型参数
+    # Model parameters
     parser.add_argument(
         "--base_model",
         type=str,
         required=True,
-        help="基础模型路径"
+        help="Base model path"
     )
     parser.add_argument(
         "--lora_adapter",
         type=str,
         required=True,
-        help="LoRA adapter 路径"
+        help="LoRA adapter path"
     )
     parser.add_argument(
         "--device",
         type=str,
         default="auto",
-        help="设备 (默认: auto)"
+        help="Device (default: auto)"
     )
     parser.add_argument(
         "--torch_dtype",
         type=str,
         default="bfloat16",
         choices=["auto", "bfloat16", "float16", "float32"],
-        help="模型数据类型 (默认: bfloat16)"
+        help="Model data type (default: bfloat16)"
     )
     parser.add_argument(
         "--max_context_len",
         type=int,
         default=4096,
-        help="最大上下文长度 (默认: 4096)"
+        help="Maximum context length (default: 4096)"
     )
     
-    # 服务器参数
+    # Server parameters
     parser.add_argument(
         "--host",
         type=str,
         default="0.0.0.0",
-        help="服务器地址 (默认: 0.0.0.0)"
+        help="Server address (default: 0.0.0.0)"
     )
     parser.add_argument(
         "--port",
         type=int,
         default=8000,
-        help="服务器端口 (默认: 8000)"
+        help="Server port (default: 8000)"
     )
     
     args = parser.parse_args()
     
-    # 设置全局变量
+    # Set global variables
     global base_model_path, lora_adapter_path
     base_model_path = args.base_model
     lora_adapter_path = args.lora_adapter
     
-    # 保存参数到 app.state
+    # Save parameters to app.state
     app.state.device = args.device
     app.state.torch_dtype = args.torch_dtype
     app.state.max_context_len = args.max_context_len
     
-    # 启动服务器
+    # Start server
     uvicorn.run(
         app,
         host=args.host,
