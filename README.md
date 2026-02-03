@@ -1,9 +1,11 @@
 # KOCO-BENCH: Benchmarking Domain Specialization for Large Language Models in Software Development
 
 <div align="center">
-
-
 </div>
+
+[![Arxiv](https://img.shields.io/badge/Arxiv-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white)](https://www.arxiv.org/abs/2601.13240)
+[![HuggingFace](https://img.shields.io/badge/HuggingFace-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black)](https://huggingface.co/datasets/xueniki/KOCO-bench)
+
 
 ## 📋 Overview
 
