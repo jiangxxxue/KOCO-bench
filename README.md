@@ -42,7 +42,7 @@ KOCO-bench/
 │   │   │   ├── test_examples/          # Test projects
 │   │   │   │   └── {example}/          # Individual test cases
 │   │   │   │       ├── code/           # Project code
-│   │   │   │       ├── tests/          # Test suites
+│   │   │   │       │   └── tests/      # Test suites
 │   │   │   │       └── requirements/   # Task specifications
 │   │   │   └── README.md
 │   │   └── scripts/                    # Evaluation scripts
