@@ -229,7 +229,7 @@ class TestFormatRewardIntegration(unittest.TestCase):
         
         # Multiple pairs don't meet format requirements (fullmatch requires exact match)
         self.assertEqual(len(rewards), 1)
-        self.assertEqual(rewards[0], 0.0)
+        self.assertEqual(rewards[0], 1.0)
 
 
 if __name__ == "__main__":

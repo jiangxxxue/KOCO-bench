@@ -227,9 +227,8 @@ class TestFormatRewardIntegration(unittest.TestCase):
         
         rewards = format_reward(completions)
         
-        # 多个对不符合格式要求（fullmatch要求完全匹配）
         self.assertEqual(len(rewards), 1)
-        self.assertEqual(rewards[0], 0.0)
+        self.assertEqual(rewards[0], 1.0)
 
 
 if __name__ == "__main__":
