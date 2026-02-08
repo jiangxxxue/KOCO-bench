@@ -1,0 +1,39 @@
+FROM python:3.10-slim
+
+WORKDIR /workspace
+
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN pip install -U pip setuptools wheel && \
+    pip install \
+        torch torchvision torchaudio \
+        --index-url https://download.pytorch.org/whl/cpu && \
+    pip install \
+        raganything[all] \
+        pytest \
+        pytest-asyncio \
+        faiss-cpu \
+        google-cloud-storage \
+        sentence-transformers \
+        langchain-core \
+        langchain-community \
+        langchain-text-splitters \
+        langchain-chroma \
+        mcp \
+        python-frontmatter
+
+
+RUN pip install \
+        smolagents[litellm,mcp] \
+        dataset \
+        "langchain<0.1" \
+        langchain-huggingface
+
+CMD ["/bin/bash"]

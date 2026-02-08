@@ -21,7 +21,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
 from babel.numbers import parse_decimal
-from utils.math import compute_score
+from .utils.math import compute_score
 from datasets import load_dataset, load_from_disk
 from transformers import Qwen2VLForConditionalGeneration
 
@@ -38,7 +38,7 @@ from json_repair import repair_json
 
 from open_r1.vlm_modules import *
 
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLVisionFlashAttention2, apply_rotary_pos_emb_flashatt, flash_attn_varlen_func
+# from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLVisionFlashAttention2, apply_rotary_pos_emb_flashatt, flash_attn_varlen_func
 import torch
 from typing import Tuple
 from transformers.utils import logging
@@ -53,8 +53,8 @@ client = OpenAI(
     base_url=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
 )
 
-from open_r1.qwen2_5vl_monkey_patch import monkey_patch_qwen2_5vl_flash_attn, monkey_patch_qwen2_5vl_forward
-monkey_patch_qwen2_5vl_flash_attn()    
+# from .qwen2_5vl_monkey_patch import monkey_patch_qwen2_5vl_flash_attn, monkey_patch_qwen2_5vl_forward
+# monkey_patch_qwen2_5vl_flash_attn()    
 
 
 

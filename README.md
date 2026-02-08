@@ -1,9 +1,11 @@
 # KOCO-BENCH: Benchmarking Domain Specialization for Large Language Models in Software Development
 
 <div align="center">
-
-
 </div>
+
+[![Arxiv](https://img.shields.io/badge/Arxiv-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white)](https://www.arxiv.org/abs/2601.13240)
+[![HuggingFace](https://img.shields.io/badge/HuggingFace-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black)](https://huggingface.co/datasets/xueniki/KOCO-bench)
+
 
 ## 📋 Overview
 
@@ -114,6 +116,82 @@ Each question assesses:
 - ✅ Domain-specific constraints
 - ✅ Best practices and conventions
 - ✅ Architectural decisions
+
+## 🔧 Build Environment
+
+### Framework: Verl & Open-R1
+
+#### Step 1: Pull the Base Image
+First, pull the official verl base image from Docker Hub:
+
+```
+docker pull verlai/verl:base-verl0.4-cu124-cudnn9.8-torch2.6-fa2.7.4
+```
+Step 2: Build the Custom Image
+Navigate to the Dockerfile directory and build:
+
+```
+cd KOCO-bench/Build-Env/Docker
+
+# Build the image
+docker build \
+  -f Dockerfile.app.kocobench.verl.openr1 \
+  -t kocobench/verl-openr1:v0.4 \
+  .
+```
+
+
+### Framework: RAGAnything & SmolAgents
+
+#### Step 1: Pull the Base Image
+
+First, pull the official Python base image from Docker Hub:
+
+```bash
+docker pull python:3.10-slim
+```
+
+#### Step 2: Build the Custom Image
+
+Navigate to the Dockerfile directory and build:
+
+```bash
+cd KOCO-bench/Build-Env/Docker
+
+# Build the image
+docker build \
+  -f Dockerfile.raganything.smolagents \
+  -t raganything-smolagents:test \
+  .
+```
+
+
+### Framework: Tensorrt-Model-Optimizer
+
+#### Step 1: Pull the Base Image
+
+First, pull the official NVIDIA CUDA base image from Docker Hub:
+
+```bash
+docker pull nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+```
+
+---
+
+#### Step 2: Build the Custom Image
+
+Navigate to the Dockerfile directory and build:
+
+```bash
+cd KOCO-bench/Build-Env/Docker/tensorrt-env
+
+# Use Conda
+./build.sh
+
+# Or Use Pip
+./build.sh -p
+```
+
 
 ## 🚀 Quick Start
 
