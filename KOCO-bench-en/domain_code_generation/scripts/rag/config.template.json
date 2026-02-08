@@ -1,0 +1,16 @@
+{
+  "input_file": "path/to/input.jsonl",
+  "output_file": "path/to/output.jsonl",
+  "metadata_file": "path/to/metadata.json",
+  "knowledge_bases": [
+    "path/to/knowledge_base_1",
+    "path/to/knowledge_base_2"
+  ],
+  "framework_name": "your_framework_name",
+  "top_k": 5,
+  "retrieval": {
+    "chunk_type": "function",
+    "exclude_ground_truth": true,
+    "min_score_threshold": 0.0
+  }
+}
