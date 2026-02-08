@@ -1,115 +1,115 @@
 #!/bin/bash
-# 评估指标聚合工具使用示例
+# Example usage of metrics aggregation tools
 
 set -e
 
 cd "$(dirname "$0")"
 
 echo "=========================================="
-echo "评估指标聚合工具使用示例"
+echo "Metrics Aggregation Tools - Example Usage"
 echo "=========================================="
 echo ""
 
 # ========================================
-# 示例 1: 单个模型的 RL 领域综合指标
+# Example 1: Single model comprehensive metrics
 # ========================================
 
-echo "示例 1: 计算单个模型在 RL 领域的综合指标"
+echo "Example 1: Calculate comprehensive metrics for a single model"
 echo "------------------------------------------"
 echo ""
 
 python aggregate_metrics.py \
-  --model_dir data/verl/qwen2.5-coder-32b-instruct-simple \
-  --test_examples prime ARES LUFFY PURE
+  --model_dir data/your_framework/your_model \
+  --test_examples example1 example2 example3
 
 echo ""
-echo "按 Enter 继续下一个示例..."
+echo "Press Enter to continue to next example..."
 read
 
 # ========================================
-# 示例 2: 保存结果到 JSON 文件
+# Example 2: Save results to JSON file
 # ========================================
 
 echo ""
-echo "示例 2: 保存结果到 JSON 文件"
+echo "Example 2: Save results to JSON file"
 echo "------------------------------------------"
 echo ""
 
 python aggregate_metrics.py \
-  --model_dir data/verl/qwen2.5-coder-32b-instruct-simple \
-  --test_examples prime ARES LUFFY PURE \
-  --output data/verl/qwen2.5-coder-32b-instruct-simple/RL_aggregate.json
+  --model_dir data/your_framework/your_model \
+  --test_examples example1 example2 example3 \
+  --output data/your_framework/your_model/aggregate.json
 
 echo ""
-echo "结果已保存到: data/verl/qwen2.5-coder-32b-instruct-simple/RL_aggregate.json"
+echo "Results saved to: data/your_framework/your_model/aggregate.json"
 echo ""
-echo "按 Enter 继续下一个示例..."
+echo "Press Enter to continue to next example..."
 read
 
 # ========================================
-# 示例 3: 批量对比多个模型
+# Example 3: Batch comparison of multiple models
 # ========================================
 
 echo ""
-echo "示例 3: 批量对比多个模型"
+echo "Example 3: Batch comparison of multiple models"
 echo "------------------------------------------"
 echo ""
 
 python batch_aggregate_metrics.py \
-  --base_dir data/verl \
+  --base_dir data/your_framework \
   --model_names \
-    qwen2.5-coder-32b-instruct-simple \
-    qwen2.5-coder-7b-instruct-simple \
-    qwen2.5-coder-7b-verl-lora \
-  --test_examples prime ARES LUFFY PURE
+    model1 \
+    model2 \
+    model3 \
+  --test_examples example1 example2 example3
 
 echo ""
-echo "按 Enter 继续下一个示例..."
+echo "Press Enter to continue to next example..."
 read
 
 # ========================================
-# 示例 4: 导出为 CSV 文件
+# Example 4: Export to CSV file
 # ========================================
 
 echo ""
-echo "示例 4: 导出对比结果为 CSV"
+echo "Example 4: Export comparison results as CSV"
 echo "------------------------------------------"
 echo ""
 
 python batch_aggregate_metrics.py \
-  --base_dir data/verl \
+  --base_dir data/your_framework \
   --model_names \
-    qwen2.5-coder-32b-instruct-simple \
-    qwen2.5-coder-7b-instruct-simple \
-    qwen2.5-coder-7b-verl-lora \
-  --test_examples prime ARES LUFFY PURE \
-  --output_csv data/verl/RL_model_comparison.csv
+    model1 \
+    model2 \
+    model3 \
+  --test_examples example1 example2 example3 \
+  --output_csv data/your_framework/model_comparison.csv
 
 echo ""
-echo "CSV 文件已保存到: data/verl/RL_model_comparison.csv"
+echo "CSV file saved to: data/your_framework/model_comparison.csv"
 echo ""
-echo "查看 CSV 内容:"
+echo "View CSV content:"
 echo "------------------------------------------"
-cat data/verl/RL_model_comparison.csv | column -t -s ','
+cat data/your_framework/model_comparison.csv | column -t -s ',' 2>/dev/null || cat data/your_framework/model_comparison.csv
 echo ""
 
 # ========================================
-# 示例 5: 使用 Shell 脚本
+# Example 5: Using shell script
 # ========================================
 
 echo ""
-echo "示例 5: 使用 Shell 脚本"
+echo "Example 5: Using shell script"
 echo "------------------------------------------"
 echo ""
 
 bash run_aggregate_metrics.sh \
-  --model_dir data/verl/qwen2.5-coder-7b-instruct-simple \
-  --test_examples "prime ARES LUFFY PURE"
+  --model_dir data/your_framework/your_model \
+  --test_examples "example1 example2 example3"
 
 echo ""
 echo "=========================================="
-echo "所有示例完成！"
+echo "All examples completed!"
 echo "=========================================="
 echo ""
-echo "更多信息请查看: AGGREGATE_METRICS_README.md"
+echo "For more information, see: AGGREGATE_METRICS_README.md"
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-纯净模式执行评估脚本 - 修改文件 -> 运行测试 -> 还原文件
+Pure mode execution evaluation script - modify file -> run test -> restore file
 """
 
 import json
@@ -18,10 +18,10 @@ from datetime import datetime
 
 
 class PureCodeReplacer:
-    """纯净代码替换引擎 - 直接修改文件"""
+    """Pure code replacement engine - directly modify files"""
     
     def parse_location(self, location: str) -> Tuple[int, int]:
-        """解析location字符串，返回起始行和结束行"""
+        """Parse location string, return start line and end line"""
         pattern = r".*:line\s+(\d+)-(\d+)"
         match = re.search(pattern, location)
         if not match:
@@ -29,7 +29,7 @@ class PureCodeReplacer:
         return int(match.group(1)), int(match.group(2))
     
     def extract_code_from_markdown(self, completion: str) -> str:
-        """从 markdown 格式中提取纯代码"""
+        """Extract pure code from markdown format"""
         if "```python" in completion:
             start = completion.find("```python") + len("```python")
             end = completion.find("```", start)
@@ -48,7 +48,7 @@ class PureCodeReplacer:
         return code_block
     
     def normalize_indentation(self, code: str) -> str:
-        """去除代码的基础缩进"""
+        """Remove base indentation from code"""
         lines = code.split('\n')
         non_empty_lines = [line for line in lines if line.strip()]
         if not non_empty_lines:
@@ -66,7 +66,7 @@ class PureCodeReplacer:
         return '\n'.join(normalized_lines)
     
     def apply_indentation(self, code: str, base_indent: int) -> str:
-        """给代码添加指定的基础缩进"""
+        """Add specified base indentation to code"""
         lines = code.split('\n')
         indented_lines = []
         for line in lines:
@@ -77,31 +77,31 @@ class PureCodeReplacer:
         return '\n'.join(indented_lines)
     
     def replace_function_in_file(self, file_path: str, location: str, completion: str) -> bool:
-        """在文件中替换函数实现"""
+        """Replace function implementation in file"""
         try:
-            # 读取原文件
+            # Read original file
             with open(file_path, 'r', encoding='utf-8') as f:
                 source_code = f.read()
             
             start_line, end_line = self.parse_location(location)
             lines = source_code.split('\n')
             
-            # 提取代码
+            # Extract code
             extracted_code = self.extract_code_from_markdown(completion)
             normalized_code = self.normalize_indentation(extracted_code)
             
-            # 获取原文件的基础缩进
+            # Get base indentation of original file
             original_first_line = lines[start_line - 1]
             base_indent = len(original_first_line) - len(original_first_line.lstrip())
             
-            # 添加缩进
+            # Add indentation
             indented_code = self.apply_indentation(normalized_code, base_indent)
             
-            # 替换代码
+            # Replace code
             indented_lines = indented_code.split('\n')
             lines[start_line-1:end_line] = indented_lines
             
-            # 写回文件
+            # Write back to file
             modified_code = '\n'.join(lines)
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(modified_code)
@@ -116,42 +116,42 @@ class PureCodeReplacer:
 
 
 class PureTestExecutor:
-    """纯净测试执行器 - 支持 unittest 和 pytest"""
+    """Pure test executor - supports unittest and pytest"""
     
     def __init__(self, source_dir: str, log_dir: str = None):
         self.source_dir = source_dir
         self.log_dir = log_dir
         
-        # 创建日志目录
+        # Create log directory
         if self.log_dir and not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir, exist_ok=True)
     
     def _detect_test_framework(self, test_file_path: str) -> str:
-        """检测测试文件使用的测试框架
+        """Detect test framework used by test file
         
         Args:
-            test_file_path: 测试文件的完整路径
+            test_file_path: Full path to test file
             
         Returns:
-            'pytest' 或 'unittest'
+            'pytest' or 'unittest'
         """
         try:
             with open(test_file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
                 
-            # 检查是否导入了 pytest
+            # Check if pytest is imported
             if 'import pytest' in content or 'from pytest' in content:
                 return 'pytest'
             
-            # 检查是否使用了 pytest 的装饰器
+            # Check if pytest decorators are used
             if '@pytest.' in content:
                 return 'pytest'
             
-            # 检查是否使用了 pytest 的 fixture
+            # Check if pytest fixtures are used
             if 'def test_' in content and ('@pytest.fixture' in content or 'pytest.raises' in content):
                 return 'pytest'
             
-            # 默认使用 unittest
+            # Default to unittest
             return 'unittest'
             
         except Exception as e:
@@ -159,14 +159,14 @@ class PureTestExecutor:
             return 'unittest'
     
     def run_test_file(self, test_file_path: str, function_name: str = "") -> Tuple[bool, float]:
-        """运行测试文件 - 自动检测 unittest 或 pytest
+        """Run test file - auto-detect unittest or pytest
         
         Args:
-            test_file_path: 测试文件路径
-            function_name: 函数名（用于生成日志文件名）
+            test_file_path: Test file path
+            function_name: Function name (for generating log file name)
         
         Returns:
-            Tuple[bool, float]: (是否全部通过, 通过比例)
+            Tuple[bool, float]: (whether all passed, pass ratio)
         """
         try:
             full_test_path = os.path.join(self.source_dir, test_file_path)
@@ -174,19 +174,19 @@ class PureTestExecutor:
                 print(f"Test file not found: {full_test_path}")
                 return False, 0.0
             
-            # 检测测试框架
+            # Detect test framework
             framework = self._detect_test_framework(full_test_path)
-            print(f"    🔍 检测到测试框架: {framework}")
+            print(f"    🔍 Detected test framework: {framework}")
             
-            # 根据框架选择运行命令
+            # Choose run command based on framework
             if framework == 'pytest':
-                # 使用 pytest 运行，-v 显示详细信息，-s 显示输出
+                # Use pytest to run, -v for verbose, --tb=short for traceback
                 cmd = [sys.executable, '-m', 'pytest', full_test_path, '-v', '--tb=short']
             else:
-                # 使用 unittest 方式运行（直接执行文件）
+                # Use unittest method (directly execute file)
                 cmd = [sys.executable, full_test_path]
             
-            # 运行测试
+            # Run test
             result = subprocess.run(
                 cmd,
                 cwd=self.source_dir,
@@ -195,24 +195,24 @@ class PureTestExecutor:
                 timeout=300
             )
             
-            # 保存日志文件
+            # Save log file
             if self.log_dir:
                 self._save_test_log(result, test_file_path, function_name, framework)
             
-            # 检查返回码（注意：即使所有测试都跳过，返回码也是0）
+            # Check return code (note: even if all tests are skipped, return code is 0)
             returncode_ok = result.returncode == 0
             
-            # 解析测试结果，传入框架类型以便正确解析
+            # Parse test results, pass framework type for correct parsing
             pass_ratio = self._parse_test_output(result.stdout, result.stderr, returncode_ok, framework)
             
-            # 判断是否真正全部通过：通过率必须大于0（排除全部跳过的情况）
+            # Determine if truly all passed: pass ratio must be > 0 (exclude all skipped case)
             all_passed = returncode_ok and pass_ratio > 0.0
             
             return all_passed, pass_ratio
             
         except subprocess.TimeoutExpired as e:
             print(f"Test timeout")
-            # 保存超时日志
+            # Save timeout log
             if self.log_dir:
                 self._save_timeout_log(test_file_path, function_name)
             return False, 0.0
@@ -223,21 +223,21 @@ class PureTestExecutor:
             return False, 0.0
     
     def _save_test_log(self, result: subprocess.CompletedProcess, test_file_path: str, function_name: str, framework: str = "unknown"):
-        """保存测试运行日志
+        """Save test run log
         
         Args:
-            result: subprocess 运行结果
-            test_file_path: 测试文件路径
-            function_name: 函数名
-            framework: 测试框架类型 (pytest/unittest)
+            result: subprocess run result
+            test_file_path: Test file path
+            function_name: Function name
+            framework: Test framework type (pytest/unittest)
         """
         try:
-            # 生成时间戳
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # 精确到毫秒
+            # Generate timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # Precise to milliseconds
             
-            # 生成日志文件名：函数名_时间戳.log
+            # Generate log file name: function_name_timestamp.log
             if function_name:
-                # 清理函数名中的特殊字符
+                # Clean special characters from function name
                 safe_function_name = re.sub(r'[^\w\-_.]', '_', function_name)
                 log_filename = f"{safe_function_name}_{timestamp}.log"
             else:
@@ -246,36 +246,36 @@ class PureTestExecutor:
             
             log_filepath = os.path.join(self.log_dir, log_filename)
             
-            # 写入日志内容
+            # Write log content
             with open(log_filepath, 'w', encoding='utf-8') as f:
                 f.write("=" * 80 + "\n")
-                f.write(f"测试时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"函数名: {function_name}\n")
-                f.write(f"测试文件: {test_file_path}\n")
-                f.write(f"测试框架: {framework}\n")
-                f.write(f"返回码: {result.returncode}\n")
+                f.write(f"Test time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Function name: {function_name}\n")
+                f.write(f"Test file: {test_file_path}\n")
+                f.write(f"Test framework: {framework}\n")
+                f.write(f"Return code: {result.returncode}\n")
                 f.write("=" * 80 + "\n\n")
                 
                 f.write("【STDOUT】\n")
                 f.write("-" * 80 + "\n")
-                f.write(result.stdout if result.stdout else "(无输出)\n")
+                f.write(result.stdout if result.stdout else "(no output)\n")
                 f.write("\n")
                 
                 f.write("【STDERR】\n")
                 f.write("-" * 80 + "\n")
-                f.write(result.stderr if result.stderr else "(无错误)\n")
+                f.write(result.stderr if result.stderr else "(no errors)\n")
                 f.write("\n")
                 
                 f.write("=" * 80 + "\n")
-                f.write("日志结束\n")
+                f.write("Log end\n")
             
-            print(f"    📝 日志已保存: {log_filename}")
+            print(f"    📝 Log saved: {log_filename}")
             
         except Exception as e:
-            print(f"    ⚠️  保存日志失败: {e}")
+            print(f"    ⚠️  Failed to save log: {e}")
     
     def _save_timeout_log(self, test_file_path: str, function_name: str):
-        """保存超时日志"""
+        """Save timeout log"""
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             safe_function_name = re.sub(r'[^\w\-_.]', '_', function_name) if function_name else 'unknown'
@@ -284,45 +284,45 @@ class PureTestExecutor:
             
             with open(log_filepath, 'w', encoding='utf-8') as f:
                 f.write("=" * 80 + "\n")
-                f.write(f"测试时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"函数名: {function_name}\n")
-                f.write(f"测试文件: {test_file_path}\n")
-                f.write(f"状态: 超时 (TIMEOUT)\n")
+                f.write(f"Test time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Function name: {function_name}\n")
+                f.write(f"Test file: {test_file_path}\n")
+                f.write(f"Status: Timeout (TIMEOUT)\n")
                 f.write("=" * 80 + "\n")
             
-            print(f"    📝 超时日志已保存: {log_filename}")
+            print(f"    📝 Timeout log saved: {log_filename}")
         except Exception as e:
-            print(f"    ⚠️  保存超时日志失败: {e}")
+            print(f"    ⚠️  Failed to save timeout log: {e}")
     
     def _parse_test_output(self, stdout: str, stderr: str, all_passed: bool, framework: str = "unittest") -> float:
-        """解析测试输出，提取通过率
+        """Parse test output, extract pass ratio
         
-        支持多种测试框架的输出格式：
+        Supports output formats from multiple test frameworks:
         - unittest: "Ran X tests", "FAILED (failures=Y)"
         - pytest: "X passed", "Y failed", "X passed in Xs"
-        - 字符统计: 优先统计 E/F/. 字符（最准确）
+        - Character statistics: prioritize counting E/F/. characters (most accurate)
         
-        注意：跳过的测试（skipped）不计入通过
+        Note: Skipped tests are not counted as passed
         
         Args:
-            stdout: 标准输出
-            stderr: 标准错误输出
-            all_passed: 返回码是否为0
-            framework: 测试框架类型 (pytest/unittest)
+            stdout: Standard output
+            stderr: Standard error output
+            all_passed: Whether return code is 0
+            framework: Test framework type (pytest/unittest)
         
         Returns:
-            float: 通过的测试用例比例 (0.0-1.0)
+            float: Ratio of passed test cases (0.0-1.0)
         """
         combined_output = stdout + stderr
         
-        # 如果是 pytest，优先使用 pytest 特定的解析方法
+        # If pytest, prioritize pytest-specific parsing method
         if framework == 'pytest':
             ratio = self._parse_pytest_output(combined_output, all_passed)
             if ratio is not None:
                 return ratio
         
-        # 检查是否所有测试都被跳过
-        # 例如: "Ran 11 tests in 0.000s\n\nOK (skipped=11)"
+        # Check if all tests are skipped
+        # Example: "Ran 11 tests in 0.000s\n\nOK (skipped=11)"
         import re
         ran_match = re.search(r'Ran (\d+) test', combined_output)
         skipped_match = re.search(r'skipped=(\d+)', combined_output)
@@ -331,38 +331,38 @@ class PureTestExecutor:
             total_tests = int(ran_match.group(1))
             skipped_tests = int(skipped_match.group(1))
             
-            # 如果所有测试都被跳过，返回0.0
+            # If all tests are skipped, return 0.0
             if total_tests == skipped_tests:
                 return 0.0
         
-        # 如果全部通过（且不是全部跳过），返回1.0
+        # If all passed (and not all skipped), return 1.0
         if all_passed:
-            # 再次检查是否有跳过的测试
+            # Check again if there are skipped tests
             if skipped_match and ran_match:
                 total_tests = int(ran_match.group(1))
                 skipped_tests = int(skipped_match.group(1))
-                # 如果有部分跳过，计算实际通过率
+                # If partially skipped, calculate actual pass ratio
                 if skipped_tests > 0 and total_tests > skipped_tests:
-                    # 有部分测试通过，部分跳过
+                    # Some tests passed, some skipped
                     passed_tests = total_tests - skipped_tests
                     return passed_tests / total_tests
             return 1.0
         
-        # 方法1：优先使用字符统计（unittest 实时输出的 E/F/.）
-        # 这是最准确的方法，因为每个测试都会输出一个字符
+        # Method 1: Prioritize character statistics (unittest real-time output E/F/.)
+        # This is the most accurate method, as each test outputs one character
         error_count = combined_output.count('E')
         failure_count = combined_output.count('F')
         passed_count = combined_output.count('.')
         
-        # 如果找到了字符统计标记，优先使用这个
+        # If character statistics markers are found, prioritize this
         if error_count > 0 or failure_count > 0 or passed_count > 0:
             total_from_chars = error_count + failure_count + passed_count
             if total_from_chars > 0:
-                # 验证：检查字符统计是否合理（避免匹配到代码中的字符）
-                # 通常测试输出的 E/F/. 会连续出现
+                # Validate: Check if character statistics are reasonable (avoid matching characters in code)
+                # Usually test output E/F/. appear consecutively
                 char_pattern = re.search(r'[EF.]{3,}', combined_output)
                 if char_pattern:
-                    # 只统计连续出现的测试标记字符
+                    # Only count consecutively appearing test marker characters
                     test_markers = char_pattern.group(0)
                     error_count = test_markers.count('E')
                     failure_count = test_markers.count('F')
@@ -372,13 +372,13 @@ class PureTestExecutor:
                     pass_ratio = passed_count / total_from_chars
                     return max(0.0, min(1.0, pass_ratio))
         
-        # 方法2：解析 unittest 文本格式
-        # 例如: "Ran 5 tests in 0.001s" 和 "FAILED (failures=2, errors=1, skipped=1)"
+        # Method 2: Parse unittest text format
+        # Example: "Ran 5 tests in 0.001s" and "FAILED (failures=2, errors=1, skipped=1)"
         ran_match = re.search(r'Ran (\d+) test', combined_output)
         if ran_match:
             total_tests = int(ran_match.group(1))
             
-            # 匹配失败数量、错误数量、跳过数量
+            # Match failure count, error count, skipped count
             failures = 0
             errors = 0
             skipped = 0
@@ -396,49 +396,49 @@ class PureTestExecutor:
                 skipped = int(skipped_match.group(1))
             
             if total_tests > 0:
-                # 通过的测试 = 总数 - 失败 - 错误 - 跳过
-                # 跳过的测试不应该算作通过
+                # Passed tests = total - failures - errors - skipped
+                # Skipped tests should not count as passed
                 passed_tests = total_tests - failures - errors - skipped
                 
-                # 确保通过率在 [0.0, 1.0] 范围内
+                # Ensure pass ratio is in [0.0, 1.0] range
                 passed_tests = max(0, min(passed_tests, total_tests))
                 return passed_tests / total_tests
         
-        # 尝试解析 pytest 格式
-        # 例如: "3 passed, 2 failed in 0.12s"
+        # Try to parse pytest format
+        # Example: "3 passed, 2 failed in 0.12s"
         pytest_match = re.search(r'(\d+) passed(?:, (\d+) failed)?', combined_output)
         if pytest_match:
             passed = int(pytest_match.group(1))
             failed = int(pytest_match.group(2)) if pytest_match.group(2) else 0
             total = passed + failed
             if total > 0:
-                # 确保通过率在 [0.0, 1.0] 范围内
+                # Ensure pass ratio is in [0.0, 1.0] range
                 pass_ratio = passed / total
                 return max(0.0, min(1.0, pass_ratio))
         
-        # 如果无法解析但测试失败了，返回0.0
+        # If cannot parse but test failed, return 0.0
         return 0.0
     
     def _parse_pytest_output(self, output: str, all_passed: bool) -> float:
-        """解析 pytest 的输出格式
+        """Parse pytest output format
         
-        Pytest 输出示例:
+        Pytest output examples:
         - "3 passed in 0.12s"
         - "1 failed, 2 passed in 0.12s"
         - "3 passed, 1 skipped in 0.12s"
         - "collected 3 items" ... "test_file.py::test_name PASSED"
         
         Args:
-            output: pytest 的输出
-            all_passed: 返回码是否为0
+            output: pytest output
+            all_passed: Whether return code is 0
             
         Returns:
-            float or None: 通过率，如果无法解析返回 None
+            float or None: Pass ratio, returns None if cannot parse
         """
         import re
         
-        # 方法1: 解析最后的汇总行 "X passed, Y failed in Zs"
-        # 匹配 "5 passed in 0.12s" 或 "2 failed, 3 passed in 0.12s"
+        # Method 1: Parse final summary line "X passed, Y failed in Zs"
+        # Match "5 passed in 0.12s" or "2 failed, 3 passed in 0.12s"
         summary_pattern = r'(?:(\d+) failed)?(?:, )?(?:(\d+) passed)?(?:, )?(?:(\d+) skipped)?(?:, )?(?:(\d+) error)?.*in ([\d.]+)s'
         summary_match = re.search(summary_pattern, output)
         
@@ -448,17 +448,17 @@ class PureTestExecutor:
             skipped = int(summary_match.group(3)) if summary_match.group(3) else 0
             errors = int(summary_match.group(4)) if summary_match.group(4) else 0
             
-            # 计算总测试数（不包括跳过的）
+            # Calculate total test count (excluding skipped)
             total = passed + failed + errors
             
-            # 如果所有测试都被跳过
+            # If all tests are skipped
             if total == 0 and skipped > 0:
                 return 0.0
             
             if total > 0:
                 return passed / total
         
-        # 方法2: 统计测试结果标记 PASSED / FAILED / ERROR / SKIPPED
+        # Method 2: Count test result markers PASSED / FAILED / ERROR / SKIPPED
         passed_count = len(re.findall(r'\bPASSED\b', output))
         failed_count = len(re.findall(r'\bFAILED\b', output))
         error_count = len(re.findall(r'\bERROR\b', output))
@@ -469,24 +469,24 @@ class PureTestExecutor:
         if total_from_markers > 0:
             return passed_count / total_from_markers
         
-        # 方法3: 检查 collected 行
-        # 例如: "collected 3 items"
+        # Method 3: Check collected line
+        # Example: "collected 3 items"
         collected_match = re.search(r'collected (\d+) items?', output)
         if collected_match:
             total_tests = int(collected_match.group(1))
             
-            # 如果 returncode 为 0 且没有找到失败信息，说明全部通过
+            # If returncode is 0 and no failure info found, all passed
             if all_passed and total_tests > 0:
-                # 检查是否全部被跳过
+                # Check if all are skipped
                 if skipped_count == total_tests:
                     return 0.0
                 return 1.0
         
-        # 如果返回码为0且找到了 passed，认为全部通过
+        # If return code is 0 and found passed, consider all passed
         if all_passed and 'passed' in output.lower():
             return 1.0
         
-        # 无法解析
+        # Cannot parse
         return None
 
 
@@ -507,7 +507,7 @@ def estimate_pass_at_k(num_samples, num_correct, k: int) -> np.ndarray:
 
 
 class ResultCollector:
-    """结果收集器"""
+    """Result collector"""
     
     def load_jsonl_data(self, file_path: str) -> List[Dict[str, Any]]:
         data = []
@@ -549,20 +549,20 @@ class ResultCollector:
         return pass_at_k
     
     def calculate_avg_pass_ratio(self, data_records: List[Dict[str, Any]]) -> float:
-        """计算平均通过率 - 更细粒度的指标
+        """Calculate average pass ratio - more fine-grained metric
         
-        对于每个任务(task_id/function_name)，计算其所有样本的通过率的平均值
-        然后对所有任务的平均通过率再求平均
+        For each task (task_id/function_name), calculate the average of pass ratios of all its samples
+        Then calculate the average of all tasks' average pass ratios
         
         Args:
-            data_records: 包含测试结果的记录列表
+            data_records: List of records containing test results
             
         Returns:
-            平均通过率 (0.0-1.0)
+            Average pass ratio (0.0-1.0)
         """
         group = {}
         for record in data_records:
-            # 使用 function_name 作为 task_id
+            # Use function_name as task_id
             task_id = record.get('function_name', '')
             if not task_id:
                 continue
@@ -570,28 +570,28 @@ class ResultCollector:
             if task_id not in group:
                 group[task_id] = []
                 
-            # 优先使用 pass_ratios 字段（新版本的细粒度数据）
+            # Prioritize pass_ratios field (new version fine-grained data)
             if 'pass_ratios' in record and record['pass_ratios']:
                 group[task_id].extend(record['pass_ratios'])
-            # 其次使用 passed 字段（兼容旧数据格式）
+            # Then use passed field (compatible with old data format)
             elif 'passed' in record:
                 group[task_id].append(record['passed'])
-            # 最后使用 results 字段（布尔值列表），计算通过率
+            # Finally use results field (boolean list), calculate pass ratio
             elif 'results' in record and record['results']:
-                # 计算这个 completion 的通过率
+                # Calculate pass ratio for this completion
                 pass_ratio = sum(record['results']) / len(record['results']) if len(record['results']) > 0 else 0.0
                 group[task_id].append(pass_ratio)
         
         if not group:
             return 0.0
         
-        # 对每个 task_id 计算平均通过率
+        # Calculate average pass ratio for each task_id
         task_avg_pass_ratios = []
         for task_id, pass_ratios in group.items():
             task_avg = np.mean(pass_ratios)
             task_avg_pass_ratios.append(task_avg)
         
-        # 返回所有任务的平均通过率
+        # Return average pass ratio of all tasks
         return np.mean(task_avg_pass_ratios)
 
 
@@ -607,11 +607,11 @@ def main():
     print("🔬 PURE MODE - Modify file, run test, restore")
     print("=" * 60)
     
-    # 创建日志目录（与输出文件同目录）
+    # Create log directory (same directory as output file)
     output_dir = os.path.dirname(args.output_file)
     log_dir = os.path.join(output_dir, 'logs')
     os.makedirs(log_dir, exist_ok=True)
-    print(f"📁 日志目录: {log_dir}")
+    print(f"📁 Log directory: {log_dir}")
     print()
     
     code_replacer = PureCodeReplacer()
@@ -667,19 +667,19 @@ def main():
         if test_code_path.startswith('code/'):
             test_code_path = test_code_path[5:]
         
-        # 备份原文件
+        # Backup original file
         backup_path = source_file_path + '.backup'
         shutil.copy2(source_file_path, backup_path)
         
         results = []
-        pass_ratios = []  # 新增：记录每个completion的通过率
+        pass_ratios = []  # New: record pass ratio for each completion
         
         try:
             for j, completion in enumerate(record['completions']):
                 print(f"  Testing completion {j+1}/{len(record['completions'])}")
                 
                 try:
-                    # 1. 修改源文件
+                    # 1. Modify source file
                     success = code_replacer.replace_function_in_file(
                         source_file_path,
                         record['implementation_location'],
@@ -690,40 +690,40 @@ def main():
                         results.append(False)
                         pass_ratios.append(0.0)
                         print(f"    Result: FAIL (replace failed)")
-                        # 还原文件
+                        # Restore file
                         shutil.copy2(backup_path, source_file_path)
                         continue
                     
-                    # 2. 运行测试
+                    # 2. Run test
                     test_passed, pass_ratio = test_executor.run_test_file(test_code_path, record['function_name'])
                     
                     results.append(test_passed)
                     pass_ratios.append(pass_ratio)
-                    print(f"    Result: {'PASS' if test_passed else 'FAIL'} (通过率: {pass_ratio:.2%})")
+                    print(f"    Result: {'PASS' if test_passed else 'FAIL'} (pass ratio: {pass_ratio:.2%})")
                     
-                    # 3. 还原文件（为下一个 completion 准备）
+                    # 3. Restore file (prepare for next completion)
                     shutil.copy2(backup_path, source_file_path)
                     
                 except Exception as e:
                     print(f"    Error: {e}")
                     results.append(False)
                     pass_ratios.append(0.0)
-                    # 确保还原文件
+                    # Ensure file is restored
                     shutil.copy2(backup_path, source_file_path)
         
         finally:
-            # 确保最后还原文件
+            # Ensure file is restored at the end
             if os.path.exists(backup_path):
                 shutil.copy2(backup_path, source_file_path)
                 os.remove(backup_path)
         
         record['results'] = results
-        record['pass_ratios'] = pass_ratios  # 新增：保存通过率信息
+        record['pass_ratios'] = pass_ratios  # New: save pass ratio information
     
     print(f"Saving results to {args.output_file}...")
     result_collector.save_jsonl_data(data_records, args.output_file)
     
-    # 计算指标
+    # Calculate metrics
     print("\nCalculating pass@k metrics...")
     pass_at_k_results = result_collector.calculate_pass_at_k(data_records)
     
