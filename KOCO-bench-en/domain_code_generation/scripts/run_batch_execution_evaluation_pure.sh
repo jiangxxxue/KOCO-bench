@@ -1,24 +1,41 @@
 #!/bin/bash
-# 批量执行代码评估（纯净模式）- 完全模拟手动操作，不做任何额外处理
+# Step 4: Batch execution evaluation
 
-# ========================================
-# 配置变量
-# ========================================
+# load common config
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-# 框架名称
-FRAMEWORK="${FRAMEWORK:-lightRAG}"
+# help information
+show_usage() {
+    echo "Usage: $0 --framework <name> --model <name> [options]"
+    echo ""
+    echo "Required:"
+    echo "  --framework FRAMEWORK  Framework name (e.g., verl, raganything)"
+    echo "  --model MODEL          Full model name (e.g., qwen/qwen-2.5-coder-32b-instruct)"
+    echo ""
+    echo "Optional:"
+    echo "  --help                 Show help"
+    echo ""
+    echo "Examples:"
+    echo "  bash $0 --framework verl --model qwen/qwen-2.5-coder-32b-instruct"
+}
 
-# 模型名称（子目录）
-MODEL_NAME="${MODEL_NAME:-qwen2.5-coder-7b-instruct}"
+# Parse CLI args
+parse_common_args "$@"
 
 # 数据源类型：data 或 rag（默认：data）
 DATA_SOURCE="${DATA_SOURCE:-data}"
+
+# check required parameters
+validate_required_params
+
+# Model directory name: strip provider prefix (e.g., qwen/xxx -> xxx)
+MODEL_DIR_NAME=$(basename "${MODEL_NAME}")
 
 # 项目根目录
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # 数据路径（根据DATA_SOURCE切换）
-DATA_DIR="${PROJECT_ROOT}/scripts/${DATA_SOURCE}/${FRAMEWORK}/${MODEL_NAME}"
+DATA_DIR="${PROJECT_ROOT}/scripts/${DATA_SOURCE}/${FRAMEWORK}/${MODEL_DIR_NAME}"
 
 # 评测脚本路径（纯净版）
 EVAL_SCRIPT="${PROJECT_ROOT}/scripts/run_execution_evaluation_pure.sh"

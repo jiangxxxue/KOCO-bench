@@ -1,19 +1,24 @@
 #!/bin/bash
 # 纯净模式执行代码评估 - 不做任何额外处理
 
-# ========================================
-# 配置变量
-# ========================================
+# load common config
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-FRAMEWORK="${FRAMEWORK:-verl}"
-TEST_EXAMPLE="${TEST_EXAMPLE:-prime}"
-MODEL_NAME="${MODEL_NAME:-qwen2.5-coder-7b-verl-ntp}"
 # 数据源类型：data 或 rag（默认：data）
 DATA_SOURCE="${DATA_SOURCE:-data}"
 
+# check required parameters
+validate_required_params
+if [ -z "${TEST_EXAMPLE:-}" ]; then
+    echo "❌ Error: TEST_EXAMPLE is not set (required a single test example as argument)"
+    echo "Usage: FRAMEWORK=xxx MODEL_NAME=xxx TEST_EXAMPLE=xxx bash $0"
+    exit 1
+fi
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MODEL_DIR_NAME=$(basename "${MODEL_NAME}")
 SOURCE_DIR="${PROJECT_ROOT}/${FRAMEWORK}/test_examples/${TEST_EXAMPLE}/code"
-DATA_DIR="${PROJECT_ROOT}/scripts/${DATA_SOURCE}/${FRAMEWORK}/${MODEL_NAME}"
+DATA_DIR="${PROJECT_ROOT}/scripts/${DATA_SOURCE}/${FRAMEWORK}/${MODEL_DIR_NAME}"
 INPUT_FILE="${DATA_DIR}/algorithm_methods_data_${TEST_EXAMPLE}_output.jsonl"
 OUTPUT_FILE="${DATA_DIR}/algorithm_methods_data_${TEST_EXAMPLE}_result.jsonl"
 

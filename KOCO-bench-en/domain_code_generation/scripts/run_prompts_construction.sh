@@ -1,20 +1,33 @@
 #!/bin/bash
-# 构建提示词 - 支持多框架、多测试实例
+# Step 2: Construct prompts
 
-# ========================================
-# 配置变量
-# ========================================
+# load common config
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-# verl tensorrt_model_optimizer
-# 框架名称
-FRAMEWORK="${FRAMEWORK:-verl}"
+# help information
+show_usage() {
+    echo "Usage: $0 --framework <name> [options]"
+    echo ""
+    echo "Required:"
+    echo "  --framework FRAMEWORK  Framework name (e.g., verl, raganything)"
+    echo ""
+    echo "Optional:"
+    echo "  --test-example NAME    Specify a single test example (default: process all)"
+    echo "  --help                 Show help"
+    echo ""
+    echo "Examples:"
+    echo "  bash $0 --framework verl"
+    echo "  bash $0 --framework verl --test-example prime"
+}
 
-# 测试示例名称（为空则处理所有）
+# Parse CLI args
+parse_common_args "$@"
+
+# test example name (process all if not specified)
 TEST_EXAMPLE="${TEST_EXAMPLE:-}"
 
-# 项目根目录
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT_DIR="${PROJECT_ROOT}/scripts"
+# check required parameters
+validate_framework
 
 # ========================================
 # 函数：处理单个测试示例
@@ -52,7 +65,7 @@ process_single_example() {
     fi
     
     # 运行构建脚本
-    cd "${SCRIPT_DIR}"
+    cd "${SCRIPTS_DIR}"
     python3 prompts_construction.py \
         --input "$data_file" \
         --metadata "$metadata_file" \

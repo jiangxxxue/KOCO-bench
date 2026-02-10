@@ -1,66 +1,38 @@
 #!/bin/bash
+# Step 3: Generate code via OpenRouter API
 
-# ========================================
-# OpenRouter API 代码生成脚本
-# ========================================
+# load common config
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/common.sh"
 
-# 默认配置
-DEFAULT_MODEL="qwen/qwen2.5-coder-7b-instruct"
-DEFAULT_FRAMEWORK="raganything"
-NUM_COMPLETIONS=1
+# help information
+show_usage() {
+    echo "Usage: $0 --framework <name> --model <name> [options]"
+    echo ""
+    echo "Required:"
+    echo "  --framework FRAMEWORK  Framework name (e.g., verl, raganything)"
+    echo "  --model MODEL          Full model name (e.g., qwen/qwen-2.5-coder-32b-instruct)"
+    echo ""
+    echo "Optional:"
+    echo "  --test-example NAME    Specify a single test example (default: process all)"
+    echo "  --num-completions N    Number of completions per sample (default: 1)"
+    echo "  --help                 Show help"
+    echo ""
+    echo "Environment variables:"
+    echo "  OPENROUTER_API_KEY     OpenRouter API Key (required, set via .env)"
+    echo ""
+    echo "Examples:"
+    echo "  bash $0 --framework verl --model qwen/qwen-2.5-coder-32b-instruct"
+    echo "  bash $0 --framework verl --model deepseek/deepseek-chat-v3.1 --test-example prime"
+}
 
-# 解析命令行参数
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --model)
-            MODEL_NAME="$2"
-            shift 2
-            ;;
-        --framework)
-            FRAMEWORK="$2"
-            shift 2
-            ;;
-        --test-example)
-            TEST_EXAMPLE="$2"
-            shift 2
-            ;;
-        --num-completions)
-            NUM_COMPLETIONS="$2"
-            shift 2
-            ;;
-        --help)
-            echo "用法: $0 [选项]"
-            echo ""
-            echo "选项:"
-            echo "  --model MODEL         模型名称 (默认: $DEFAULT_MODEL)"
-            echo "  --framework FRAMEWORK 框架名称 (默认: $DEFAULT_FRAMEWORK)"
-            echo "  --test-example NAME   指定单个测试实例"
-            echo "  --num-completions N   每个样本生成数量 (默认: 1)"
-            echo "  --help                显示帮助"
-            echo ""
-            echo "支持的模型:"
-            echo "  - qwen/qwen2.5-coder-7b-instruct"
-            echo "  - qwen/qwen2.5-coder-32b-instruct"
-            echo ""
-            echo "环境变量:"
-            echo "  OPENROUTER_API_KEY    OpenRouter API Key (必需)"
-            echo ""
-            echo "示例:"
-            echo "  export OPENROUTER_API_KEY='sk-or-v1-xxx'"
-            echo "  $0 --model qwen/qwen2.5-coder-7b-instruct --framework verl"
-            exit 0
-            ;;
-        *)
-            echo "❌ 未知参数: $1"
-            echo "使用 --help 查看帮助"
-            exit 1
-            ;;
-    esac
-done
+# Parse CLI args
+parse_common_args "$@"
 
-# 设置默认值
-MODEL_NAME="${MODEL_NAME:-$DEFAULT_MODEL}"
-FRAMEWORK="${FRAMEWORK:-$DEFAULT_FRAMEWORK}"
+# number of completions (default: 1)
+NUM_COMPLETIONS="${NUM_COMPLETIONS:-1}"
+
+# check required parameters
+validate_required_params
 
 # 检查 API Key
 if [ -z "$OPENROUTER_API_KEY" ]; then
@@ -76,9 +48,9 @@ fi
 # 处理模型名称：只取最后一部分（去掉 qwen/ 等前缀）
 MODEL_DIR_NAME=$(basename "${MODEL_NAME}")
 
-# 设置路径
-DATA_DIR="../data/${FRAMEWORK}"
-MODEL_OUTPUT_DIR="../data/${FRAMEWORK}/${MODEL_DIR_NAME}"
+# set data and model output directory, use absolute path to ensure correct path from any directory
+DATA_DIR="${SCRIPTS_DIR}/data/${FRAMEWORK}"
+MODEL_OUTPUT_DIR="${SCRIPTS_DIR}/data/${FRAMEWORK}/${MODEL_DIR_NAME}"
 
 # 创建输出目录
 mkdir -p "${MODEL_OUTPUT_DIR}"
@@ -103,21 +75,24 @@ if [ -n "$TEST_EXAMPLE" ]; then
     
     INPUT_FILE="${DATA_DIR}/algorithm_methods_data_${TEST_EXAMPLE}.jsonl"
     OUTPUT_FILE="${MODEL_OUTPUT_DIR}/algorithm_methods_data_${TEST_EXAMPLE}_output.jsonl"
+    LOG_FILE="${MODEL_OUTPUT_DIR}/algorithm_methods_data_${TEST_EXAMPLE}.log"
     
     if [ ! -f "$INPUT_FILE" ]; then
         echo "❌ 错误: 文件不存在: $INPUT_FILE"
         exit 1
     fi
     
-    python generate_completions_openrouter.py \
+    python3 "${SCRIPTS_DIR}/apicall/generate_completions_openrouter.py" \
         --model "${MODEL_NAME}" \
         --input_file "${INPUT_FILE}" \
         --output_file "${OUTPUT_FILE}" \
         --num_completions ${NUM_COMPLETIONS} \
-        --max_tokens 2048 \
+        --max_tokens 30000 \
         --temperature 0.0 \
         --top_p 1.0 \
-        --delay 0.5
+        --delay 0.5 \
+        --debug \
+        2>&1 | tee "${LOG_FILE}"
     
 else
     # 处理所有实例
@@ -141,18 +116,21 @@ else
     for input_file in "${TEST_FILES[@]}"; do
         filename=$(basename "$input_file" .jsonl)
         output_file="${MODEL_OUTPUT_DIR}/${filename}_output.jsonl"
+        LOG_FILE="${MODEL_OUTPUT_DIR}/${filename}.log"
         
         echo "处理: $(basename $input_file)"
         
-        if python generate_completions_openrouter.py \
+        if python3 "${SCRIPTS_DIR}/apicall/generate_completions_openrouter.py" \
             --model "${MODEL_NAME}" \
             --input_file "${input_file}" \
             --output_file "${output_file}" \
             --num_completions ${NUM_COMPLETIONS} \
-            --max_tokens 2048 \
+            --max_tokens 30000 \
             --temperature 0.0 \
             --top_p 1.0 \
-            --delay 0.5; then
+            --delay 0.5 \
+            --debug \
+            2>&1 | tee "${LOG_FILE}"; then
             ((SUCCESS++))
             echo "✅ 完成"
         else

@@ -1,19 +1,33 @@
 #!/bin/bash
-# 解析算法核心方法 - 支持多框架、多测试实例
+# Step 1: Parse algorithm methods
 
-# ========================================
-# 配置变量
-# ========================================
+# load common config
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-# 框架名称（verl, tensorrt_model_optimizer）
-FRAMEWORK="${FRAMEWORK:-verl}"
+# help information
+show_usage() {
+    echo "Usage: $0 --framework <name> [options]"
+    echo ""
+    echo "Required:"
+    echo "  --framework FRAMEWORK  Framework name (e.g., verl, raganything)"
+    echo ""
+    echo "Optional:"
+    echo "  --test-example NAME    Specify a single test example (default: process all)"
+    echo "  --help                 Show help"
+    echo ""
+    echo "Examples:"
+    echo "  bash $0 --framework verl"
+    echo "  bash $0 --framework verl --test-example prime"
+}
 
-# 测试示例名称（为空则处理所有）
+# Parse CLI args
+parse_common_args "$@"
+
+# test example name (process all if not specified)
 TEST_EXAMPLE="${TEST_EXAMPLE:-}"
 
-# 项目根目录
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT_DIR="${PROJECT_ROOT}/scripts"
+# check required parameters
+validate_framework
 
 # ========================================
 # 函数：处理单个测试示例
@@ -51,7 +65,7 @@ process_single_example() {
     mkdir -p "$output_dir"
     
     # 运行解析脚本
-    cd "${SCRIPT_DIR}"
+    cd "${SCRIPTS_DIR}"
     python3 parse_algorithm_methods.py \
         --input "$input_file" \
         --output "$output_file" \
