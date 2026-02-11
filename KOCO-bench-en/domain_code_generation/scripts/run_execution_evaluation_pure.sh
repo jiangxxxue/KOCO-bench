@@ -35,6 +35,32 @@ echo "输出文件: ${OUTPUT_FILE}"
 echo "========================================================"
 echo ""
 
+# Docker image name (must be built from Build-Env/Docker/Dockerfile.lightweight)
+DOCKER_IMAGE="koco-bench:lightweight"
+
+# Check if Docker daemon is running
+if ! docker info &>/dev/null; then
+    echo "❌ Error: Docker daemon is not running"
+    echo ""
+    echo "Please start Docker first:"
+    echo "  - macOS/Windows: Start Docker Desktop"
+    echo "  - Linux: sudo systemctl start docker"
+    exit 1
+fi
+
+# Check if Docker image exists
+if [ -z "$(docker images -q "$DOCKER_IMAGE" 2>/dev/null)" ]; then
+    echo "❌ Error: Docker image '${DOCKER_IMAGE}' does not exist"
+    echo ""
+    echo "Please build the image first:"
+    echo "  cd $(cd "$SCRIPTS_DIR/../../.." && pwd)"
+    echo "  docker build -f Build-Env/Docker/Dockerfile.lightweight -t ${DOCKER_IMAGE} Build-Env/Docker/"
+    exit 1
+fi
+
+echo "🐳 Docker image: ${DOCKER_IMAGE}"
+echo ""
+
 # 检查文件
 if [ ! -d "$SOURCE_DIR" ]; then
     echo "❌ 错误: 源代码目录不存在: $SOURCE_DIR"
@@ -46,12 +72,22 @@ if [ ! -f "$INPUT_FILE" ]; then
     exit 1
 fi
 
-# 运行纯净模式评估
-cd "${PROJECT_ROOT}/scripts"
-python3 execution_evaluation_pure.py \
-    --source_dir "$SOURCE_DIR" \
-    --input_file "$INPUT_FILE" \
-    --output_file "$OUTPUT_FILE"
+# Run execution evaluation in Docker container
+CONTAINER_MNT="/workspace/project"
+
+# Map host path to container path (PROJECT_ROOT -> /workspace/project)
+CONTAINER_SOURCE_DIR="${SOURCE_DIR/${PROJECT_ROOT}/${CONTAINER_MNT}}"
+CONTAINER_INPUT_FILE="${INPUT_FILE/${PROJECT_ROOT}/${CONTAINER_MNT}}"
+CONTAINER_OUTPUT_FILE="${OUTPUT_FILE/${PROJECT_ROOT}/${CONTAINER_MNT}}"
+
+docker run --rm \
+    --user "$(id -u):$(id -g)" \
+    -v "${PROJECT_ROOT}:${CONTAINER_MNT}" \
+    "${DOCKER_IMAGE}" \
+    python3 "${CONTAINER_MNT}/scripts/execution_evaluation_pure.py" \
+        --source_dir "$CONTAINER_SOURCE_DIR" \
+        --input_file "$CONTAINER_INPUT_FILE" \
+        --output_file "$CONTAINER_OUTPUT_FILE"
 
 if [ $? -eq 0 ]; then
     echo ""

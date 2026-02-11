@@ -29,7 +29,190 @@ Large language models excel at general programming tasks but struggle with domai
 2. **Realistic Evaluation**: Tasks require acquiring and applying domain knowledge, mimicking real-world development workflows
 3. **Challenging Scenarios**: Current state-of-the-art LLMs show limited performance, highlighting the need for better domain specialization methods
 
+## 🎯 Evaluation Tasks
+
+### Task 1: Domain Code Generation
+
+Multi-granularity code generation tasks with automated evaluation:
+
+- **Function-Level**: Generate individual functions based on specifications
+- **Module-Level**: Implement multiple related functions
+- **Project-Level**: Complete end-to-end project implementations
+
+Each task includes:
+- 📝 Detailed requirements and specifications from algorithm documentation
+- 🧪 Comprehensive test suites for automatic evaluation
+- 📊 Multiple evaluation metrics (pass@k, avg_pass_ratio, etc.)
+
+### Task 2: Domain Knowledge Understanding
+
+Multiple-choice Q&A tasks to assess domain comprehension across **6 frameworks**:
+
+| Dataset | Description |
+|---------|-------------|
+| **ascend-transformer-boost** | Ascend NPU transformer optimization |
+| **cosmos-rl** |  Cosmos RL framework concepts |
+| **robocasa** | Robot manipulation and simulation |
+| **trackerLab** |   Visual object tracking |
+| **triton-ascend** |  Triton compiler for Ascend |
+| **VSLAM-LAB** | Visual SLAM algorithms |
+
+Each question assesses:
+- ✅ API usage comprehension
+- ✅ Framework design patterns
+- ✅ Domain-specific constraints
+- ✅ Best practices and conventions
+- ✅ Architectural decisions
+
+## 🔧 Setup
+
+### 1. Build Docker Image
+
+Code evaluation (Task 1, Step 4) runs inside a Docker container. Build it first:
+
+```bash
+cd KOCO-bench/Build-Env/Docker
+docker build -f Dockerfile.lightweight -t koco-bench:lightweight .
+```
+
+> The evaluation pipeline expects the tag `koco-bench:lightweight`. Without it, the execution evaluation step will fail.
+
+### 2. Configure Environment
+
+We use the OpenRouter API for code generation or knowledge understanding evaluation, set your API key:
+
+```bash
+cp KOCO-bench-en/domain_code_generation/scripts/.env.example \
+   KOCO-bench-en/domain_code_generation/scripts/.env
+# then edit .env with your key
+```
+
+## 🚀 Usage
+
+### Task 1: Domain Code Generation Evaluation
+
+#### Full Pipeline (Step 1-5)
+
+Runs the complete pipeline end-to-end: parse algorithm methods, construct prompts, generate code via OpenRouter, execute evaluation in Docker, and aggregate metrics.
+
+```bash
+bash KOCO-bench-en/domain_code_generation/scripts/LLM_eval_openrouter.sh \
+  --framework <FRAMEWORK> \
+  --model <MODEL>
+```
+
+**Required parameters:**
+
+| Parameter | Description | Available values |
+|-----------|-------------|------------------|
+| `--framework` | Target framework to evaluate | `verl`, `raganything`, `smolagents`, `open-r1`, `tensorrt_model_optimizer` |
+| `--model` | OpenRouter model identifier | e.g. `qwen/qwen-2.5-coder-32b-instruct`, `deepseek/deepseek-chat-v3.1`, `openai/gpt-5-mini` |
+
+**Examples:**
+
+```bash
+# Evaluate Qwen on the verl framework
+bash KOCO-bench-en/domain_code_generation/scripts/LLM_eval_openrouter.sh \
+  --framework verl \
+  --model qwen/qwen-2.5-coder-32b-instruct
+```
+
+#### Evaluate & Aggregate Only (Steps 4-5)
+
+If you already have generated code (`_output.jsonl` files), use this to run only Docker execution evaluation and metrics aggregation:
+
+```bash
+bash KOCO-bench-en/domain_code_generation/scripts/run_docker_eval_and_aggregate.sh \
+  --framework <FRAMEWORK> \
+  --model <MODEL>
+```
+
+Takes the same `--framework`, `--model`, and `--test-example` parameters as above.
+
+**Examples:**
+
+```bash
+# Evaluate and aggregate for already-generated results
+bash KOCO-bench-en/domain_code_generation/scripts/run_docker_eval_and_aggregate.sh \
+  --framework verl \
+  --model qwen/qwen-2.5-coder-32b-instruct
+```
+
+#### Option 3: Training Custom Models
+
+```bash
+cd KOCO-bench-en/domain_code_generation/scripts
+
+# SFT Training
+bash sft/run_finetuning.sh
+
+# LoRA Training (parameter-efficient)
+bash lora/run_finetuning_lora.sh
+
+# Inference with trained model
+bash inference/start_inference_server.sh
+bash inference/run_batch_code_generation_with_server.sh
+```
+
+### Task 2: Domain Knowledge Understanding Evaluation
+
+#### Option 1: One-Click Evaluation (All Datasets)
+
+```bash
+cd KOCO-bench-en/domain_knowledge_understanding/scripts
+
+# Evaluate all datasets with default model
+bash run_evaluation_openrouter.sh
+
+# Or specify a different model
+MODEL="qwen/qwen-2.5-coder-32b-instruct" bash run_evaluation_openrouter.sh
+```
+
+#### Option 2: Evaluate Single Dataset
+
+```bash
+cd KOCO-bench-en/domain_knowledge_understanding/scripts
+
+# Evaluate only one dataset
+DATASET="cosmos-rl" bash run_evaluation_openrouter.sh
+
+# With custom model
+MODEL="anthropic/claude-sonnet-4.5" DATASET="robocasa" bash run_evaluation_openrouter.sh
+```
+
+#### Option 3: Using Python Script Directly
+
+```bash
+cd KOCO-bench-en/domain_knowledge_understanding/scripts
+
+python3 evaluation_openrouter.py \
+    --model "qwen/qwen2.5-coder-7b-instruct" \
+    --input ../problems/problems_cosmos-rl_EN.json \
+    --output ../results/qwen2.5-coder-7b-instruct/results_cosmos-rl.json \
+    --temperature 0.0 \
+    --max_tokens 4096
+```
+
+#### Option 4: Local Model Evaluation
+
+```bash
+cd KOCO-bench-en/domain_knowledge_understanding/scripts
+
+# Start inference server
+bash start_inference_server.sh
+
+# Run evaluation
+bash run_evaluation_local.sh
+
+# Stop server
+bash stop_inference_server.sh
+```
+
+
 ## 🏗️ Benchmark Structure
+
+<details>
+<summary>Click to expand full directory tree</summary>
 
 ```
 KOCO-bench/
@@ -79,236 +262,10 @@ KOCO-bench/
 │           ├── evaluation_openrouter.py
 │           ├── run_evaluation_openrouter.sh
 │           └── evaluation_local.py
-└── KOCO-bench-ch/                      # Chinese version 
+└── KOCO-bench-ch/                      # Chinese version
 ```
 
-## 🎯 Evaluation Tasks
-
-### Task 1: Domain Code Generation
-
-Multi-granularity code generation tasks with automated evaluation:
-
-- **Function-Level**: Generate individual functions based on specifications
-- **Module-Level**: Implement multiple related functions
-- **Project-Level**: Complete end-to-end project implementations
-
-Each task includes:
-- 📝 Detailed requirements and specifications from algorithm documentation
-- 🧪 Comprehensive test suites for automatic evaluation
-- 📊 Multiple evaluation metrics (pass@k, avg_pass_ratio, etc.)
-
-### Task 2: Domain Knowledge Understanding
-
-Multiple-choice Q&A tasks to assess domain comprehension across **6 frameworks**:
-
-| Dataset | Description |
-|---------|-------------|
-| **ascend-transformer-boost** | Ascend NPU transformer optimization |
-| **cosmos-rl** |  Cosmos RL framework concepts |
-| **robocasa** | Robot manipulation and simulation |
-| **trackerLab** |   Visual object tracking |
-| **triton-ascend** |  Triton compiler for Ascend |
-| **VSLAM-LAB** | Visual SLAM algorithms |
-
-Each question assesses:
-- ✅ API usage comprehension
-- ✅ Framework design patterns
-- ✅ Domain-specific constraints
-- ✅ Best practices and conventions
-- ✅ Architectural decisions
-
-## 🔧 Build Environment
-
-### Framework: Verl & Open-R1
-
-#### Step 1: Pull the Base Image
-First, pull the official verl base image from Docker Hub:
-
-```
-docker pull verlai/verl:base-verl0.4-cu124-cudnn9.8-torch2.6-fa2.7.4
-```
-Step 2: Build the Custom Image
-Navigate to the Dockerfile directory and build:
-
-```
-cd KOCO-bench/Build-Env/Docker
-
-# Build the image
-docker build \
-  -f Dockerfile.app.kocobench.verl.openr1 \
-  -t kocobench/verl-openr1:v0.4 \
-  .
-```
-
-
-### Framework: RAGAnything & SmolAgents
-
-#### Step 1: Pull the Base Image
-
-First, pull the official Python base image from Docker Hub:
-
-```bash
-docker pull python:3.10-slim
-```
-
-#### Step 2: Build the Custom Image
-
-Navigate to the Dockerfile directory and build:
-
-```bash
-cd KOCO-bench/Build-Env/Docker
-
-# Build the image
-docker build \
-  -f Dockerfile.raganything.smolagents \
-  -t raganything-smolagents:test \
-  .
-```
-
-
-### Framework: Tensorrt-Model-Optimizer
-
-#### Step 1: Pull the Base Image
-
-First, pull the official NVIDIA CUDA base image from Docker Hub:
-
-```bash
-docker pull nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
-```
-
----
-
-#### Step 2: Build the Custom Image
-
-Navigate to the Dockerfile directory and build:
-
-```bash
-cd KOCO-bench/Build-Env/Docker/tensorrt-env
-
-# Use Conda
-./build.sh
-
-# Or Use Pip
-./build.sh -p
-```
-
-
-## 🚀 Quick Start
-
-### Task 1: Domain Code Generation Evaluation
-
-#### Option 1: One-Click Evaluation with OpenRouter
-
-```bash
-# Configure API key in the script first
-export OPENROUTER_API_KEY='sk-or-v1-xxx'
-
-# Run complete code generation evaluation pipeline
-bash KOCO-bench-en/domain_code_generation/scripts/LLM_eval_openrouter.sh
-```
-
-#### Option 2: Step-by-Step Evaluation
-
-```bash
-cd KOCO-bench-en/domain_code_generation/scripts
-
-# 1. Parse algorithm methods
-bash run_parse_algorithm_methods.sh
-
-# 2. Construct prompts
-bash run_prompts_construction.sh
-
-# 3. Generate code 
-# (using OpenRouter API)
-bash apicall/run_openrouter.sh --framework verl --model qwen/qwen2.5-coder-32b-instruct
-
-# (using local model)
-bash inference/start_inference_server.sh
-bash inference/run_batch_code_generation_with_server.sh
-bash inference/stop_inference_server.sh
-
-# 4. Execute evaluation
-bash run_batch_execution_evaluation_pure.sh
-
-# 5. Aggregate metrics
-python aggregate_metrics.py \
-  --model_dir data/verl/qwen2.5-coder-32b-instruct-simple \
-  --test_examples prime ARES LUFFY PURE
-```
-
-#### Option 3: Training Custom Models
-
-```bash
-cd KOCO-bench-en/domain_code_generation/scripts
-
-# SFT Training
-bash sft/run_finetuning.sh
-
-# LoRA Training (parameter-efficient)
-bash lora/run_finetuning_lora.sh
-
-# Inference with trained model
-bash inference/start_inference_server.sh
-bash inference/run_batch_code_generation_with_server.sh
-```
-
-### Task 2: Domain Knowledge Understanding Evaluation
-
-#### Option 1: One-Click Evaluation (All Datasets)
-
-```bash
-cd KOCO-bench-en/domain_knowledge_understanding/scripts
-
-# Set API key
-export OPENROUTER_API_KEY='sk-or-v1-xxx'
-
-# Evaluate all datasets with default model
-bash run_evaluation_openrouter.sh
-
-# Or specify a different model
-MODEL="qwen/qwen-2.5-coder-32b-instruct" bash run_evaluation_openrouter.sh
-```
-
-#### Option 2: Evaluate Single Dataset
-
-```bash
-cd KOCO-bench-en/domain_knowledge_understanding/scripts
-
-# Evaluate only one dataset
-DATASET="cosmos-rl" bash run_evaluation_openrouter.sh
-
-# With custom model
-MODEL="anthropic/claude-sonnet-4.5" DATASET="robocasa" bash run_evaluation_openrouter.sh
-```
-
-#### Option 3: Using Python Script Directly
-
-```bash
-cd KOCO-bench-en/domain_knowledge_understanding/scripts
-
-python3 evaluation_openrouter.py \
-    --model "qwen/qwen2.5-coder-7b-instruct" \
-    --input ../problems/problems_cosmos-rl_EN.json \
-    --output ../results/qwen2.5-coder-7b-instruct/results_cosmos-rl.json \
-    --temperature 0.0 \
-    --max_tokens 4096
-```
-
-#### Option 4: Local Model Evaluation
-
-```bash
-cd KOCO-bench-en/domain_knowledge_understanding/scripts
-
-# Start inference server
-bash start_inference_server.sh
-
-# Run evaluation
-bash run_evaluation_local.sh
-
-# Stop server
-bash stop_inference_server.sh
-```
-
+</details>
 
 ## 📖 Documentation
 

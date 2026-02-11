@@ -1,0 +1,31 @@
+FROM python:3.10-slim
+WORKDIR /workspace
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential && rm -rf /var/lib/apt/lists/*
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
+
+# L1: PyTorch CPU-only
+RUN pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# L2: raganything (skip mineru[core]) + its import-time transitive deps
+RUN pip install raganything --no-deps && \
+    pip install lightrag-hku openai python-dotenv aiohttp python-frontmatter
+
+# L3: nvidia-modelopt (small package, brings scipy/pydantic/ninja)
+RUN pip install nvidia-modelopt
+
+# L4: sentence-transformers (brings transformers + scikit-learn)
+RUN pip install sentence-transformers
+
+# L5: smolagents + examples project deps
+RUN pip install smolagents && \
+    pip install sqlalchemy datasets mcp \
+    langchain langchain-community langchain-chroma langchain-huggingface
+
+# L6: remaining test deps
+COPY requirements-test.txt .
+RUN pip install -r requirements-test.txt
+
+CMD ["/bin/bash"]

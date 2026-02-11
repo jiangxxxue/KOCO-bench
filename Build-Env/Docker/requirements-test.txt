@@ -1,0 +1,12 @@
+numpy
+pandas
+omegaconf
+pytest
+pytest-asyncio
+rich
+requests
+starlette
+httpx
+anyio
+Pillow
+jinja2
