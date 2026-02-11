@@ -91,7 +91,7 @@ cp KOCO-bench-en/domain_code_generation/scripts/.env.example \
 
 ### Task 1: Domain Code Generation Evaluation
 
-#### Full Pipeline (Step 1-5)
+#### Option 1: Full Pipeline (Step 1-5)
 
 Runs the complete pipeline end-to-end: parse algorithm methods, construct prompts, generate code via OpenRouter, execute evaluation in Docker, and aggregate metrics.
 
@@ -117,7 +117,7 @@ bash KOCO-bench-en/domain_code_generation/scripts/LLM_eval_openrouter.sh \
   --model qwen/qwen-2.5-coder-32b-instruct
 ```
 
-#### Evaluate & Aggregate Only (Steps 4-5)
+#### Option 2: Evaluate & Aggregate Only (Steps 4-5)
 
 If you already have generated code (`_output.jsonl` files), use this to run only Docker execution evaluation and metrics aggregation:
 
