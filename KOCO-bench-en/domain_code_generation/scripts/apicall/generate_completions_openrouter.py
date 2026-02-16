@@ -9,6 +9,8 @@ import argparse
 import time
 from typing import List, Dict, Any
 import logging
+
+import httpx
 from openai import OpenAI
 
 # 设置日志
@@ -177,6 +179,12 @@ def main():
                         help="API 调用延迟（秒）")
     parser.add_argument("--debug", action="store_true",
                         help="启用调试模式，显示详细请求/响应信息")
+    parser.add_argument("--timeout", type=float, default=300,
+                        help="API 读取超时（秒，默认 300）")
+    parser.add_argument("--connect_timeout", type=float, default=30,
+                        help="API 连接超时（秒，默认 30）")
+    parser.add_argument("--max_retries", type=int, default=5,
+                        help="请求失败时最大重试次数（默认 5）")
     
     args = parser.parse_args()
     
@@ -195,10 +203,14 @@ def main():
     logger.info(f"🔧 初始化 OpenRouter 客户端")
     logger.info(f"   模型: {args.model}")
     logger.info(f"   每个样本生成: {args.num_completions} 个候选")
+    logger.info(f"   超时: {args.timeout}s (连接: {args.connect_timeout}s)")
+    logger.info(f"   最大重试: {args.max_retries}")
     
     client = OpenAI(
         api_key=args.api_key,
-        base_url=args.base_url
+        base_url=args.base_url,
+        timeout=httpx.Timeout(args.timeout, connect=args.connect_timeout),
+        max_retries=args.max_retries,
     )
     
     # 生成代码
