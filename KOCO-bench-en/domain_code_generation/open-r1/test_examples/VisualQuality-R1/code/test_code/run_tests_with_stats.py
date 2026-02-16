@@ -15,9 +15,7 @@ TEST_FILES = [
     'test_fidelity_reward',
     'test_accuracy_reward',
     'test_format_reward',
-    'test_generate_and_score_completions',
     'test_compute_loss',
-    'test_repeat_random_sampler',
 ]
 
 

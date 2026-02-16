@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DAPO Core Function Test Runner - With Detailed Statistics
+PRIME Core Functionality Test Runner - with detailed statistics
 Run all tests and generate detailed test pass rate reports
 """
 
@@ -11,7 +11,7 @@ from io import StringIO
 from typing import Dict, List, Tuple
 import time
 
-# Add verl directory to Python path
+# Add parent directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
@@ -44,7 +44,7 @@ def run_test_module(module_name: str, description: str) -> TestResult:
     Run a single test module and return detailed results
     
     Args:
-        module_name: Test module name (e.g., 'test_agg_loss')
+        module_name: Test module name (e.g., 'test_ce_dpo_loss')
         description: Test description
     
     Returns:
@@ -80,7 +80,9 @@ def run_test_module(module_name: str, description: str) -> TestResult:
         result.errors_detail = [(str(test), traceback) for test, traceback in test_result.errors]
         
     except Exception as e:
-        print(f"✗ Error loading or running tests: {e}")
+        print(f"✗ Error loading or running test: {e}")
+        import traceback
+        traceback.print_exc()
         result.errors = 1
         result.total = 1
         result.errors_detail = [("Module Load Error", str(e))]
@@ -105,7 +107,7 @@ def print_final_report(results: List[TestResult]):
     """Print final test report"""
     print("\n\n")
     print("="*100)
-    print(" "*35 + "DAPO Core Function Test Report")
+    print(" "*35 + "PRIME Core Functionality Test Report")
     print("="*100)
     
     # Calculate overall statistics
@@ -195,29 +197,64 @@ def print_final_report(results: List[TestResult]):
 def main():
     """Main function: Run all tests and generate report"""
     print("="*100)
-    print(" "*30 + "DAPO Core Function Tests Starting")
+    print(" "*30 + "PRIME Core Functionality Tests Starting")
     print("="*100)
     
-    # Verify environment
+    # Verify test environment
     print("\nVerifying test environment:")
-    print("  ✓ Test environment ready")
+    parent_dir = os.path.join(os.path.dirname(__file__), '..')
+    print(f"  • Working directory: {parent_dir}")
+    
+    # Check key files
+    key_files = [
+        "recipe/prime/prime_core_algos.py",
+        "recipe/prime/prime_dp_rm.py",
+        "recipe/prime/prime_ray_trainer.py",
+    ]
+    
+    for file_path in key_files:
+        full_path = os.path.join(parent_dir, file_path)
+        if os.path.exists(full_path):
+            print(f"  ✓ {file_path} exists")
+        else:
+            print(f"  ⚠ {file_path} does not exist")
     
     # Define tests to run
     test_modules = [
         {
-            'module': 'test_agg_loss',
-            'description': 'agg_loss (Flexible Loss Aggregation)',
+            'module': 'test_ce_dpo_loss',
+            'description': 'CE DPO Loss (Cross-Entropy DPO Loss)',
             'category': 'Core Algorithm'
         },
         {
-            'module': 'test_compute_policy_vanilla',
-            'description': 'compute_policy_loss_vanilla (Decoupled Clipping Policy Gradient)',
+            'module': 'test_detach_dpo_loss',
+            'description': 'Detach DPO Loss (Detached DPO Loss)',
             'category': 'Core Algorithm'
         },
         {
-            'module': 'test_dapo_reward_manager',
-            'description': 'DAPORewardManager.__call__ (Overlong Reward Shaping)',
-            'category': 'Reward Management'
+            'module': 'test_dpo_abs_accuracy',
+            'description': 'DPO Absolute Accuracy (DPO Abs Accuracy)',
+            'category': 'Metrics'
+        },
+        {
+            'module': 'test_dpo_accuracy',
+            'description': 'DPO Accuracy (DPO Accuracy)',
+            'category': 'Metrics'
+        },
+        {
+            'module': 'test_filter_and_downsample',
+            'description': 'Filter and Downsample (Data Filtering and Downsampling)',
+            'category': 'Data Processing'
+        },
+        {
+            'module': 'test_forward_micro_batch',
+            'description': '_forward_micro_batch (Implicit Process Reward Computation)',
+            'category': 'Reward Model'
+        },
+        {
+            'module': 'test_rloo_advantage_return',
+            'description': 'RLOO Advantage Return (RLOO Advantage and Return Computation)',
+            'category': 'Core Algorithm'
         }
     ]
     
@@ -243,4 +280,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
