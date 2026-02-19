@@ -64,10 +64,17 @@ COPY requirements.txt /tmp/requirements.txt
 # 安装 PyTorch (带 CUDA 12.1 支持)
 RUN pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 
-# 安装其他依赖（排除 torch 相关的包，因为已经安装）
+# 安装关键依赖（测试必须的包，安装失败则构建失败）
+RUN pip install --no-cache-dir \
+    regex \
+    nvidia-modelopt
+
+# 安装其他依赖（排除 torch 相关和已安装的关键包）
 RUN grep -v "^torch" /tmp/requirements.txt | \
     grep -v "nvidia-cu" | \
-    grep -v "triton" > /tmp/requirements_filtered.txt && \
+    grep -v "triton" | \
+    grep -v "^regex==" | \
+    grep -v "^nvidia-modelopt==" > /tmp/requirements_filtered.txt && \
     pip install --no-cache-dir -r /tmp/requirements_filtered.txt || true && \
     rm /tmp/requirements.txt /tmp/requirements_filtered.txt
 
@@ -77,6 +84,8 @@ WORKDIR /workspace
 # 验证安装
 RUN python --version && \
     python -c "import torch; print(f'PyTorch: {torch.__version__}')" && \
+    python -c "import regex; print('regex: OK')" && \
+    python -c "import modelopt; print(f'ModelOpt: {modelopt.__version__}')" && \
     python -c "import nemo; print(f'NeMo: {nemo.__version__}')" || echo "NeMo import check skipped"
 
 # 默认命令
