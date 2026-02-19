@@ -29,11 +29,9 @@ RUN pip install -U pip setuptools wheel && \
         mcp \
         python-frontmatter
 
-
 RUN pip install \
         smolagents[litellm,mcp] \
-        dataset \
-        "langchain<0.1" \
+        datasets \
         langchain-huggingface
 
 CMD ["/bin/bash"]
