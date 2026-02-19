@@ -4,18 +4,24 @@ import sys
 import os
 from unittest.mock import MagicMock, patch
 
-# Add the verl directory to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'verl'))
+# Add project root (the parent of `verl`) to Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-# Import the actual class and components we want to test
+# Import the actual components we want to test.
+# `ProcessRewardModelWorker` may pull in optional runtime deps (e.g., vllm),
+# while these tests mainly exercise white-box logic and DataProto interfaces.
 try:
-    from verl.workers.fsdp_workers import ProcessRewardModelWorker
     from verl.protocol import DataProto
     VERL_AVAILABLE = True
 except ImportError:
     VERL_AVAILABLE = False
-    ProcessRewardModelWorker = None
     DataProto = None
+
+try:
+    from verl.workers.fsdp_workers import ProcessRewardModelWorker
+except ImportError:
+    class ProcessRewardModelWorker:  # Fallback for MagicMock(spec=...)
+        pass
 
 
 class TestComputeRmScore(unittest.TestCase):
