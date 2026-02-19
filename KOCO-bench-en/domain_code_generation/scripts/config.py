@@ -88,12 +88,11 @@ def get_metadata_path(framework: str) -> Path:
 # Docker image mapping
 # ---------------------------------------------------------------------------
 DOCKER_IMAGES = {
-    "verl": "koco-eval-verl",
-    "open-r1": "koco-eval-verl",
-    "raganything": "koco-eval-rag",
-    "smolagents": "koco-eval-rag",
+    "verl": "kocobench/verl-openr1:v0.4",
+    "open-r1": "kocobench/verl-openr1:v0.4",
+    "raganything": "raganything-smolagents:test",
+    "smolagents": "raganything-smolagents:test",
     "tensorrt_model_optimizer": "tensorrt:latest",
-    #"tensorrt_model_optimizer": "koco-eval-trt",
 }
 
 
