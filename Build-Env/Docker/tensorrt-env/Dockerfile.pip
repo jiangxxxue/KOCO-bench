@@ -56,7 +56,7 @@ RUN add-apt-repository ppa:deadsnakes/ppa && \
     rm -rf /var/lib/apt/lists/*
 
 # 升级 pip
-RUN python -m pip install --upgrade pip setuptools wheel
+RUN python -m pip install pip==25.3 setuptools==80.9.0 wheel==0.45.1
 
 # 复制 requirements 文件
 COPY requirements.txt /tmp/requirements.txt
