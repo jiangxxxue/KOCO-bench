@@ -8,22 +8,40 @@ from starlette.testclient import TestClient
 class TestMCPServerIntegration(unittest.TestCase):
     """Tests the MCP server integration functionality."""
 
-    @patch('server.main.MCPClient')
-    @patch('server.main.InferenceClientModel')
-    def setUp(self, MockInferenceClientModel, MockMCPClient):
-        """Set up the test client for the Starlette app."""
-        # Mock the MCPClient to return a mock with a get_tools method
-        self.mock_mcp_client_instance = MagicMock()
-        self.mock_mcp_client_instance.get_tools.return_value = [MagicMock()]
-        MockMCPClient.return_value = self.mock_mcp_client_instance
+    @classmethod
+    def setUpClass(cls):
+        """Patch smolagents classes before server.main is imported so
+        module-level instantiation uses mocks instead of real clients."""
+        cls.mock_mcp_client_instance = MagicMock()
+        cls.mock_mcp_client_instance.get_tools.return_value = [MagicMock()]
 
-        # Mock the InferenceClientModel
-        self.mock_model_instance = MagicMock()
-        MockInferenceClientModel.return_value = self.mock_model_instance
-        
-        # Now that mocks are in place, we can import the app
+        cls.mock_model_instance = MagicMock()
+
+        cls._patcher_mcp = patch('smolagents.MCPClient', return_value=cls.mock_mcp_client_instance)
+        cls._patcher_model = patch('smolagents.InferenceClientModel', return_value=cls.mock_model_instance)
+        cls._patcher_agent = patch('smolagents.CodeAgent')
+
+        cls._patcher_mcp.start()
+        cls._patcher_model.start()
+        cls._patcher_agent.start()
+
+        # Force a fresh import so module-level code runs with mocked deps
+        sys.modules.pop('server.main', None)
+        sys.modules.pop('server', None)
+
         from server.main import app
-        self.client = TestClient(app)
+        cls.app = app
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._patcher_mcp.stop()
+        cls._patcher_model.stop()
+        cls._patcher_agent.stop()
+        sys.modules.pop('server.main', None)
+        sys.modules.pop('server', None)
+
+    def setUp(self):
+        self.client = TestClient(self.app)
 
     def test_homepage_endpoint(self):
         """Test that the homepage endpoint returns a 200 OK response."""
@@ -34,30 +52,21 @@ class TestMCPServerIntegration(unittest.TestCase):
     @patch('server.main.to_thread.run_sync')
     def test_chat_endpoint_success(self, mock_run_sync):
         """Test the /chat endpoint for a successful agent run."""
-        # --- Mock Initialization ---
         expected_result = "The agent ran successfully."
         mock_run_sync.return_value = expected_result
 
-        # --- Make the request ---
         message = "This is a test message."
         response = self.client.post("/chat", json={"message": message})
 
-        # --- Assertions ---
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"reply": expected_result})
-        
-        # Assert that the agent's run method was called via the thread
+
         mock_run_sync.assert_called_once()
-        # The first argument to run_sync is the function to run (agent.run)
-        # The second is the argument to that function (the message)
         self.assertEqual(mock_run_sync.call_args[0][1], message)
 
     def tearDown(self):
-        """Disconnect the client after tests."""
-        # The shutdown event handler in the app will call this.
-        # We can also call it explicitly if needed, but TestClient handles shutdown.
         pass
 
-# This allows the test to be run from the command line
+
 if __name__ == '__main__':
     unittest.main()
