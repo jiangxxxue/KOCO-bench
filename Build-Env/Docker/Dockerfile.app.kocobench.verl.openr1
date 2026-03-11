@@ -41,5 +41,12 @@ RUN pip3 install --no-cache-dir "transformers[hf_xet]<4.52.0"
 RUN pip3 install --no-cache-dir mbridge
 
 
-# Custon Config for KOCO-Bench
-RUN pip3 install --no-cache-dir "trl==0.19.1" "math_verify==0.9.0" "Levenshtein==0.27.3" "json_repair==0.56.0" "transformers==4.52.4"
+# Custom Config for KOCO-Bench
+RUN pip3 install --no-cache-dir "trl==0.19.1" "math_verify==0.9.0" "Levenshtein==0.27.3" "json_repair==0.56.0" "transformers==4.52.4" \
+    "Babel>=2.16.0" "openai>=1.0.0"
+
+# Remove apex: the base image ships a build without the deprecated amp sub-module,
+# causing `from apex import amp` to fail in TRL / open-r1 code.
+# Uninstalling makes is_apex_available() return False, skipping the broken path.
+# torch.cuda.amp is the modern replacement and is already available.
+RUN pip uninstall -y apex
