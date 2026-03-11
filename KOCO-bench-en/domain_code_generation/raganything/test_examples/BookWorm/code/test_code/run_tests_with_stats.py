@@ -57,7 +57,7 @@ def run_test_file(test_file, description):
     plugin = StatsPlugin()
     start_time = time.time()
 
-    pytest.main([test_file, "-v", "--tb=short", "-q"], plugins=[plugin])
+    exit_code = pytest.main([test_file, "-v", "--tb=short", "-q"], plugins=[plugin])
 
     end_time = time.time()
 
@@ -69,7 +69,7 @@ def run_test_file(test_file, description):
         'errors': plugin.errors,
         'skipped': plugin.skipped,
         'time': end_time - start_time,
-        'success': plugin.success
+        'success': plugin.success and exit_code == 0 and plugin.total > 0
     }
 
 
