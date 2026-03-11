@@ -35,6 +35,7 @@ class ColoredTextTestResult(unittest.TextTestResult):
     
     def __init__(self, stream, descriptions, verbosity):
         super().__init__(stream, descriptions, verbosity)
+        self.verbosity = verbosity
         self.test_results = []
         self.start_time = None
         
@@ -122,9 +123,9 @@ def run_test_module(module_name, verbosity=2):
     # 动态导入测试模块
     try:
         test_module = __import__(module_name)
-    except ImportError as e:
+    except (ImportError, Exception) as e:
         print(f"✗ Failed to import {module_name}: {e}")
-        return None
+        return ("IMPORT_ERROR", module_name, str(e))
     
     # 创建测试套件
     loader = unittest.TestLoader()
@@ -144,17 +145,28 @@ def generate_statistics(all_results):
     """生成统计报告"""
     print_header("Test Statistics")
     
+    # 统计导入失败
+    import_failures = []
+    for result in all_results:
+        if isinstance(result, tuple) and result[0] == "IMPORT_ERROR":
+            import_failures.append((result[1], result[2]))
+    
+    if import_failures:
+        print_section("Import Failures")
+        for module_name, error_msg in import_failures:
+            print(f"  ✗ {module_name}: {error_msg}")
+    
     # 收集所有测试结果
     all_test_results = []
     for result in all_results:
-        if result and hasattr(result, 'test_results'):
+        if result and not isinstance(result, tuple) and hasattr(result, 'test_results'):
             all_test_results.extend(result.test_results)
     
     # 计算统计数据
     total_tests = len(all_test_results)
     passed = sum(1 for r in all_test_results if r.status == 'PASS')
     failed = sum(1 for r in all_test_results if r.status == 'FAIL')
-    errors = sum(1 for r in all_test_results if r.status == 'ERROR')
+    errors = sum(1 for r in all_test_results if r.status == 'ERROR') + len(import_failures)
     skipped = sum(1 for r in all_test_results if r.status == 'SKIP')
     
     total_duration = sum(r.duration for r in all_test_results)
@@ -309,11 +321,14 @@ def main():
     print_header("Overall Result")
     print(f"Total execution time: {total_time:.3f}s")
     
-    if stats['failed'] == 0 and stats['errors'] == 0:
+    if stats['total'] == 0 and stats['errors'] == 0:
+        print("\n✗ No tests were collected! All modules failed to import.")
+        exit_code = 1
+    elif stats['failed'] == 0 and stats['errors'] == 0:
         print("\n✓ All tests passed!")
         exit_code = 0
     else:
-        print(f"\n✗ {stats['failed'] + stats['errors']} test(s) failed!")
+        print(f"\n✗ {stats['failed'] + stats['errors']} test(s) failed or errored!")
         exit_code = 1
     
     # 保存报告
