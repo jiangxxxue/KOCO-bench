@@ -3,7 +3,7 @@
 FROM verlai/verl:base-verl0.4-cu124-cudnn9.8-torch2.6-fa2.7.4
 
 # Define environments
-ENV MAX_JOBS=32
+ENV MAX_JOBS=4
 ENV VLLM_WORKER_MULTIPROC_METHOD=spawn
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_OPTIONS=""
