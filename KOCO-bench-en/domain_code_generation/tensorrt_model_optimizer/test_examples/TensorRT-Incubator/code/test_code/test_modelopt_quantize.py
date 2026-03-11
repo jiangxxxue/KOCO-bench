@@ -103,9 +103,10 @@ class TestModeloptQuantize(unittest.TestCase):
         return SimpleGPT2Model()
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
+    @patch('examples.nanogpt.quantization.mtq')
     @patch('examples.nanogpt.quantization.AutoTokenizer')
     @patch('examples.nanogpt.quantization.create_forward_loop')
-    def test_int8_weight_only_quantization(self, mock_create_loop, mock_tokenizer_cls):
+    def test_int8_weight_only_quantization(self, mock_create_loop, mock_tokenizer_cls, patched_mtq):
         """
         Test case 1: INT8 weight-only quantization mode
         
@@ -123,13 +124,14 @@ class TestModeloptQuantize(unittest.TestCase):
         mock_forward_loop = MagicMock()
         mock_create_loop.return_value = mock_forward_loop
         
-        mock_mtq.quantize.return_value = self.test_model
+        patched_mtq.INT8_DEFAULT_CFG = {"quant_cfg": {}}
+        patched_mtq.quantize.return_value = self.test_model
         
         # Execute
         result = modelopt_quantize(self.test_model, "int8-weight-only")
         
         # Verify behavior 1: Used INT8 configuration
-        call_args = mock_mtq.quantize.call_args
+        call_args = patched_mtq.quantize.call_args
         quant_cfg = call_args[0][1]
         
         # Verify behavior 2: input_quantizer is disabled
@@ -138,16 +140,17 @@ class TestModeloptQuantize(unittest.TestCase):
         self.assertFalse(quant_cfg["quant_cfg"]["*input_quantizer"]["enable"])
         
         # Verify behavior 3: Called mtq.quantize
-        mock_mtq.quantize.assert_called_once()
+        patched_mtq.quantize.assert_called_once()
         self.assertEqual(call_args[0][0], self.test_model)
         
         # Verify output
         self.assertIsNotNone(result)
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
+    @patch('examples.nanogpt.quantization.mtq')
     @patch('examples.nanogpt.quantization.AutoTokenizer')
     @patch('examples.nanogpt.quantization.create_forward_loop')
-    def test_int4_weight_only_quantization(self, mock_create_loop, mock_tokenizer_cls):
+    def test_int4_weight_only_quantization(self, mock_create_loop, mock_tokenizer_cls, patched_mtq):
         """
         Test case 2: INT4 weight-only quantization mode using AWQ configuration
         
@@ -165,13 +168,14 @@ class TestModeloptQuantize(unittest.TestCase):
         mock_forward_loop = MagicMock()
         mock_create_loop.return_value = mock_forward_loop
         
-        mock_mtq.quantize.return_value = self.test_model
+        patched_mtq.INT4_AWQ_CFG = {"quant_cfg": {}}
+        patched_mtq.quantize.return_value = self.test_model
         
         # Execute
         result = modelopt_quantize(self.test_model, "int4-weight-only")
         
         # Verify behavior 1: Used INT4_AWQ_CFG
-        call_args = mock_mtq.quantize.call_args
+        call_args = patched_mtq.quantize.call_args
         self.assertIsNotNone(call_args)
         
         # Verify behavior 2&3: create_forward_loop call parameters
@@ -183,9 +187,10 @@ class TestModeloptQuantize(unittest.TestCase):
         self.assertIsNotNone(result)
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
+    @patch('examples.nanogpt.quantization.mtq')
     @patch('examples.nanogpt.quantization.AutoTokenizer')
     @patch('examples.nanogpt.quantization.create_forward_loop')
-    def test_float8_quantization(self, mock_create_loop, mock_tokenizer_cls):
+    def test_float8_quantization(self, mock_create_loop, mock_tokenizer_cls, patched_mtq):
         """
         Test case 3: FP8 quantization mode
         
@@ -202,13 +207,14 @@ class TestModeloptQuantize(unittest.TestCase):
         mock_forward_loop = MagicMock()
         mock_create_loop.return_value = mock_forward_loop
         
-        mock_mtq.quantize.return_value = self.test_model
+        patched_mtq.FP8_DEFAULT_CFG = {"quant_cfg": {}}
+        patched_mtq.quantize.return_value = self.test_model
         
         # Execute
         result = modelopt_quantize(self.test_model, "float8")
         
         # Verify behavior 1: Used FP8_DEFAULT_CFG
-        call_args = mock_mtq.quantize.call_args
+        call_args = patched_mtq.quantize.call_args
         self.assertIsNotNone(call_args)
         
         # Verify behavior 2: create_forward_loop uses default parameters
@@ -280,9 +286,10 @@ class TestModeloptQuantize(unittest.TestCase):
         self.assertEqual(mock_tokenizer.pad_token, mock_tokenizer.eos_token)
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
+    @patch('examples.nanogpt.quantization.mtq')
     @patch('examples.nanogpt.quantization.AutoTokenizer')
     @patch('examples.nanogpt.quantization.create_forward_loop')
-    def test_forward_loop_creation_with_cnn_dailymail(self, mock_create_loop, mock_tokenizer_cls):
+    def test_forward_loop_creation_with_cnn_dailymail(self, mock_create_loop, mock_tokenizer_cls, patched_mtq):
         """
         Test case 6: Create calibration loop using cnn_dailymail dataset
         
@@ -297,7 +304,8 @@ class TestModeloptQuantize(unittest.TestCase):
         
         mock_forward_loop = MagicMock()
         mock_create_loop.return_value = mock_forward_loop
-        mock_mtq.quantize.return_value = self.test_model
+        patched_mtq.INT8_DEFAULT_CFG = {"quant_cfg": {}}
+        patched_mtq.quantize.return_value = self.test_model
         
         # Execute
         result = modelopt_quantize(self.test_model, "int8-weight-only")
@@ -307,7 +315,7 @@ class TestModeloptQuantize(unittest.TestCase):
         self.assertEqual(loop_call_args[1]['dataset_name'], "cnn_dailymail")
         
         # Verify behavior 2: forward_loop passed to quantization function
-        quant_call_kwargs = mock_mtq.quantize.call_args[1]
+        quant_call_kwargs = patched_mtq.quantize.call_args[1]
         self.assertEqual(quant_call_kwargs['forward_loop'], mock_forward_loop)
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
@@ -412,9 +420,10 @@ class TestModeloptQuantizeEdgeCases(unittest.TestCase):
         self.assertIsNotNone(result)
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
+    @patch('examples.nanogpt.quantization.mtq')
     @patch('examples.nanogpt.quantization.AutoTokenizer')
     @patch('examples.nanogpt.quantization.create_forward_loop')
-    def test_multiple_quantization_modes_sequentially(self, mock_create_loop, mock_tokenizer_cls):
+    def test_multiple_quantization_modes_sequentially(self, mock_create_loop, mock_tokenizer_cls, patched_mtq):
         """
         Test case 10: Test multiple quantization modes sequentially
         
@@ -430,21 +439,25 @@ class TestModeloptQuantizeEdgeCases(unittest.TestCase):
         
         model = torch.nn.Linear(768, 768)
         model.device = torch.device('cpu')
-        mock_mtq.quantize.return_value = model
+
+        patched_mtq.INT8_DEFAULT_CFG = {"quant_cfg": {}}
+        patched_mtq.INT4_AWQ_CFG = {"quant_cfg": {}}
+        patched_mtq.FP8_DEFAULT_CFG = {"quant_cfg": {}}
+        patched_mtq.quantize.return_value = model
         
         # Test all supported modes
         supported_modes = ["int8-weight-only", "int4-weight-only", "float8"]
         
         for mode in supported_modes:
             with self.subTest(quant_mode=mode):
-                mock_mtq.quantize.reset_mock()
+                patched_mtq.quantize.reset_mock()
                 
                 # Execute
                 result = modelopt_quantize(model, mode)
                 
                 # Verify: Successfully executed
                 self.assertIsNotNone(result)
-                mock_mtq.quantize.assert_called_once()
+                patched_mtq.quantize.assert_called_once()
 
 
 if __name__ == "__main__":

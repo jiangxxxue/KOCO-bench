@@ -96,8 +96,7 @@ class TestCreateForwardLoop(unittest.TestCase):
         tokenizer.encode = mock_encode
         return tokenizer
     
-    @patch('modelopt.torch.utils.dataset_utils.load_dataset')
-    def test_basic_forward_loop_creation(self, mock_load_dataset):
+    def test_basic_forward_loop_creation(self):
         """
         Test case 1: Basic forward loop creation
         
@@ -108,14 +107,6 @@ class TestCreateForwardLoop(unittest.TestCase):
         """
         if not IMPORT_SUCCESS:
             self.skipTest("Implementation code import failed")
-        
-        # Mock dataset
-        mock_dataset = MagicMock()
-        mock_dataset.__iter__ = Mock(return_value=iter([
-            {'article': 'test text 1'},
-            {'article': 'test text 2'},
-        ]))
-        mock_load_dataset.return_value = mock_dataset
         
         # Reset mock
         mock_create_forward_loop.reset_mock()
@@ -134,8 +125,7 @@ class TestCreateForwardLoop(unittest.TestCase):
         # Verify: Returned callable object
         self.assertTrue(callable(forward_loop) or forward_loop is not None)
     
-    @patch('modelopt.torch.utils.dataset_utils.load_dataset')
-    def test_dataset_loading(self, mock_load_dataset):
+    def test_dataset_loading(self):
         """
         Test case 2: Dataset loading
         
@@ -146,8 +136,6 @@ class TestCreateForwardLoop(unittest.TestCase):
         if not IMPORT_SUCCESS:
             self.skipTest("Implementation code import failed")
         
-        mock_dataset = MagicMock()
-        mock_load_dataset.return_value = mock_dataset
         mock_create_forward_loop.return_value = lambda: None
         
         # Execute
@@ -230,7 +218,7 @@ class TestCreateForwardLoop(unittest.TestCase):
         if not IMPORT_SUCCESS:
             self.skipTest("Implementation code import failed")
         
-        datasets = ["cnn_dailymail", "wikitext", "ptb_text_only"]
+        datasets = ["cnn_dailymail", "wikitext", "c4"]
         mock_create_forward_loop.return_value = lambda: None
         
         for dataset_name in datasets:
