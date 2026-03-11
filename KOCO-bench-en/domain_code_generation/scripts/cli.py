@@ -268,9 +268,13 @@ def cmd_evaluate(framework: str, model: str, test_example: str = None) -> int:
             "--output_file", f"{container_mnt}/{data_subdir}/{output_name}",
         ]
 
-        # Add --user only on Linux where it is needed and meaningful
         if platform.system() == "Linux":
-            docker_cmd[3:3] = ["--user", f"{os.getuid()}:{os.getgid()}"]
+            uid, gid = os.getuid(), os.getgid()
+            docker_cmd[3:3] = [
+                "--user", f"{uid}:{gid}",
+                "-e", "HOME=/tmp",
+                "-e", "USER=benchuser",
+            ]
 
         print(f"\n--- {example} ---")
         print(f"  Docker image: {image}")
@@ -356,9 +360,13 @@ def cmd_validate_image(framework: str, test_example: str = None) -> int:
             "python3", container_runner,
         ]
 
-        # Add --user only on Linux where it is needed and meaningful
         if platform.system() == "Linux":
-            docker_cmd[3:3] = ["--user", f"{os.getuid()}:{os.getgid()}"]
+            uid, gid = os.getuid(), os.getgid()
+            docker_cmd[3:3] = [
+                "--user", f"{uid}:{gid}",
+                "-e", "HOME=/tmp",
+                "-e", "USER=benchuser",
+            ]
 
         print(f"\n--- {example} ---")
         print(f"  Docker image : {image}")
