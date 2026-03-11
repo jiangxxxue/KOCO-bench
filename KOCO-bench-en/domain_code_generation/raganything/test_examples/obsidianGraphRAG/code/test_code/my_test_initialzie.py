@@ -312,7 +312,7 @@ async def test_load_existing_database(test_vault, mock_llm_and_vision, mock_embe
 
         # initialize RAG — it will detect 'existing database
         rag = SimpleRAGAnything(test_vault, wd, non_interactive=True)
-        await rag.initialization()
+        await rag.initialize()
 
         # ✅ Should pass now!
         assert rag.using_existing_db
