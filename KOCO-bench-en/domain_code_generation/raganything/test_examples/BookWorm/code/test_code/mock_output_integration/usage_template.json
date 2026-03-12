@@ -1,0 +1,23 @@
+{
+  "description": "This is a fallback template demonstrating the expected steps to run RAGAnything.",
+  "steps": [
+    "1) Prepare working_dir and output_dir. Export LLM API credentials (LLM_API_KEY, LLM_API_BASE).",
+    "2) Configure text/image/embedding models (pass API key/base_url in config).",
+    "3) Initialize RAG engine with working_dir and model configs.",
+    "4) Ingest / index the document: engine.process(file_path, parser=parser, output_dir=output_dir)",
+    "5) Run queries:",
+    "   - Text: engine.query('Summarize the document', mode='text')",
+    "   - Tables: engine.query('List tables...', mode='table') or engine.query_element('table', ...)",
+    "   - Equations: engine.query('Extract equations...', mode='equation')",
+    "   - Multimodal: engine.query_multimodal('Describe Figure 1', file_path=file_path)",
+    "6) Save results to output_dir for inspection."
+  ],
+  "provided_parameters": {
+    "file_path": "/workspace/KOCO-bench-en/domain_code_generation/raganything/test_examples/BookWorm/code/test_code/testfile/dummy_file.pdf",
+    "output_dir": "/workspace/KOCO-bench-en/domain_code_generation/raganything/test_examples/BookWorm/code/test_code/mock_output_integration",
+    "api_key_env": "LLM_API_KEY",
+    "base_url_env": "LLM_API_BASE",
+    "working_dir": "./rag_storage",
+    "parser": "minerus"
+  }
+}

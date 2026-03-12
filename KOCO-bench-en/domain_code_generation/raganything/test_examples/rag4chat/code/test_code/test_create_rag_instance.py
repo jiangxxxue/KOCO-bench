@@ -2,7 +2,7 @@ import sys
 import os
 
 # ==============================
-# 🔑 Key: Mock sentence_transformers before importing anything
+# 🔑 Key: Before importing anything, first mock sentence_transformers
 # ==============================
 from unittest.mock import MagicMock
 
@@ -16,14 +16,14 @@ class FakeCrossEncoder:
         return [0.5] * len(pairs)
 
 # Replace sentence_transformers.CrossEncoder in sys.modules
-# So when build_database.py executes "from sentence_transformers import CrossEncoder", it gets the fake one
+# So when build_database.py executes from sentence_transformers import CrossEncoder, it gets the fake one
 import types
 fake_sentence_transformers = types.ModuleType("sentence_transformers")
 fake_sentence_transformers.CrossEncoder = FakeCrossEncoder
 sys.modules["sentence_transformers"] = fake_sentence_transformers
 
 # ==============================
-# Now it's safe to set up paths and import other modules
+# Now we can safely set paths and import other modules
 # ==============================
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -41,7 +41,7 @@ from raganything import RAGAnythingConfig, RAGAnything
 from lightrag.utils import EmbeddingFunc
 from unittest.mock import patch, AsyncMock, MagicMock
 
-# ⚠️ Note: Only now import RAGDatabaseManager! sentence_transformers is already mocked
+# ⚠️ Note: Only now import RAGDatabaseManager! At this point sentence_transformers has been mocked
 from services.build_database import RAGDatabaseManager
 
 

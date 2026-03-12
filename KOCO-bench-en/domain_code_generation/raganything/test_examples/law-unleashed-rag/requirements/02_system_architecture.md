@@ -1,4 +1,4 @@
-# RAG Testing Platform System Architecture and Module Design
+# RAG Test Bed System Architecture and Module Design
 
 ## 1. RAG Platform Module File Structure
 
@@ -24,8 +24,8 @@ src/
 
 ### 1.2 Module Responsibility Division
 
-- **main.py**: The application gateway. Responsible for defining all API endpoints, handling HTTP requests, calling corresponding services through dependency injection, and managing background tasks.
-- **services/rag_interface.py**: Defines the "contract" (interface) that all RAG implementations must follow, ensuring different RAG approaches can be called uniformly.
+- **main.py**: The gateway of the application. Responsible for defining all API endpoints, handling HTTP requests, calling corresponding services through dependency injection, and managing background tasks.
+- **services/rag_interface.py**: Defines the "contract" (interface) that all RAG implementations must follow, ensuring that different RAG approaches can be called uniformly.
 - **services/rag_factory.py**: Implements the factory design pattern. Dynamically creates and returns a specific RAG service instance based on the `rag_approach` parameter specified in the API request.
 - **services/*_service.py**: Specific implementations of each RAG approach. They encapsulate their respective data processing, index building, and query logic.
 - **services/auth_service.py**: Responsible for user authentication and permission checking, ensuring users can only access workspaces and projects they have permission to access.
@@ -38,8 +38,8 @@ src/
 - **Core Functionality**: Acts as the system's master controller, responsible for API routing, dependency injection, background task management, and monitoring metrics exposure.
 - **Main Interfaces**: `/process-document`, `/process-folder`, `/query`, `/processing-status`.
 - **Implementation Details**: 
-    - Uses `lifespan` context manager to initialize all singleton services (such as `RAGFactory`, `FirebaseManager`) at application startup.
-    - Through FastAPI's `Depends` system, injects `RAGFactory` and `AuthService` on-demand when processing requests.
+    - Uses the `lifespan` context manager to initialize all singleton services (such as `RAGFactory`, `FirebaseManager`) when the application starts.
+    - Through FastAPI's `Depends` system, injects `RAGFactory` and `AuthService` on demand when processing requests.
     - For time-consuming document processing tasks, uses `BackgroundTasks` to implement asynchronous execution, immediately returning a task ID to the client, avoiding long polling.
 
 ### 2.2 RAG Service Factory (rag_factory.py)
@@ -47,7 +47,7 @@ src/
 - **Core Class**: `RAGFactory`
 - **Core Functionality**: Dynamically creates and returns a specific RAG service instance based on the incoming `approach` string (such as `"raganything"`).
 - **Design Pattern**: Factory Pattern.
-- **Implementation Details**: The factory internally maintains an `_implementations` dictionary, which dynamically scans and registers all available RAG services during initialization. This design greatly improves system extensibility; when supporting a new RAG method is needed, only a new service implementation file needs to be added without modifying any existing core code.
+- **Implementation Details**: The factory internally maintains an `_implementations` dictionary, which dynamically scans and registers all available RAG services during initialization. This design greatly improves system extensibility; when a new RAG method needs to be supported, only a new service implementation file needs to be added without modifying any existing core code.
 
 ### 2.3 RAG Service Interface (rag_interface.py)
 
@@ -63,7 +63,7 @@ src/
 - **Implementation Details**: Each service class inherits from `RAGInterface` and implements all its abstract methods. For example:
     - `RAGAnythingService` is responsible for calling the `RAG-Anything` library to create and manage indexes on the local file system.
     - `RAGVertexService` is responsible for calling Google Cloud APIs to create and manage RAG Corpus in the cloud.
-    - `EvidenceSweepService` executes a custom multi-step LLM call chain (page filtering -> evidence extraction -> comprehensive analysis).
+    - `EvidenceSweepService` executes a custom multi-step LLM call chain (page screening -> evidence extraction -> synthesis analysis).
 
 ## 3. Data Protocol and Module Interaction
 
@@ -87,18 +87,18 @@ class ProcessDocumentRequest(BaseModel):
 
 1.  Client sends a POST request to `/process-document`.
 2.  `main.py` receives the request and immediately calls `AuthService` to verify user permissions.
-3.  After verification passes, `FirebaseManager` creates a task record with `pending` status in the database.
+3.  After verification passes, `FirebaseManager` creates a task record with status `pending` in the database.
 4.  `main.py` immediately returns the task ID to the client (HTTP 200 OK).
 5.  A `BackgroundTask` is triggered in the background, which obtains the correct RAG service instance through `RAGFactory` and calls its `process_document` method.
 6.  During execution, the RAG service continuously updates task progress and final results in the database through `FirebaseManager`.
-7.  The client can use the task ID to poll the `/processing-status/{job_id}` endpoint to get real-time progress.
+7.  The client can use the task ID to obtain real-time progress by polling the `/processing-status/{job_id}` endpoint.
 
 ### 3.3 Data Flow
 
 - **Input Data**: File paths (strings) on Google Cloud Storage (GCS).
 - **Intermediate Data**: Services download files from GCS to local temporary directories for processing.
 - **Processing Results**: Each RAG approach stores its indexes and metadata in their respective backends (`RAGAnything` uses local file system, `Vertex AI` uses Google Cloud services).
-- **Status Data**: All task metadata, status, and progress are stored as JSON objects in Firestore.
+- **Status Data**: All task metadata, status, and progress are stored in Firestore as JSON objects.
 - **Output Data**: API returns task IDs, status, or query results in JSON format.
 
 ### 3.4 Module Interaction Diagram
@@ -118,4 +118,3 @@ graph TD
     A -- polls status --> B;
     B -- gets status --> D;
 ```
-

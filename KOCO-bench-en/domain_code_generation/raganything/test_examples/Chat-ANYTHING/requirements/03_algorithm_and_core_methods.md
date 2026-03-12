@@ -13,23 +13,22 @@ def __init__(self, gemini_api_key: str) -> RAGAnything
 
 ## Input Parameters
 
-- `gemini_api_key: str`: API key for accessing Gemini API services
+- `gemini_api_key: str`: API key for accessing Gemini API service
 
 ## Detailed Description
 
-This function initializes session management, connects to the Gemini model, configures document processing and text vectorization capabilities, sets up language understanding models, and initializes the knowledge retrieval engine to build a multi-layered intelligent service system.
+This function initializes session management, connects to the Gemini model, configures document processing and text vectorization capabilities, sets up language understanding model, and initializes knowledge retrieval engine to build a multi-layered intelligent service system.
 
 ## Output
 
-- **Return Value**: `rag` - A fully configured knowledge retrieval and Q&A engine instance (RAGAnything type)
+- **Return Value**: `rag` - Configured knowledge retrieval and Q&A engine instance (RAGAnything type)
 
 ## Function Implementation
 
-code\rag-web-ui\backend\app\services\my_rag.py:line 15-153
+code/rag-web-ui/backend/app/services/my_rag.py:line 15-152
 
 ## Test Code
-
-code\test_code\my_test_MCPGeminiRAGClient_init.py
+code/test_code/test_MCPGeminiRAGClient_init.py
 
 ---
 
@@ -37,7 +36,7 @@ code\test_code\my_test_MCPGeminiRAGClient_init.py
 
 ## Function Overview
 
-Integrates new documents into the knowledge base system, making their content retrievable and queryable. Converts raw documents into structured knowledge representations and establishes corresponding retrieval indexes.
+Integrates new documents into the knowledge base system, making their content retrievable and queryable. Converts raw documents into structured knowledge representation and establishes corresponding retrieval indexes.
 
 ## Function Signature
 
@@ -49,7 +48,7 @@ async def load_documents(self, file_path: str) -> None
 
 ## Detailed Description
 
-This function performs structured parsing of the specified document (including text, images, and other elements), marks the loading status, and provides feedback on processing results, achieving intelligent document ingestion.
+This function performs structured parsing of specified documents (including text, images, and other elements), marks loading status, and provides processing feedback to achieve intelligent document ingestion.
 
 ## Output
 
@@ -57,11 +56,10 @@ This function has no explicit return value
 
 ## Function Implementation
 
-code\rag-web-ui\backend\app\services\my_rag.py:line 155-164
+code/rag-web-ui/backend/app/services/my_rag.py:line 155-163
 
 ## Test Code
-
-code\test_code\my_test_load_documents.py
+code/test_code/test_load_documents.py
 
 ---
 
@@ -69,7 +67,7 @@ code\test_code\my_test_load_documents.py
 
 ## Function Overview
 
-This function is the core processing engine of the intelligent Q&A system, which needs to intelligently determine when to use the local knowledge base and when external real-time information is needed. Through a strategy of first retrieving from local documents and then evaluating whether external support is needed, it ensures providing users with the most accurate and up-to-date answers.
+This function is the core processing engine of the intelligent Q&A system, which needs to intelligently determine when to use the local knowledge base and when external real-time information is needed. Through a strategy of first retrieving local documents and then evaluating whether external support is needed, it ensures providing users with the most accurate and up-to-date answers.
 
 ## Function Signature
 
@@ -81,18 +79,16 @@ async def process_query(self, query: str) -> str
 
 ## Detailed Description
 
-This function first clarifies currently available external tools and services, maintains dialogue context in real-time to connect multi-turn interactions, precisely searches for relevant information from the local knowledge base through hybrid retrieval strategy, intelligently evaluates the sufficiency and completeness of retrieval results, calls external tools to supplement if local knowledge is insufficient or real-time data is needed, finally integrates information to generate answers and synchronously updates dialogue history to provide continuous support for subsequent interactions.
+This function first identifies currently available external tools and services, maintains conversation context in real-time to connect multi-turn interactions, precisely searches for relevant information from the local knowledge base through hybrid retrieval strategy, intelligently evaluates the sufficiency and completeness of retrieval results, calls external tools to supplement if local knowledge is insufficient or real-time data is needed, finally integrates information to generate answers and synchronously updates conversation history to provide continuous support for subsequent interactions.
 
 
 ## Output
 
-- **Return Value**: `str` - Intelligent answer to the user's question, which may be based on local knowledge base, external real-time information, or a combination of both
+- **Return Value**: `str` - Intelligent answer to user's question, which may be based on local knowledge base, external real-time information, or a combination of both
 
 ## Function Implementation
 
-code\rag-web-ui\backend\app\services\my_rag.py:line 217-248
+code/rag-web-ui/backend/app/services/my_rag.py:line 217-248
 
 ## Test Code
-
-code\test_code\my_test_process_query.py
-
+code/test_code/test_process_query.py

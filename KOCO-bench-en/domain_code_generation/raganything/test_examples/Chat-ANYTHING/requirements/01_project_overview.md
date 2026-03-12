@@ -4,11 +4,11 @@
 
 `Chat-ANYTHING` is a next-generation multimodal intelligent dialogue system built on RAG (Retrieval-Augmented Generation) technology. The system organically combines three core components: **RAG-Anything** (multimodal document processing engine), **rag-web-ui** (modern Web interface), and **MCP (Model Context Protocol)** (real-time web search and context injection), forming a unified intelligent knowledge interaction platform.
 
-The core value of this system lies in its end-to-end multimodal document understanding capability, which can seamlessly process documents containing complex content such as text, images, tables, and equations. Through knowledge graph indexing and hybrid retrieval mechanisms, combined with real-time web information, it provides users with accurate, context-relevant intelligent answers. The system supports multiple AI models (OpenAI, Gemini, DeepSeek, Ollama) and vector databases (ChromaDB, Qdrant), with enterprise-level scalability and flexibility.
+The core value of this system lies in its end-to-end multimodal document understanding capability, which can seamlessly process documents containing complex content such as text, images, tables, and formulas. Through knowledge graph indexing and hybrid retrieval mechanisms, combined with real-time web information, it provides users with accurate, context-relevant intelligent answers. The system supports multiple AI models (OpenAI, Gemini, DeepSeek, Ollama) and vector databases (ChromaDB, Qdrant), with enterprise-level scalability and flexibility.
 
 ## 2. Workflow
 
-The system adopts a layered architecture design, providing high-performance user experience through asynchronous processing and streaming responses. The workflow is divided into two core parts: document processing workflow and query processing workflow.
+The system adopts a layered architecture design, providing high-performance user experience through asynchronous processing and streaming responses. The workflow is divided into two core parts: document processing flow and query processing flow.
 
 ```
 Algorithm: Chat-ANYTHING Multi-modal Processing Pipeline
@@ -54,7 +54,7 @@ Output: Contextual intelligent responses with multi-modal understanding
 ```
 
 
-Key components in the pipeline:
+Key component descriptions in the Pipeline:
 
 - **Multi-Parser System**: Supports both MinerU and Docling parsers, automatically selecting the most suitable document processing method to ensure high-quality content extraction.
 - **Modal Processor Factory**: Dynamically dispatches to specialized processors based on content type, each with context-aware capabilities.
@@ -73,9 +73,9 @@ Key components in the pipeline:
 
 ### Academic Research Assistance and Literature Analysis Platform
 
-- **Input**: Collection of academic papers containing complex charts, formulas, and data, and researchers' professional query needs.
-- **Output**: Comprehensive research reports integrating local literature library analysis results and latest web research dynamics, providing experimental data interpretation and trend analysis.
-- **Purpose**: Provide researchers with intelligent literature research tools, automatically extract key information, track research frontiers, and accelerate scientific research innovation process.
+- **Input**: Collection of academic papers containing complex charts, formulas, and data, along with researchers' professional query needs.
+- **Output**: Comprehensive research reports integrating local literature library analysis results and latest web research trends, providing experimental data interpretation and trend analysis.
+- **Purpose**: Provide researchers with intelligent literature research tools, automatically extract key information, track research frontiers, and accelerate scientific innovation processes.
 
 ### Medical Health Intelligent Consultation System
 

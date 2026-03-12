@@ -9,7 +9,7 @@ The system adopts a front-end and back-end separation architecture, with core lo
 ```
 Chat-ANYTHING/
 ├── code/
-│   ├── raganything/                    # RAG-Anything core engine
+│   ├── raganything/                    # RAG-Anything Core Engine
 │   │   ├── __init__.py
 │   │   ├── raganything.py             # Main RAG class implementation
 │   │   ├── config.py                  # Configuration management
@@ -22,7 +22,7 @@ Chat-ANYTHING/
 │   │   ├── prompt.py                  # Prompt templates
 │   │   └── utils.py                   # Utility functions
 │   │
-│   ├── rag-web-ui/                    # Web interface system
+│   ├── rag-web-ui/                    # Web Interface System
 │   │   ├── backend/                   # FastAPI backend service
 │   │   │   ├── app/
 │   │   │   │   ├── main.py           # FastAPI application main entry
@@ -60,7 +60,7 @@ Chat-ANYTHING/
 │   │       │       └── utils.ts      # Utility functions
 │   │       └── package.json          # Node.js dependencies
 │   │
-│   ├── mcp/                          # MCP protocol integration
+│   ├── mcp/                          # MCP Protocol Integration
 │   │   ├── client.py                 # MCP client implementation
 │   │   ├── server.py                 # MCP server implementation
 │   │   └── testgeminiAPI.py          # Gemini API testing
@@ -76,29 +76,29 @@ Chat-ANYTHING/
 │       ├── context_aware_processing.md
 │       └── enhanced_markdown.md
 │
-└── requirement/                      # Requirement documents
+└── requirement/                      # Requirements documentation
     ├── 01_project_overview.md
     └── 02_system_architecture.md
 ```
 
 ### 1.2 Module Responsibility Division
 
-- **rag-web-ui/backend/**: FastAPI backend service, handles HTTP requests, user authentication, document management, and chat functionality, integrates RAG-Anything API
-- **rag-web-ui/frontend/**: Next.js frontend application, provides modern user interface and interactive experience
-- **mcp/**: MCP protocol integration module, implements real-time information retrieval and tool calling capabilities, encapsulates interaction between RAG-Anything and external tools
-- **examples/**: RAG-Anything API call examples, demonstrating different integration modes and usage scenarios
-- **docs/**: Technical documentation, detailing RAG-Anything API usage methods
+- **rag-web-ui/backend/**: FastAPI backend service, handling HTTP requests, user authentication, document management, and chat functionality, integrating RAG-Anything API
+- **rag-web-ui/frontend/**: Next.js frontend application, providing modern user interface and interactive experience
+- **mcp/**: MCP protocol integration module, implementing real-time information retrieval and tool calling capabilities, encapsulating interaction between RAG-Anything and external tools
+- **examples/**: RAG-Anything API usage examples, demonstrating different integration patterns and use cases
+- **docs/**: Technical documentation, detailing how to use RAG-Anything API
 - **test files/**: Test files, verifying RAG-Anything API functionality under different configurations
 
 ## 2. Chat-ANYTHING Platform Module Design
 
 ### 2.1 RAG-Anything API Integration Layer
 
-- **Core Functionality**: Encapsulates RAG-Anything API calls, provides unified multimodal document processing and query interface
+- **Core Functionality**: Encapsulates RAG-Anything API calls, providing unified multimodal document processing and query interface
 - **Main Components**: API call encapsulation, configuration management, error handling
-- **Integration Modes**:
+- **Integration Patterns**:
   - Supports multiple LLM provider integrations (OpenAI, Gemini, Cohere, DeepSeek)
-  - Flexible configuration management, adapting to different usage scenarios
+  - Flexible configuration management, adapting to different use cases
   - Unified asynchronous call interface, supporting high concurrency processing
   - Complete error handling and retry mechanisms
 
@@ -116,13 +116,13 @@ Chat-ANYTHING/
 - **Technical Implementation**:
   - Uses FastAPI framework, supporting asynchronous processing and WebSocket real-time communication
   - Implements complete user management and permission control system
-  - Supports multiple database and storage backends
+  - Supports multiple databases and storage backends
 
 
 
 ### 2.3 MCP Protocol Integration (mcp/)
 
-- **Core Functionality**: Extends RAG-Anything capabilities, integrates external tools and real-time information retrieval
+- **Core Functionality**: Extends RAG-Anything capabilities, integrating external tools and real-time information retrieval
 - **Main Class**: `MCPGeminiRAGClient`
 - **RAG-Anything Enhancement**:
   - Adds external tool calling capability on top of RAG-Anything
@@ -133,17 +133,17 @@ Chat-ANYTHING/
 ### 2.4 Frontend Application (rag-web-ui/frontend/)
 
 - **Core Functionality**: User interface, document upload, chat interaction, and result display
-- **Technology Stack**: Next.js 14, React, TypeScript, Tailwind CSS
+- **Tech Stack**: Next.js 14, React, TypeScript, Tailwind CSS
 - **Implementation Details**:
   - Uses App Router architecture, supporting server-side rendering and static generation
   - Implements drag-and-drop upload, progress display, and real-time chat functionality
-  - Supports multimodal content display, including images, tables, and equations
+  - Supports multimodal content display, including images, tables, and formulas
 
 ## 3. Data Protocol and Module Interaction
 
 ### 3.1 API Data Protocol
 
-The system uses Pydantic models to define strongly-typed API data structures.
+The system uses Pydantic models to define strongly-typed API data structures:
 
 
 
@@ -151,8 +151,8 @@ The system uses Pydantic models to define strongly-typed API data structures.
 
 1. **Document Upload**: Frontend uploads files to object storage via MinIO
 2. **RAG-Anything Call**: Backend calls RAG-Anything API for multimodal content extraction and processing
-3. **Processing Result Storage**: RAG-Anything processing results stored in configured working directory and vector database
-4. **Status Management**: Backend tracks document processing status, provides processing progress feedback
+3. **Processing Result Storage**: RAG-Anything processing results are stored in configured working directory and vector database
+4. **Status Management**: Backend tracks document processing status, providing processing progress feedback
 5. **Query Interface**: Supports pure text queries and multimodal queries through encapsulated query interface
 6. **Result Display**: Frontend displays query results, including source document citations and multimodal content
 
@@ -251,9 +251,8 @@ graph TB
 ### 3.6 Key Features
 
 - **RAG-Anything Integration**: Complete encapsulation of RAG-Anything API, providing unified calling interface
-- **Multi-LLM Support**: Supports integration of multiple LLM providers including OpenAI, Gemini, Cohere, etc.
+- **Multi-LLM Support**: Supports integration of multiple LLM providers such as OpenAI, Gemini, Cohere
 - **MCP Protocol Enhancement**: Adds external tool calling capability on top of RAG-Anything
 - **Asynchronous Processing**: Supports asynchronous processing and status management of large-scale documents
 - **Web Interface**: Provides modern Web interface, supporting document upload and real-time chat
-- **Extensible Architecture**: Modular design, easy to add new integration modes and features
-
+- **Extensible Architecture**: Modular design, easy to add new integration patterns and features
