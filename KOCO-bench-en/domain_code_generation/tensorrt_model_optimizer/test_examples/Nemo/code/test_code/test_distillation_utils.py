@@ -14,23 +14,16 @@ from unittest.mock import Mock, MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Mock dependencies
-sys.modules['lightning'] = MagicMock()
-sys.modules['lightning.pytorch'] = MagicMock()
-sys.modules['megatron'] = MagicMock()
-sys.modules['megatron.core'] = MagicMock()
-
-# Mock modelopt
-mock_mto = MagicMock()
-sys.modules['modelopt'] = MagicMock()
-sys.modules['modelopt.torch'] = MagicMock()
-sys.modules['modelopt.torch.opt'] = mock_mto
+from _mock_nemo_deps import setup_nemo_mocks, import_nemo_module
+setup_nemo_mocks()
+sys.modules.setdefault('modelopt.torch.opt', MagicMock())
+mock_mto = sys.modules['modelopt.torch.opt']
 
 # Import ground truth implementation
 try:
-    from nemo.collections.llm.modelopt.distill.utils import (
-        adjust_distillation_model_for_mcore,
-        DistillationConfig
-    )
+    _mod = import_nemo_module('nemo.collections.llm.modelopt.distill.utils')
+    adjust_distillation_model_for_mcore = _mod.adjust_distillation_model_for_mcore
+    DistillationConfig = _mod.DistillationConfig
     IMPORT_SUCCESS = True
 except Exception as e:
     print(f"Warning: Unable to import implementation code: {e}")
@@ -114,16 +107,16 @@ class TestAdjustDistillationModel(unittest.TestCase):
         mock_mto_local.ModeloptStateManager.return_value = mock_state_manager
         
         # Record original method
-        original_save = self.mock_distill_model._save_checkpoint
-        
+        original_sharded_state_dict = self.mock_distill_model.sharded_state_dict
+
         # Execute
         adjust_distillation_model_for_mcore(self.mock_distill_model, self.mock_config)
-        
-        # Verify: _save_checkpoint method was replaced
-        self.assertNotEqual(
-            self.mock_distill_model._save_checkpoint,
-            original_save,
-            "_save_checkpoint method should be overridden"
+
+        # Verify: sharded_state_dict method was replaced (the implementation overrides this)
+        self.assertIsNot(
+            self.mock_distill_model.sharded_state_dict,
+            original_sharded_state_dict,
+            "sharded_state_dict method should be overridden"
         )
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
@@ -142,16 +135,16 @@ class TestAdjustDistillationModel(unittest.TestCase):
         mock_mto_local.ModeloptStateManager.return_value = mock_state_manager
         
         # Record original method
-        original_load = self.mock_distill_model._load_state_dict
-        
+        original_set_input_tensor = self.mock_distill_model.set_input_tensor
+
         # Execute
         adjust_distillation_model_for_mcore(self.mock_distill_model, self.mock_config)
-        
-        # Verify: _load_state_dict method was replaced
-        self.assertNotEqual(
-            self.mock_distill_model._load_state_dict,
-            original_load,
-            "_load_state_dict method should be overridden"
+
+        # Verify: set_input_tensor method was replaced (the implementation overrides this)
+        self.assertIsNot(
+            self.mock_distill_model.set_input_tensor,
+            original_set_input_tensor,
+            "set_input_tensor method should be overridden"
         )
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
@@ -173,16 +166,16 @@ class TestAdjustDistillationModel(unittest.TestCase):
         self.mock_config.skip_lm_loss = True
         
         # Record original method
-        original_compute_loss = self.mock_distill_model.compute_loss
-        
+        original_compute_lm_loss = self.mock_distill_model.compute_language_model_loss
+
         # Execute
         adjust_distillation_model_for_mcore(self.mock_distill_model, self.mock_config)
-        
-        # Verify: compute_loss method was replaced
-        self.assertNotEqual(
-            self.mock_distill_model.compute_loss,
-            original_compute_loss,
-            "compute_loss should be overridden when skip_lm_loss=True"
+
+        # Verify: compute_language_model_loss method was replaced (the implementation overrides this)
+        self.assertIsNot(
+            self.mock_distill_model.compute_language_model_loss,
+            original_compute_lm_loss,
+            "compute_language_model_loss should be overridden when skip_lm_loss=True"
         )
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")

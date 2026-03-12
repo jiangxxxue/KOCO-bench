@@ -14,16 +14,14 @@ from unittest.mock import Mock, MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Mock problematic dependencies
-sys.modules['nv_one_logger'] = MagicMock()
-sys.modules['nv_one_logger.api'] = MagicMock()
-sys.modules['nv_one_logger.training_telemetry'] = MagicMock()
-sys.modules['nemo_run'] = MagicMock()
-sys.modules['lightning'] = MagicMock()
-sys.modules['lightning.pytorch'] = MagicMock()
+from _mock_nemo_deps import setup_nemo_mocks, import_nemo_module
+setup_nemo_mocks()
 
 # Import ground truth implementation
 try:
-    from nemo.collections.llm.modelopt.prune.pruner import prune_language_model, PruningConfig
+    _mod = import_nemo_module('nemo.collections.llm.modelopt.prune.pruner')
+    prune_language_model = _mod.prune_language_model
+    PruningConfig = _mod.PruningConfig
     IMPORT_SUCCESS = True
 except Exception as e:
     print(f"Warning: Unable to import implementation code: {e}")
@@ -66,11 +64,9 @@ class TestPruneLanguageModel(unittest.TestCase):
         mock_mtp.plugins.drop_mcore_language_model_layers = mock_drop_layers
         mock_mtp.prune = MagicMock()
         
-        # Input: Contains both drop_layers and algorithm
+        # Input: Contains drop_layers (algorithm is not a valid PruningConfig field)
         config = PruningConfig(
             drop_layers=[1, 2, 3],
-            algorithm="width_pruning",
-            amount=0.5
         )
         
         # Execute
@@ -85,9 +81,9 @@ class TestPruneLanguageModel(unittest.TestCase):
         
         # Verify passed model
         self.assertEqual(call_args[0][0], self.mock_model)
-        
-        # Verify passed layer indices
-        self.assertEqual(call_args[0][1], [1, 2, 3])
+
+        # Verify passed layer indices (passed as keyword arg)
+        self.assertEqual(call_args.kwargs['layers_to_drop'], [1, 2, 3])
         
         # Verify behavior 2: Did not call mtp.prune
         mock_mtp.prune.assert_not_called()
@@ -108,7 +104,7 @@ class TestPruneLanguageModel(unittest.TestCase):
         
         config = PruningConfig(
             drop_layers=[],  # Empty list
-            algorithm="width_pruning"
+            target_num_layers=8  # Use valid PruningConfig field instead of algorithm
         )
         
         mock_data_module = MagicMock()
@@ -141,13 +137,12 @@ class TestPruneLanguageModel(unittest.TestCase):
         mock_llm.validate = MagicMock()
         
         config = PruningConfig(
-            algorithm="width_pruning",
-            amount=0.5
+            target_ffn_hidden_size=2048,
         )
-        
+
         mock_data_module = MagicMock()
         mock_trainer = MagicMock()
-        
+
         # Execute
         result = prune_language_model(
             model=self.mock_model,
@@ -155,13 +150,9 @@ class TestPruneLanguageModel(unittest.TestCase):
             data_module=mock_data_module,
             trainer=mock_trainer
         )
-        
+
         # Verify: Called mtp.prune
         mock_mtp.prune.assert_called_once()
-        
-        # Verify: Passed correct parameters
-        call_kwargs = mock_mtp.prune.call_args.kwargs
-        self.assertIn('model', call_kwargs)
         
         # Verify return result
         self.assertIsNotNone(result)
@@ -195,37 +186,36 @@ class TestPruneLanguageModel(unittest.TestCase):
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('nemo.collections.llm.modelopt.prune.pruner.mtp')
     @patch('nemo.collections.llm.modelopt.prune.pruner.llm')
-    def test_mtp_prune_with_different_algorithms(self, mock_llm, mock_mtp):
+    def test_mtp_prune_with_different_targets(self, mock_llm, mock_mtp):
         """
-        Test case 5: Test different pruning algorithms
-        
-        Input: Different algorithm values
-        Expected behavior: All algorithms can be correctly passed to mtp.prune
+        Test case 5: Test different pruning target parameters
+
+        Input: Different target parameter values
+        Expected behavior: All target configs can be correctly passed to mtp.prune
         """
         mock_mtp.prune = MagicMock(return_value=self.mock_model)
         mock_llm.validate = MagicMock()
-        
-        algorithms = ["width_pruning", "depth_pruning", "unstructured"]
-        
-        for algorithm in algorithms:
-            with self.subTest(algorithm=algorithm):
+
+        configs = [
+            PruningConfig(target_ffn_hidden_size=2048),
+            PruningConfig(target_hidden_size=512),
+            PruningConfig(target_num_layers=8),
+        ]
+
+        for config in configs:
+            with self.subTest(config=config):
                 mock_mtp.prune.reset_mock()
-                
-                config = PruningConfig(
-                    algorithm=algorithm,
-                    amount=0.3
-                )
-                
+
                 result = prune_language_model(
                     model=self.mock_model,
                     pruning_config=config,
                     data_module=MagicMock(),
                     trainer=MagicMock()
                 )
-                
+
                 # Verify: Called mtp.prune
                 self.assertTrue(mock_mtp.prune.called)
-                
+
                 # Verify: Returned model
                 self.assertIsNotNone(result)
     
@@ -248,46 +238,41 @@ class TestPruneLanguageModel(unittest.TestCase):
             pruning_config=config
         )
         
-        # Verify: Passed correct layer indices
+        # Verify: Passed correct layer indices (keyword arg)
         call_args = mock_drop.call_args
-        self.assertEqual(call_args[0][1], [10, 11])
-        
+        self.assertEqual(call_args.kwargs['layers_to_drop'], [10, 11])
+
         # Verify: Successfully returned
         self.assertIsNotNone(result)
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('nemo.collections.llm.modelopt.prune.pruner.mtp')
-    @patch('nemo.collections.llm.modelopt.prune.pruner.unwrap_for_modelopt_operations')
-    def test_model_unwrapping_for_mtp(self, mock_unwrap, mock_mtp):
+    @patch('nemo.collections.llm.modelopt.prune.pruner.llm')
+    def test_model_passed_directly_to_mtp_prune(self, mock_llm, mock_mtp):
         """
-        Test case 7: Model is unwrapped before passing to mtp.prune
-        
-        Input: Wrapped model
-        Expected behavior: Call unwrap function, pass unwrapped model to mtp.prune
+        Test case 7: Model is passed directly to mtp.prune
+
+        Input: Model with target pruning config (no drop_layers)
+        Expected behavior: Pass model directly to mtp.prune
         """
-        unwrapped_model = MagicMock()
-        unwrapped_model.__class__.__name__ = "GPTModel"
-        
-        mock_unwrap.return_value = unwrapped_model
-        mock_mtp.prune = MagicMock(return_value=unwrapped_model)
-        
+        mock_mtp.prune = MagicMock(return_value=self.mock_model)
+        mock_llm.validate = MagicMock()
+
         config = PruningConfig(
-            algorithm="width_pruning"
+            target_ffn_hidden_size=2048,
         )
-        
-        with patch('nemo.collections.llm.modelopt.prune.pruner.llm'):
-            result = prune_language_model(
-                model=self.mock_model,
-                pruning_config=config,
-                data_module=MagicMock(),
-                trainer=MagicMock()
-            )
-        
-        # Verify: Called unwrap
-        mock_unwrap.assert_called()
-        
-        # Verify: mtp.prune was called
-        self.assertTrue(mock_mtp.prune.called)
+
+        result = prune_language_model(
+            model=self.mock_model,
+            pruning_config=config,
+            data_module=MagicMock(),
+            trainer=MagicMock()
+        )
+
+        # Verify: mtp.prune was called with the model
+        mock_mtp.prune.assert_called_once()
+        call_args = mock_mtp.prune.call_args
+        self.assertEqual(call_args[0][0], self.mock_model)
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('nemo.collections.llm.modelopt.prune.pruner.mtp')
@@ -303,10 +288,9 @@ class TestPruneLanguageModel(unittest.TestCase):
         mock_llm.validate = MagicMock()
         
         config = PruningConfig(
-            algorithm="width_pruning",
-            amount=0.3
+            target_ffn_hidden_size=2048,
         )
-        
+
         result = prune_language_model(
             model=self.mock_model,
             pruning_config=config,
@@ -338,21 +322,21 @@ class TestPruningConfigValidation(unittest.TestCase):
         self.assertEqual(config.drop_layers, [0, 1, 2])
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
-    def test_pruning_config_with_algorithm(self):
+    def test_pruning_config_with_target_params(self):
         """
-        Test case 10: Create configuration with algorithm
-        
-        Input: algorithm="width_pruning", amount=0.5
+        Test case 10: Create configuration with target parameters
+
+        Input: target_ffn_hidden_size=2048, target_num_layers=8
         Expected: Successfully create configuration, parameters correctly stored
         """
         config = PruningConfig(
-            algorithm="width_pruning",
-            amount=0.5
+            target_ffn_hidden_size=2048,
+            target_num_layers=8,
         )
-        
+
         self.assertIsNotNone(config)
-        self.assertEqual(config.algorithm, "width_pruning")
-        self.assertEqual(config.amount, 0.5)
+        self.assertEqual(config.target_ffn_hidden_size, 2048)
+        self.assertEqual(config.target_num_layers, 8)
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     def test_pruning_config_default_values(self):
@@ -367,7 +351,7 @@ class TestPruningConfigValidation(unittest.TestCase):
         self.assertIsNotNone(config)
         # Default value verification (based on actual implementation)
         self.assertTrue(hasattr(config, 'drop_layers'))
-        self.assertTrue(hasattr(config, 'algorithm'))
+        self.assertTrue(hasattr(config, 'target_ffn_hidden_size'))
 
 
 class TestPruningEdgeCases(unittest.TestCase):
@@ -396,9 +380,9 @@ class TestPruningEdgeCases(unittest.TestCase):
         # Verify: Called drop function
         mock_drop.assert_called_once()
         
-        # Verify: Passed single layer index
+        # Verify: Passed single layer index (keyword arg)
         call_args = mock_drop.call_args
-        self.assertEqual(call_args[0][1], [5])
+        self.assertEqual(call_args.kwargs['layers_to_drop'], [5])
         
         self.assertIsNotNone(result)
     
@@ -422,9 +406,9 @@ class TestPruningEdgeCases(unittest.TestCase):
             pruning_config=config
         )
         
-        # Verify: Passed consecutive layer indices
+        # Verify: Passed consecutive layer indices (keyword arg)
         call_args = mock_drop.call_args
-        self.assertEqual(call_args[0][1], [3, 4, 5, 6])
+        self.assertEqual(call_args.kwargs['layers_to_drop'], [3, 4, 5, 6])
         
         self.assertIsNotNone(result)
     
@@ -448,9 +432,9 @@ class TestPruningEdgeCases(unittest.TestCase):
             pruning_config=config
         )
         
-        # Verify: Passed non-consecutive layer indices
+        # Verify: Passed non-consecutive layer indices (keyword arg)
         call_args = mock_drop.call_args
-        self.assertEqual(call_args[0][1], [1, 5, 9])
+        self.assertEqual(call_args.kwargs['layers_to_drop'], [1, 5, 9])
         
         self.assertIsNotNone(result)
 
