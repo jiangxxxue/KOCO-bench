@@ -281,7 +281,17 @@ def cmd_evaluate(framework: str, model: str, test_example: str = None) -> int:
 
         rc = subprocess.run(docker_cmd).returncode
         if rc == 0:
-            print(f"  PASS")
+            # Try to show test summary from metrics file
+            metrics_file = PROJECT_ROOT / data_subdir / output_name.replace('_result.jsonl', '_result.metrics.json')
+            if metrics_file.exists():
+                with open(metrics_file) as f:
+                    m = json.load(f)
+                tp = m.get('total_passed', 0)
+                tt = m.get('total_tests', 0)
+                p1 = m.get('pass_at_k', {}).get('pass@1', 0)
+                print(f"  COMPLETED ({tp}/{tt} passed, pass@1={p1:.4f})")
+            else:
+                print(f"  COMPLETED")
             passed += 1
         else:
             print(f"  FAIL (exit code {rc})")

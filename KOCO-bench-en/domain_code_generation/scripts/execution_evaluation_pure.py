@@ -621,26 +621,30 @@ def main():
     print(f"Loading data from {args.input_file}...")
     data_records = result_collector.load_jsonl_data(args.input_file)
     print(f"Processing {len(data_records)} records...")
+
+    infra_errors = 0
     
     for i, record in enumerate(data_records):
         print(f"Processing record {i+1}/{len(data_records)}: {record['function_name']}")
         
-        # Validate that required fields are present
-        location = record.get('implementation_location', '')
-        test_code_path = record.get('test_code_path', '')
+        # Validate that required fields are present (normalize backslash/backtick paths)
+        location = record.get('implementation_location', '').strip().strip('`').replace('\\', '/')
+        test_code_path = record.get('test_code_path', '').strip().strip('`').replace('\\', '/')
         
         if not location or not location.strip():
             print(f"  ❌ Error: 'implementation_location' field is empty or missing")
             print(f"  This field is required to locate the source file to modify")
             record['results'] = [False] * len(record.get('completions', []))
             record['pass_ratios'] = [0.0] * len(record.get('completions', []))
+            infra_errors += 1
             continue
-        
+
         if not test_code_path or not test_code_path.strip():
             print(f"  ❌ Error: 'test_code_path' field is empty or missing")
             print(f"  This field is required to locate the test file to run")
             record['results'] = [False] * len(record.get('completions', []))
             record['pass_ratios'] = [0.0] * len(record.get('completions', []))
+            infra_errors += 1
             continue
         
         source_file = location.split(':')[0]
@@ -656,12 +660,14 @@ def main():
             print(f"  Check that 'implementation_location' contains a valid file path")
             record['results'] = [False] * len(record.get('completions', []))
             record['pass_ratios'] = [0.0] * len(record.get('completions', []))
+            infra_errors += 1
             continue
-        
+
         if not os.path.exists(source_file_path):
             print(f"  ❌ Source file not found: {source_file_path}")
             record['results'] = [False] * len(record.get('completions', []))
             record['pass_ratios'] = [0.0] * len(record.get('completions', []))
+            infra_errors += 1
             continue
         
         if test_code_path.startswith('code/'):
@@ -759,6 +765,8 @@ def main():
                 'avg_pass_ratio': avg_pass_ratio
             }, f, ensure_ascii=False, indent=2)
 
+    return 1 if infra_errors > 0 else 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
