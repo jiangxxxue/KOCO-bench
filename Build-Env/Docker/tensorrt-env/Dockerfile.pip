@@ -65,9 +65,16 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 
 # 安装关键依赖（测试必须的包，安装失败则构建失败）
+# nvidia-modelopt 会将 torch 升级到 2.10+，因此之后需要重新安装匹配的 torchvision
 RUN pip install --no-cache-dir \
     regex \
-    nvidia-modelopt
+    nvidia-modelopt \
+    pytest \
+    python-dateutil \
+    PyYAML \
+    transformers && \
+    pip install --no-cache-dir \
+    torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # 安装其他依赖（排除 torch 相关和已安装的关键包）
 RUN grep -v "^torch" /tmp/requirements.txt | \

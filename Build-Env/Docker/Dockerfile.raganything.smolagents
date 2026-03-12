@@ -36,6 +36,12 @@ RUN pip install \
         smolagents==1.24.0 \
         datasets==4.5.0 \
         langchain-huggingface==0.1.2 \
-        litellm==1.81.8
+        litellm==1.81.8 && \
+    pip install \
+        ddgs \
+        rank_bm25 \
+        mcpadapt \
+        jsonref \
+        peft
 
 CMD ["/bin/bash"]
