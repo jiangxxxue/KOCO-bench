@@ -68,7 +68,7 @@ lightrag-dev/
 gui/
 
 # unit-test files
-test_*
+#test_*
 
 # Cline files
 memory-bank/

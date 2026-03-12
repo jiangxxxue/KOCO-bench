@@ -42,7 +42,7 @@ class MockOpenAIServer:
                 # if len(prompt)>0:
                 #     print(f"🔍 Received prompt : {prompt}...")
 
-                # Determine if this is a LightRAG Knowledge Graph extraction task
+                # Determine if it's a LightRAG knowledge graph extraction task
                 is_lightrag_extraction = (
                         "Knowledge Graph Specialist" in system_prompt
                         and "entity<|#|>" in system_prompt

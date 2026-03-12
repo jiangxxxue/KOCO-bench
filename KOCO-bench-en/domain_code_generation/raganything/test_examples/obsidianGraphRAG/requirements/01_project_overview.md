@@ -2,13 +2,13 @@
 
 ## 1. System Overview
 
-ObsidianGraphRAG is a system designed to transform personal Obsidian note vaults into queryable, conversational local knowledge bases. It aims to solve core pain points in personal knowledge management: numerous note contents leading to information forgetting and broken thought connections. Through this system, users can interact with all their notes as if conversing with a knowledgeable personal assistant, discovering forgotten knowledge and hidden deep connections between notes.
+ObsidianGraphRAG is a system designed to transform your personal Obsidian Vault into a queryable, conversational local knowledge base. It addresses a core pain point in personal knowledge management: the abundance of notes leading to forgotten information and broken connections between ideas. Through this system, users can interact with all their notes as if conversing with a knowledgeable personal assistant, uncovering forgotten knowledge and discovering deep connections hidden between notes.
 
-The core design philosophy of the system is "local-first" and "data privacy". All knowledge parsing, vector embedding, and relevance reranking processes run on the user's local device, only calling external Gemini API (free tier) at the final answer generation stage, thus achieving powerful functionality while maximizing user data privacy and security with almost no running costs.
+The system's core design philosophy is "local-first" and "data privacy". All knowledge parsing, vector embedding, and reranking processes run on the user's local device. Only the final answer generation stage calls the external Gemini API (free tier), thereby achieving powerful functionality while maximizing user data privacy and security with virtually no running costs.
 
 ## 2. Workflow
 
-The system's core workflow is divided into two main phases: **knowledge base construction (initial build and incremental sync)** and **query answering**.
+The system's core workflow is divided into two main phases: **Knowledge Base Construction (Initial Build and Incremental Sync)** and **Query Answering**.
 
 ```
 Algorithm: ObsidianGraphRAG Pipeline
@@ -28,7 +28,7 @@ Output: Answer based on user's notes
 10:   for each note in notes_to_process do
 11:       // Process notes using Obsidian-optimized chunker
 12:       chunks = obsidian_chunker.chunk(note)
-13:       // Add text chunks and generate vector embeddings
+13:       // Add chunks and generate vector embeddings
 14:       rag_system.add_chunks(chunks)
 15:       // Extract entities and relationships, update knowledge graph
 16:       rag_system.extract_and_add_graph_elements(chunks)
@@ -55,22 +55,21 @@ Output: Answer based on user's notes
 ```
 
 Key components in the pipeline:
-- **run_obsidian_raganything.py**: Script for initial execution, which completely processes the entire Obsidian note vault and builds the initial knowledge base.
-- **run_incremental_sync.py**: Incremental sync script for daily use. It only processes new or modified notes by comparing file hashes, greatly improving update efficiency.
-- **run_ui.py**: Starts a local Web server based on FastAPI and WebSocket, providing a ChatGPT-like interactive interface.
-- **obsidian_chunker.py**: A text chunker customized for Obsidian notes, capable of understanding and preserving wikilinks between notes, thus maintaining contextual associations during chunking.
-- **bge_reranker.py**: BGE reranking model, which performs secondary sorting of results after retrieval, placing the most relevant content at the front, effectively improving answer accuracy (15-30%).
-- **gemini_llm.py**: Encapsulates interaction logic with Google Gemini API, responsible for sending final context and questions to LLM and returning generated answers in streaming mode.
+- **run_obsidian_raganything.py**: Script for initial execution that fully processes the entire Obsidian Vault and builds the initial knowledge base.
+- **run_incremental_sync.py**: Daily incremental sync script. It compares file hashes and only processes new or modified notes, greatly improving update efficiency.
+- **run_ui.py**: Launches a local web server based on FastAPI and WebSocket, providing a ChatGPT-like interactive interface.
+- **obsidian_chunker.py**: A text chunker customized for Obsidian notes that understands and preserves wikilinks between notes, maintaining contextual associations during chunking.
+- **bge_reranker.py**: BGE reranking model that performs secondary sorting of retrieval results, placing the most relevant content at the top, effectively improving answer accuracy by 15-30%.
+- **gemini_llm.py**: Encapsulates the interaction logic with Google Gemini API, responsible for sending the final context and question to the LLM and returning the generated answer in streaming fashion.
 
 ## 3. Application Scenarios
 
 ### Personal Knowledge Management and Review
-- **Input**: An Obsidian vault containing long-term accumulated, numerous notes, and a natural language question about note content (e.g., "What ideas have I recorded about 'decision models'?").
-- **Output**: A comprehensive answer based on the user's own notes, which may reveal hidden connections between notes from different times and different topics.
-- **Purpose**: Help users combat forgetting, efficiently review, integrate, and reuse knowledge they have recorded, truly achieving knowledge compounding.
+- **Input**: An Obsidian Vault containing long-accumulated, extensive notes, along with a natural language question about the note content (e.g., "What ideas have I recorded about 'decision models'?").
+- **Output**: A comprehensive answer based on the user's own notes, potentially revealing hidden connections between notes from different times and topics.
+- **Purpose**: Help users combat forgetting, efficiently review, integrate, and reuse their recorded knowledge, truly achieving compound returns on knowledge.
 
-### Creativity and Research Assistance
-- **Input**: A vague question about research topics or creative directions (e.g., "In my notes, what cross-content exists between 'psychology' and 'marketing'?").
-- **Output**: The system finds all relevant concepts, notes, and connections from the knowledge base, providing a structured overview or summary as a starting point for innovation.
-- **Purpose**: Assist research and creative processes, inspire new ideas by deeply mining the inherent potential of existing notes, rather than starting from scratch.
-
+### Creative and Research Assistance
+- **Input**: A vague question about a research topic or creative direction (e.g., "What cross-content exists in my notes about 'psychology' and 'marketing'?").
+- **Output**: The system identifies all relevant concepts, notes, and connections from the knowledge base, providing a structured overview or summary as a starting point for innovation.
+- **Purpose**: Assist in research and creative processes by deeply mining the inherent potential of existing notes to inspire new ideas, rather than starting from scratch.
