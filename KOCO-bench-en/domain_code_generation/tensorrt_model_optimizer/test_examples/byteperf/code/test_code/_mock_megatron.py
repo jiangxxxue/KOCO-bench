@@ -61,6 +61,17 @@ class MinimalMock:
             sys.modules['modelopt.torch.opt.conversion'] = modelopt_torch_opt_conversion
             sys.modules['modelopt.torch.quantization'] = modelopt_torch_quantization
 
+        # Ensure modelopt.torch.opt.plugins has required functions
+        # (bundled Megatron-LM needs these but installed nvidia-modelopt may lack them)
+        plugins_mod = sys.modules.get('modelopt.torch.opt.plugins')
+        if plugins_mod is None:
+            plugins_mod = ModuleType('modelopt.torch.opt.plugins')
+            sys.modules['modelopt.torch.opt.plugins'] = plugins_mod
+        if not hasattr(plugins_mod, 'get_sharded_modelopt_state'):
+            plugins_mod.get_sharded_modelopt_state = MagicMock(name='get_sharded_modelopt_state')
+        if not hasattr(plugins_mod, 'restore_modelopt_state_metadata'):
+            plugins_mod.restore_modelopt_state_metadata = MagicMock(name='restore_modelopt_state_metadata')
+
         # transformer_engine: needed by various megatron modules
         try:
             import transformer_engine
@@ -69,12 +80,32 @@ class MinimalMock:
             te_mock = ModuleType('transformer_engine')
             te_pytorch_mock = ModuleType('transformer_engine.pytorch')
 
+            te_mock.__version__ = '1.0.0'
+
             te_pytorch_mock.Linear = MagicMock(name='Linear')
             te_pytorch_mock.LayerNorm = MagicMock(name='LayerNorm')
             te_pytorch_mock.LayerNormLinear = MagicMock(name='LayerNormLinear')
+            te_pytorch_mock.DotProductAttention = MagicMock(name='DotProductAttention')
             te_pytorch_mock.make_graphed_callables = MagicMock(name='make_graphed_callables')
 
+            te_pytorch_distributed = ModuleType('transformer_engine.pytorch.distributed')
+            te_pytorch_distributed.CudaRNGStatesTracker = MagicMock(name='CudaRNGStatesTracker')
+            te_pytorch_mock.distributed = te_pytorch_distributed
+
+            # Add common.recipe (needed by megatron.core.extensions.transformer_engine)
+            te_common_mock = ModuleType('transformer_engine.common')
+            te_common_recipe_mock = ModuleType('transformer_engine.common.recipe')
+            te_common_recipe_mock.DelayedScaling = MagicMock(name='DelayedScaling')
+            te_common_recipe_mock.Format = MagicMock(name='Format')
+            te_common_recipe_mock.Format.E4M3 = 'E4M3'
+            te_common_recipe_mock.Format.HYBRID = 'HYBRID'
+            te_common_mock.recipe = te_common_recipe_mock
+
             te_mock.pytorch = te_pytorch_mock
+            te_mock.common = te_common_mock
 
             sys.modules['transformer_engine'] = te_mock
             sys.modules['transformer_engine.pytorch'] = te_pytorch_mock
+            sys.modules['transformer_engine.pytorch.distributed'] = te_pytorch_distributed
+            sys.modules['transformer_engine.common'] = te_common_mock
+            sys.modules['transformer_engine.common.recipe'] = te_common_recipe_mock

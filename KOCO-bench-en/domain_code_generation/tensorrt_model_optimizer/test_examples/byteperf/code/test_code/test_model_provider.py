@@ -234,7 +234,7 @@ class TestModelProvider(unittest.TestCase):
                                       mock_adjust, mock_get_rank):
         """
         Testcase4: Distillation mode enabled
-        
+
         Input: args.export_kd_teacher_load exists
         Expected behavior:
         1. Load teacher configuration
@@ -245,48 +245,52 @@ class TestModelProvider(unittest.TestCase):
         self.mock_args.export_kd_teacher_load = "/path/to/teacher"
         mock_get_args.return_value = self.mock_args
         mock_get_rank.return_value = 0
-        
+
         mock_config = Mock()
         mock_config_from_args.return_value = mock_config
-        
+
         mock_spec = Mock()
         mock_get_spec.return_value = mock_spec
-        
+
         mock_model = Mock()
         mock_model_class.return_value = mock_model
-        
+
         mock_load_state.return_value = {}
-        
+
         # Mock distillation components
         mock_teacher_config = Mock()
         mock_load_teacher_cfg.return_value = mock_teacher_config
-        
+
         mock_distill_cfg = {
             "criterion": Mock(),
             "loss_balancer": Mock()
         }
         mock_load_distill_cfg.return_value = mock_distill_cfg
-        
+
         # Mock model mode as NOT kd_loss
         mock_get_mode.return_value = "normal"
-        
-        # Mock converted distillation model
-        mock_distill_model = Mock(spec=['__class__'])
-        mock_distill_model.__class__.__name__ = 'DistillationModel'
+
+        # Create a real dummy class for DistillationModel so isinstance() works
+        class _DummyDistillationModel:
+            pass
+
+        mock_distill_model = MagicMock(spec=_DummyDistillationModel)
         mock_convert.return_value = mock_distill_model
-        
-        # Execute
-        result = model_provider()
-        
+
+        # Patch mtd.DistillationModel with the real class so isinstance check passes
+        with patch('megatron.inference.gpt.model_provider.mtd.DistillationModel', _DummyDistillationModel):
+            # Execute
+            result = model_provider()
+
         # Verify: Load teacher configuration
         mock_load_teacher_cfg.assert_called_once_with(self.mock_args.export_kd_teacher_load)
-        
+
         # Verify: Load distillation configuration
         mock_load_distill_cfg.assert_called_once()
-        
+
         # Verify: mtd.convert is called
         mock_convert.assert_called_once()
-        
+
         # Verify: adjust_distillation_model_for_mcore is called
         mock_adjust.assert_called_once_with(mock_distill_model, mock_distill_cfg)
     
@@ -295,54 +299,53 @@ class TestModelProvider(unittest.TestCase):
     @patch('megatron.inference.gpt.model_provider.mtd.export')
     @patch('megatron.inference.gpt.model_provider._add_load_convert_hooks')
     @patch('megatron.inference.gpt.model_provider.load_modelopt_state')
-    @patch('megatron.inference.gpt.model_provider.mtd.DistillationModel')
     @patch('megatron.inference.gpt.model_provider.get_gpt_layer_modelopt_spec')
     @patch('megatron.inference.gpt.model_provider.core_transformer_config_from_args')
     @patch('megatron.inference.gpt.model_provider.print_rank_0')
     @patch('megatron.inference.gpt.model_provider.get_args')
     def test_distillation_finalize_export(self, mock_get_args, mock_print, mock_config_from_args,
-                                         mock_get_spec, mock_distill_model_class, mock_load_state,
+                                         mock_get_spec, mock_load_state,
                                          mock_add_hooks, mock_export, mock_get_rank):
         """
         Testcase5: Distillation finalize mode, export student model
-        
+
         Input:
         - args.export_kd_finalize = True
         - model is DistillationModel
-        
+
         Expected: Call mtd.export to export student model
         """
         self.mock_args.export_kd_finalize = True
         mock_get_args.return_value = self.mock_args
         mock_get_rank.return_value = 0
-        
+
         mock_config = Mock()
         mock_config_from_args.return_value = mock_config
-        
+
         mock_spec = Mock()
         mock_get_spec.return_value = mock_spec
-        
-        # Create a DistillationModel instance
-        from unittest.mock import MagicMock
-        import modelopt.torch.distill as mtd
-        
-        mock_model = MagicMock(spec=mtd.DistillationModel)
-        # Let isinstance check pass
-        mock_model.__class__ = mtd.DistillationModel
-        
-        # Directly patch MCoreGPTModel, but let it return DistillationModel
-        with patch('megatron.inference.gpt.model_provider.MCoreGPTModel', return_value=mock_model):
+
+        # Create a real dummy class for DistillationModel so isinstance() works
+        class _DummyDistillationModel:
+            pass
+
+        # Create a mock model whose type is our dummy class
+        mock_model = MagicMock(spec=_DummyDistillationModel)
+
+        # Directly patch MCoreGPTModel and mtd.DistillationModel so isinstance check passes
+        with patch('megatron.inference.gpt.model_provider.MCoreGPTModel', return_value=mock_model), \
+             patch('megatron.inference.gpt.model_provider.mtd.DistillationModel', _DummyDistillationModel):
             mock_load_state.return_value = {}
-            
+
             exported_model = Mock()
             mock_export.return_value = exported_model
-            
+
             # Execute
             result = model_provider()
-            
+
             # Verify: mtd.export is called
             mock_export.assert_called_once_with(mock_model)
-            
+
             # Verify: Exported model is returned
             self.assertEqual(result, exported_model)
     
