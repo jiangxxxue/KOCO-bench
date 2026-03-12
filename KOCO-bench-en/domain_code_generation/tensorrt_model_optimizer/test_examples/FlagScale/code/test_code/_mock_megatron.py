@@ -2,16 +2,51 @@
 Minimal megatron mock, providing only necessary interfaces while preserving core test logic
 """
 from unittest.mock import Mock, MagicMock, patch
+from importlib.abc import MetaPathFinder, Loader
+from importlib.machinery import ModuleSpec
+
+
+class _MockLoader(Loader):
+    """Loader that creates a MagicMock module."""
+    def create_module(self, spec):
+        return MagicMock()
+    def exec_module(self, module):
+        pass
+
+
+class _AutoMockFinder(MetaPathFinder):
+    """Import hook that auto-mocks any submodule under known prefixes."""
+    _PREFIXES = (
+        'megatron.training.',
+        'megatron.post_training.',
+        'megatron.core.',
+        'megatron.legacy.',
+    )
+
+    def find_module(self, fullname, path=None):
+        for prefix in self._PREFIXES:
+            if fullname.startswith(prefix):
+                return self
+        return None
+
+    def find_spec(self, fullname, path, target=None):
+        if self.find_module(fullname, path) is not None:
+            return ModuleSpec(fullname, _MockLoader(), is_package=True)
+        return None
 
 
 class MinimalMock:
     """Provides minimal mock without affecting core test logic"""
-    
+
     @staticmethod
     def setup_megatron_mocks():
         """Setup necessary megatron mocks"""
         import sys
         from types import ModuleType
+
+        # Install auto-mock finder for megatron submodules
+        if not any(isinstance(f, _AutoMockFinder) for f in sys.meta_path):
+            sys.meta_path.insert(0, _AutoMockFinder())
         
         # Try real import first, mock only if it fails
         # apex: Try real import first, mock only if it fails
@@ -57,16 +92,23 @@ class MinimalMock:
             te_common_mock = ModuleType('transformer_engine.common')
             te_common_recipe_mock = ModuleType('transformer_engine.common.recipe')
             
+            te_mock.__version__ = '1.0.0'
+
             # Add required attributes and classes
             te_float8_mock.Float8Tensor = MagicMock(name='Float8Tensor')
             te_cpp_mock.cast_to_fp8 = MagicMock(name='cast_to_fp8')
             te_cpp_mock.cast_from_fp8 = MagicMock(name='cast_from_fp8')
-            
+
             # Add Linear class (commonly used layer)
             te_pytorch_mock.Linear = MagicMock(name='Linear')
             te_pytorch_mock.LayerNorm = MagicMock(name='LayerNorm')
             te_pytorch_mock.LayerNormLinear = MagicMock(name='LayerNormLinear')
+            te_pytorch_mock.DotProductAttention = MagicMock(name='DotProductAttention')
             te_pytorch_mock.make_graphed_callables = MagicMock(name='make_graphed_callables')
+
+            te_pytorch_distributed = ModuleType('transformer_engine.pytorch.distributed')
+            te_pytorch_distributed.CudaRNGStatesTracker = MagicMock(name='CudaRNGStatesTracker')
+            te_pytorch_mock.distributed = te_pytorch_distributed
             
             # Add common.recipe related
             te_common_recipe_mock.Format = MagicMock()
@@ -85,72 +127,84 @@ class MinimalMock:
             sys.modules['transformer_engine.pytorch'] = te_pytorch_mock
             sys.modules['transformer_engine.pytorch.float8_tensor'] = te_float8_mock
             sys.modules['transformer_engine.pytorch.cpp_extensions'] = te_cpp_mock
+            sys.modules['transformer_engine.pytorch.distributed'] = te_pytorch_distributed
             sys.modules['transformer_engine.common'] = te_common_mock
             sys.modules['transformer_engine.common.recipe'] = te_common_recipe_mock
         
-        # If megatron.training doesn't exist, provide minimal stub
+        # Mock the full megatron package tree so that
+        # `from megatron.core import parallel_state` etc. succeed.
+        # We use MagicMock for all submodules so any attribute access works.
         try:
-            import megatron.training
+            import megatron.core
         except (ImportError, ModuleNotFoundError):
-            # Create stub for megatron.training
-            from types import ModuleType
-            
-            # Create training module
-            training = ModuleType('training')
-            training.get_args = Mock(name='get_args')
-            training.get_timers = Mock(name='get_timers')
-            training.get_tokenizer = Mock(name='get_tokenizer')
-            training.print_rank_0 = Mock(name='print_rank_0')
-            training.pretrain = Mock(name='pretrain')
-            training.inprocess_restart = Mock(name='inprocess_restart')
-            
-            # Create arguments module
-            arguments = ModuleType('arguments')
-            arguments.core_transformer_config_from_args = Mock(name='core_transformer_config_from_args')
-            
-            # Create yaml_arguments module
-            yaml_arguments = ModuleType('yaml_arguments')
-            yaml_arguments.core_transformer_config_from_yaml = Mock(name='core_transformer_config_from_yaml')
-            
-            # Create utils module
-            utils = ModuleType('utils')
-            utils.get_batch_on_this_cp_rank = Mock(name='get_batch_on_this_cp_rank')
-            utils.get_batch_on_this_tp_rank = Mock(name='get_batch_on_this_tp_rank')
-            utils.get_blend_and_blend_per_split = Mock(name='get_blend_and_blend_per_split')
-            
-            training.arguments = arguments
-            training.yaml_arguments = yaml_arguments
-            training.utils = utils
-            
-            sys.modules['megatron.training'] = training
-            sys.modules['megatron.training.arguments'] = arguments
-            sys.modules['megatron.training.yaml_arguments'] = yaml_arguments
-            sys.modules['megatron.training.utils'] = utils
-        
-        # Mock post_training (ModelOpt related, optional)
-        try:
-            import megatron.post_training
-        except (ImportError, ModuleNotFoundError):
-            post_training = ModuleType('post_training')
-            post_training.arguments = ModuleType('arguments')
-            post_training.arguments.add_modelopt_args = Mock()
-            post_training.arguments.modelopt_args_enabled = Mock(return_value=False)
-            post_training.loss_func = ModuleType('loss_func')
-            post_training.loss_func.loss_func = Mock()
-            post_training.model_provider = ModuleType('model_provider')
-            post_training.model_provider.model_provider = Mock()
-            
-            sys.modules['megatron.post_training'] = post_training
-            sys.modules['megatron.post_training.arguments'] = post_training.arguments
-            sys.modules['megatron.post_training.loss_func'] = post_training.loss_func
-            sys.modules['megatron.post_training.model_provider'] = post_training.model_provider
-        
-        # Mock rerun_state_machine
-        try:
-            from megatron.core.rerun_state_machine import get_rerun_state_machine
-        except (ImportError, AttributeError):
-            if 'megatron.core.rerun_state_machine' not in sys.modules:
-                rerun = ModuleType('rerun_state_machine')
-                rerun.get_rerun_state_machine = Mock(name='get_rerun_state_machine')
-                sys.modules['megatron.core.rerun_state_machine'] = rerun
+            _megatron_submodules = [
+                'megatron',
+                'megatron.core',
+                'megatron.core.parallel_state',
+                'megatron.core.mpu',
+                'megatron.core.enums',
+                'megatron.core.utils',
+                'megatron.core.fp8_utils',
+                'megatron.core.num_microbatches_calculator',
+                'megatron.core.ModelParallelConfig',
+                'megatron.core.msc_utils',
+                'megatron.core.datasets',
+                'megatron.core.datasets.blended_megatron_dataset_builder',
+                'megatron.core.datasets.gpt_dataset',
+                'megatron.core.datasets.indexed_dataset',
+                'megatron.core.datasets.utils',
+                'megatron.core.models',
+                'megatron.core.models.gpt',
+                'megatron.core.models.gpt.gpt_layer_specs',
+                'megatron.core.models.gpt.heterogeneous',
+                'megatron.core.models.gpt.heterogeneous.heterogeneous_layer_specs',
+                'megatron.core.transformer',
+                'megatron.core.transformer.spec_utils',
+                'megatron.core.transformer.module',
+                'megatron.core.transformer.mlp',
+                'megatron.core.transformer.multi_token_prediction',
+                'megatron.core.transformer.moe',
+                'megatron.core.transformer.moe.upcycling_utils',
+                'megatron.core.transformer.moe.moe_utils',
+                'megatron.core.distributed',
+                'megatron.core.distributed.custom_fsdp',
+                'megatron.core.optimizer',
+                'megatron.core.optimizer_param_scheduler',
+                'megatron.core.pipeline_parallel',
+                'megatron.core.pipeline_parallel.schedules',
+                'megatron.core.pipeline_parallel.p2p_communication',
+                'megatron.core.tensor_parallel',
+                'megatron.core.tensor_parallel.mappings',
+                'megatron.core.dist_checkpointing',
+                'megatron.core.dist_checkpointing.mapping',
+                'megatron.core.rerun_state_machine',
+                'megatron.core.extensions',
+                'megatron.core.extensions.transformer_engine',
+                'megatron.legacy',
+                'megatron.legacy.model',
+                'megatron.legacy.data',
+                'megatron.legacy.data.data_samplers',
+            ]
+            for mod_name in _megatron_submodules:
+                if mod_name not in sys.modules:
+                    sys.modules[mod_name] = MagicMock()
+
+            # Make GPTDatasetConfig a real class so @dataclass inheritance works
+            # (MagicMock doesn't support __mro__ which @dataclass needs)
+            gpt_dataset_mod = sys.modules['megatron.core.datasets.gpt_dataset']
+            gpt_dataset_mod.GPTDatasetConfig = type('GPTDatasetConfig', (), {})
+
+        # Register megatron.training and megatron.post_training as proper
+        # packages (ModuleType with __path__) so the _AutoMockFinder can
+        # handle all submodule imports dynamically.
+        for parent in ['megatron.training', 'megatron.post_training']:
+            try:
+                __import__(parent)
+            except (ImportError, ModuleNotFoundError):
+                if parent not in sys.modules:
+                    mod = ModuleType(parent)
+                    mod.__path__ = []
+                    mod.__package__ = parent
+                    mod.__getattr__ = lambda name: MagicMock()
+                    sys.modules[parent] = mod
 

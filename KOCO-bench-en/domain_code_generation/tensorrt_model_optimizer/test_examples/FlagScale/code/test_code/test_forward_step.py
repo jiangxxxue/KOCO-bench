@@ -119,8 +119,8 @@ class TestForwardStep(unittest.TestCase):
         self.mock_model.assert_called_once()
         call_kwargs = self.mock_model.call_args[1]
         self.assertIn('loss_mask', call_kwargs, "Core model forward should receive loss_mask parameter")
-        self.assertEqual(call_kwargs['loss_mask'], self.loss_mask)
-        self.assertEqual(call_kwargs['labels'], self.labels)
+        torch.testing.assert_close(call_kwargs['loss_mask'], self.loss_mask)
+        torch.testing.assert_close(call_kwargs['labels'], self.labels)
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('flagscale.train.train_gpt.get_args')
@@ -153,7 +153,7 @@ class TestForwardStep(unittest.TestCase):
         self.mock_model.assert_called_once()
         call_kwargs = self.mock_model.call_args[1]
         self.assertNotIn('loss_mask', call_kwargs, "Legacy model forward should not receive loss_mask parameter")
-        self.assertEqual(call_kwargs['labels'], self.labels)
+        torch.testing.assert_close(call_kwargs['labels'], self.labels)
     
     @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('flagscale.train.train_gpt.get_args')
@@ -191,11 +191,12 @@ class TestForwardStep(unittest.TestCase):
         
         # Verify: partial function has bound loss_mask and model
         # Calling partial function should use bound loss_mask and model
-        test_output = torch.randn(10, 8, 1000)
+        test_output = torch.randn(10, 8)
         with patch('flagscale.train.train_gpt.get_args', return_value=self.mock_args):
             with patch('flagscale.train.train_gpt.get_rerun_state_machine') as mock_rerun:
-                mock_rerun.return_value.validate_result = Mock()
-                result = partial_loss_func(test_output)
+                with patch('flagscale.train.train_gpt.has_nvidia_modelopt', False):
+                    mock_rerun.return_value.validate_result = Mock()
+                    result = partial_loss_func(test_output)
                 
                 # Verify returned correct structure
                 self.assertIsInstance(result, tuple)

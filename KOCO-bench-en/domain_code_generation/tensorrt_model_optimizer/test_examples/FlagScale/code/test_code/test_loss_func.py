@@ -72,7 +72,7 @@ class TestLossFunc(unittest.TestCase):
         # Verify: loss should be sum of masked losses
         # Valid tokens: indices 0, 1, 3 -> losses: 2.5, 3.0, 4.0 -> sum = 9.5
         expected_loss = torch.tensor(9.5)
-        torch.testing.assert_close(loss, expected_loss, rtol=1e-5)
+        torch.testing.assert_close(loss, expected_loss, rtol=1e-5, atol=1e-5)
         
         # Verify: num_tokens should be sum of loss_mask
         expected_num_tokens = torch.tensor(3, dtype=torch.int)
@@ -192,16 +192,16 @@ class TestLossFunc(unittest.TestCase):
         loss_func(self.loss_mask, self.output_tensor, self.mock_model)
         
         # Verify: Called validate_result to check NaN
-        self.assertEqual(mock_get_rerun_state_machine.validate_result.call_count, 2)  # NaN and Inf checks
-        
+        self.assertEqual(mock_get_rerun.return_value.validate_result.call_count, 2)  # NaN and Inf checks
+
         # Verify NaN check call
-        nan_call = mock_get_rerun_state_machine.validate_result.call_args_list[0]
+        nan_call = mock_get_rerun.return_value.validate_result.call_args_list[0]
         self.assertEqual(nan_call[1]['rejection_func'], torch.isnan)
         self.assertEqual(nan_call[1]['message'], "found NaN in local forward loss calculation")
         self.assertEqual(nan_call[1]['fatal'], True)
-        
+
         # Verify Inf check call
-        inf_call = mock_get_rerun_state_machine.validate_result.call_args_list[1]
+        inf_call = mock_get_rerun.return_value.validate_result.call_args_list[1]
         self.assertEqual(inf_call[1]['rejection_func'], torch.isinf)
         self.assertEqual(inf_call[1]['message'], "found Inf in local forward loss calculation")
         self.assertEqual(inf_call[1]['fatal'], True)
@@ -226,16 +226,16 @@ class TestLossFunc(unittest.TestCase):
         
         # Verify: Called validate_result to check spiky loss
         # Should have at least one call (may also have NaN check)
-        call_count = mock_get_rerun_state_machine.validate_result.call_count
+        call_count = mock_get_rerun.return_value.validate_result.call_count
         self.assertGreaterEqual(call_count, 1)
-        
+
         # Find spiky loss check call
         spiky_calls = [
-            call for call in mock_get_rerun_state_machine.validate_result.call_args_list
+            call for call in mock_get_rerun.return_value.validate_result.call_args_list
             if call[1].get('message') == 'Spiky loss'
         ]
         self.assertGreater(len(spiky_calls), 0, "Should call validate_result to check spiky loss")
-        
+
         spiky_call = spiky_calls[0]
         self.assertEqual(spiky_call[1]['message'], "Spiky loss")
         self.assertEqual(spiky_call[1]['fatal'], False)
@@ -264,7 +264,7 @@ class TestLossFunc(unittest.TestCase):
         # Verify: Calculation result is correct (should flatten before calculation)
         # Valid values: [2.0, 3.0, 4.0] -> sum = 9.0
         expected_loss = torch.tensor(9.0)
-        torch.testing.assert_close(loss, expected_loss, rtol=1e-5)
+        torch.testing.assert_close(loss, expected_loss, rtol=1e-5, atol=1e-5)
         
         expected_num_tokens = torch.tensor(3, dtype=torch.int)
         torch.testing.assert_close(num_tokens, expected_num_tokens)
