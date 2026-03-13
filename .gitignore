@@ -1,6 +1,7 @@
-# Data & Logs
+# Data, Logs & Results
 data
 logs
+results/
 
 # Environment variables
 .env
