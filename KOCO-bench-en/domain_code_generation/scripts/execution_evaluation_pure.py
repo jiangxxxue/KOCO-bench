@@ -566,10 +566,10 @@ class ResultCollector:
             task_id = record.get('function_name', '')
             if not task_id:
                 continue
-            
+
             if task_id not in group:
                 group[task_id] = []
-                
+
             # Prioritize pass_ratios field (new version fine-grained data)
             if 'pass_ratios' in record and record['pass_ratios']:
                 group[task_id].extend(record['pass_ratios'])
@@ -581,6 +581,9 @@ class ResultCollector:
                 # Calculate pass ratio for this completion
                 pass_ratio = sum(record['results']) / len(record['results']) if len(record['results']) > 0 else 0.0
                 group[task_id].append(pass_ratio)
+            else:
+                # Empty completions (agent produced no output) — treat as 0.0
+                group[task_id].append(0.0)
         
         if not group:
             return 0.0
@@ -588,8 +591,11 @@ class ResultCollector:
         # Calculate average pass ratio for each task_id
         task_avg_pass_ratios = []
         for task_id, pass_ratios in group.items():
-            task_avg = np.mean(pass_ratios)
-            task_avg_pass_ratios.append(task_avg)
+            if not pass_ratios:
+                task_avg_pass_ratios.append(0.0)
+            else:
+                task_avg = np.mean(pass_ratios)
+                task_avg_pass_ratios.append(task_avg)
         
         # Return average pass ratio of all tasks
         return np.mean(task_avg_pass_ratios)

@@ -7,6 +7,7 @@ Calculate comprehensive pass@1 and avg_pass_ratio across multiple test instances
 """
 
 import json
+import math
 import argparse
 from pathlib import Path
 from typing import List, Dict, Any
@@ -132,10 +133,14 @@ def aggregate_metrics(
             
             # Weighted average pass@1 (weighted by function count)
             pass_at_1 = metrics.get('pass_at_k', {}).get('pass@1', 0.0)
+            if isinstance(pass_at_1, float) and math.isnan(pass_at_1):
+                pass_at_1 = 0.0
             weighted_pass_at_1 += pass_at_1 * num_funcs
-            
+
             # Weighted average avg_pass_ratio (weighted by function count)
             avg_ratio = metrics.get('avg_pass_ratio', 0.0)
+            if isinstance(avg_ratio, float) and math.isnan(avg_ratio):
+                avg_ratio = 0.0
             weighted_avg_pass_ratio += avg_ratio * num_funcs
             
             print(f"✓ {example}: {num_funcs} functions, "
