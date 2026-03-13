@@ -65,32 +65,77 @@ def save_completed_ids(ids: set, path: str) -> None:
 # Prompt construction
 # ---------------------------------------------------------------------------
 
-def _to_workspace_path(relative_path: str, work_dir: str) -> str:
-    """Convert a code-relative path to an absolute path inside the workspace.
+def _collect_gt_locations(records):
+    """Collect GT function line ranges from all records for the example.
 
-    Data files use paths like ``code/examples/foo.py`` relative to
-    ``test_examples/{example}/``.  Since OpenHands CLI runs locally with
-    ``cwd`` set to the workspace directory, convert to absolute paths.
+    Returns: dict mapping file paths (relative to code/) to lists of
+             (start_line, end_line) tuples (1-indexed, inclusive).
     """
-    if relative_path.startswith("code/"):
-        relative_path = relative_path[len("code/"):]
-    return os.path.join(work_dir, relative_path)
+    locations = {}
+    for r in records:
+        impl_loc = r.get("implementation_location", "")
+        if not impl_loc:
+            continue
+        # Format: "code/path/to/file.py:line 86-87"
+        # or with backslashes: "code\\path\\to\\file.py:line 86-87"
+        parts = impl_loc.split(":line ")
+        if len(parts) != 2:
+            continue
+        file_part = parts[0].replace("\\", "/")
+        if file_part.startswith("code/"):
+            file_part = file_part[len("code/"):]
+        try:
+            start_s, end_s = parts[1].split("-")
+            locations.setdefault(file_part, []).append((int(start_s), int(end_s)))
+        except ValueError:
+            continue
+    return locations
 
 
-def build_prompt(record: dict, framework: str, work_dir: str) -> str:
+def _strip_gt_lines(code_dst, gt_locations):
+    """Remove annotated GT function lines from copied files."""
+    for rel_path, ranges in gt_locations.items():
+        file_path = os.path.join(code_dst, rel_path)
+        if not os.path.exists(file_path):
+            continue
+        lines_to_remove = set()
+        for start, end in ranges:
+            lines_to_remove.update(range(start, end + 1))
+        with open(file_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        new_lines = [l for i, l in enumerate(lines, 1) if i not in lines_to_remove]
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+
+
+def _prepare_workspace(workspace_root, knowledge_corpus_root, gt_locations, tmp_dir):
+    """Copy workspace + knowledge_corpus, strip GT function bodies and test_code.
+
+    Returns: {"knowledge_corpus": abs_path, "code": abs_path}
+    """
+    # Copy knowledge_corpus
+    kc_dst = os.path.join(tmp_dir, "knowledge_corpus")
+    shutil.copytree(knowledge_corpus_root, kc_dst, symlinks=True)
+
+    # Copy code/ excluding test_code and caches
+    code_dst = os.path.join(tmp_dir, "code")
+    def _ignore(_dir, contents):
+        return {c for c in contents if c in ("test_code", "__pycache__", ".pytest_cache")}
+    shutil.copytree(workspace_root, code_dst, symlinks=True, ignore=_ignore)
+
+    # Strip GT function lines from copied files
+    _strip_gt_lines(code_dst, gt_locations)
+
+    return {"knowledge_corpus": kc_dst, "code": code_dst}
+
+
+def build_prompt(record: dict, framework: str, repo_paths: dict) -> str:
     """Build the task prompt for the OpenHands headless agent.
 
-    The agent runs locally with cwd set to ``work_dir`` (the repo code).
+    The agent runs locally with cwd set to the code directory.
+    ``repo_paths`` has keys ``knowledge_corpus`` and ``code``.
     """
     function_name = record["function_name"]
-    impl_location = record.get("implementation_location", "")
-    test_code_path = record.get("test_code_path", "")
-
-    # Convert paths to absolute paths in the workspace
-    impl_path_part = impl_location.split(":")[0] if ":" in impl_location else impl_location
-    impl_abs = _to_workspace_path(impl_path_part, work_dir)
-    impl_line_info = impl_location[len(impl_path_part):] if impl_path_part else ""
-    test_abs = _to_workspace_path(test_code_path, work_dir) if test_code_path else ""
 
     # Extract system/user context from the pre-built prompt
     system_context = ""
@@ -102,28 +147,29 @@ def build_prompt(record: dict, framework: str, work_dir: str) -> str:
             elif msg.get("role") == "user":
                 user_task = msg["content"]
 
-    result_file = os.path.join(work_dir, "implementation_result.json")
+    result_file = os.path.join(repo_paths["code"], "implementation_result.json")
 
     return f"""You are working in a repository for the {framework} framework.
 {system_context}
-
-Your current working directory is: {work_dir}
 
 TASK: Implement the function `{function_name}`.
 
 {user_task}
 
-INSTRUCTIONS (follow exactly in order):
-1. Read the implementation file: {impl_abs}
-   Focus on lines around {impl_line_info} to understand imports, class structure, and the function signature.
-2. Read the test file: {test_abs}
-3. Write your implementation of `{function_name}`.
-4. MANDATORY FINAL STEP — you MUST do this before finishing:
+You can freely explore the following known repositories to obtain the required information:
+- Framework Knowledge Base: {repo_paths["knowledge_corpus"]}
+- Development Repository: {repo_paths["code"]}
+
+Please use the code in these repositories to implement the required functionality.
+
+INSTRUCTIONS:
+1. Explore the repositories to understand the codebase, domain knowledge, and callable functions.
+2. Write your implementation of `{function_name}`.
+3. MANDATORY FINAL STEP — you MUST do this before finishing:
    Write the file {result_file} using the file_editor tool with this EXACT JSON:
    {{"function_name": "{function_name}", "implementation": "<complete function code here>"}}
    The "implementation" value must be a valid JSON string with escaped newlines (\\n) and quotes (\\").
    It MUST contain the COMPLETE function, starting with the def/async def line and including the full body.
-   Example: "def foo(x):\\n    return x + 1"
 
 RULES:
 - Do NOT run tests. Do NOT create helper scripts. Do NOT debug.
@@ -201,12 +247,14 @@ def _resolve_llm_model(model: str, base_url: str) -> str:
 def run_single_instance(
     record: dict,
     framework: str,
+    example: str,
     workspace_root: str,
+    knowledge_corpus_root: str,
+    gt_locations: dict,
     model: str,
     api_key: str,
     base_url: str = "https://openrouter.ai/api/v1",
     max_iterations: int = 50,
-    isolate: bool = True,
 ) -> dict:
     """Run the OpenHands headless agent for one function.
 
@@ -227,14 +275,11 @@ def run_single_instance(
     tmp_dir = tempfile.mkdtemp(prefix=f"oh_{function_name}_")
 
     try:
-        # --- Workspace isolation ---
-        if isolate:
-            work_dir = os.path.join(tmp_dir, "code")
-            shutil.copytree(workspace_root, work_dir, symlinks=True)
-        else:
-            work_dir = workspace_root
+        # --- Workspace isolation (strip GT, exclude test_code) ---
+        repo_paths = _prepare_workspace(workspace_root, knowledge_corpus_root, gt_locations, tmp_dir)
+        work_dir = repo_paths["code"]
 
-        prompt = build_prompt(record, framework, work_dir)
+        prompt = build_prompt(record, framework, repo_paths)
 
         # --- Write prompt to file (avoids shell length limits) ---
         prompt_file = os.path.join(tmp_dir, "task_prompt.txt")

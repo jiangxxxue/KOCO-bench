@@ -15,11 +15,17 @@ Usage (run from the scripts/ directory):
     # agent inference: specific functions only
     python openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2 --instance-ids compute_score
 
+    # agent inference: discard previous results and re-run from scratch
+    python openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2 --force
+
     # evaluation: run execution evaluation inside Docker + aggregate metrics (reuses cli.py steps 4-5)
     python openhands/cli.py eval  --framework verl --model deepseek/deepseek-v3.2
 
-    # full pipeline: infer + eval
+    # full pipeline: infer + eval (resumes by default, skipping completed instances)
     python openhands/cli.py run   --framework verl --model deepseek/deepseek-v3.2
+
+    # full pipeline: discard previous infer results and re-run everything from scratch
+    python openhands/cli.py run   --framework verl --model deepseek/deepseek-v3.2 --force
 
 Prerequisites:
     pip install openhands-ai numpy
@@ -119,8 +125,15 @@ def cmd_infer(
     max_iterations: int = 50,
     instance_ids: list = None,
     concurrency: int = 3,
+    force: bool = False,
 ) -> int:
-    """Run OpenHands agent inference for code generation."""
+    """Run OpenHands agent inference for code generation.
+
+    Args:
+        force: If True, delete existing progress and output files before
+               running, so that all instances are re-inferred from scratch.
+               By default (False), completed instances are skipped (resume).
+    """
     from runner import (
         run_single_instance,
         load_jsonl,
@@ -167,6 +180,13 @@ def cmd_infer(
         output_file = output_dir / f"algorithm_methods_data_{example}_output.jsonl"
         progress_file = output_dir / f".{example}_progress.json"
 
+        # --force: wipe previous infer results so everything re-runs
+        if force:
+            for f in (output_file, progress_file):
+                if f.exists():
+                    f.unlink()
+                    print(f"  Removed (--force): {f.name}")
+
         # Workspace (the repo code the agent explores)
         workspace_root = str(
             PROJECT_ROOT / framework / "test_examples" / example / "code"
@@ -175,11 +195,25 @@ def cmd_infer(
             print(f"  Skipping: workspace not found ({workspace_root})")
             continue
 
+        # Knowledge corpus (framework docs the agent can reference)
+        knowledge_corpus_root = str(
+            PROJECT_ROOT / framework / "knowledge_corpus"
+        )
+        if not os.path.isdir(knowledge_corpus_root):
+            print(f"  Skipping: knowledge_corpus not found ({knowledge_corpus_root})")
+            continue
+
         # Load task data
-        records = load_jsonl(str(data_file))
-        print(f"  Loaded {len(records)} functions")
+        all_records = load_jsonl(str(data_file))
+        print(f"  Loaded {len(all_records)} functions")
+
+        # Collect GT locations from ALL records (before filtering) so every
+        # ground-truth body is stripped even when running a subset via --instance-ids.
+        from runner import _collect_gt_locations
+        gt_locations = _collect_gt_locations(all_records)
 
         # Filter by specific function names
+        records = all_records
         if instance_ids:
             records = [r for r in records if r["function_name"] in instance_ids]
             print(f"  Filtered to {len(records)} by --instance-ids")
@@ -212,7 +246,10 @@ def cmd_infer(
             result = run_single_instance(
                 record=record,
                 framework=framework,
+                example=example,
                 workspace_root=workspace_root,
+                knowledge_corpus_root=knowledge_corpus_root,
+                gt_locations=gt_locations,
                 model=model,
                 api_key=api_key,
                 base_url=base_url,
@@ -425,6 +462,7 @@ def main():
         sp.add_argument("--max-iterations", type=int, default=50, help="Max agent turns (default: 50)")
         sp.add_argument("--instance-ids", nargs="+", help="Specific function names to process")
         sp.add_argument("--concurrency", "-j", type=int, default=10, help="Concurrent agents per framework (default: 10)")
+        sp.add_argument("--force", action="store_true", help="Discard previous infer results and re-run from scratch")
 
     # infer
     inf = subparsers.add_parser("infer", help="Run OpenHands agent inference")
@@ -463,6 +501,7 @@ def main():
             max_iterations=args.max_iterations,
             instance_ids=args.instance_ids,
             concurrency=args.concurrency,
+            force=args.force,
         )
 
     elif args.command == "eval":
@@ -489,6 +528,7 @@ def main():
             max_iterations=args.max_iterations,
             instance_ids=args.instance_ids,
             concurrency=args.concurrency,
+            force=args.force,
         )
 
     return 0
