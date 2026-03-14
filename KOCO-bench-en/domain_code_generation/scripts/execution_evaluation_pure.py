@@ -749,7 +749,7 @@ def main():
     print(f"Total tests: {total_tests}")
     print(f"Passed: {total_passed}")
     print(f"Failed: {total_tests - total_passed}")
-    print(f"Success rate: {total_passed/total_tests*100:.1f}%")
+    print(f"Success rate: {total_passed/total_tests*100:.1f}%" if total_tests > 0 else "Success rate: N/A (no tests)")
     
     if pass_at_k_results:
         print("\nPass@k Results:")
@@ -758,18 +758,17 @@ def main():
     
     print(f"\nAvgPassRatio: {avg_pass_ratio:.4f}")
     
-    if pass_at_k_results:
-        metrics_file = args.output_file.replace('_result.jsonl', '_result.metrics.json')
-        print(f"Saving metrics to {metrics_file}...")
-        with open(metrics_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                'total_functions': len(data_records),
-                'total_tests': total_tests,
-                'total_passed': total_passed,
-                'overall_success_rate': total_passed/total_tests if total_tests > 0 else 0.0,
-                'pass_at_k': pass_at_k_results,
-                'avg_pass_ratio': avg_pass_ratio
-            }, f, ensure_ascii=False, indent=2)
+    metrics_file = args.output_file.replace('_result.jsonl', '_result.metrics.json')
+    print(f"Saving metrics to {metrics_file}...")
+    with open(metrics_file, 'w', encoding='utf-8') as f:
+        json.dump({
+            'total_functions': len(data_records),
+            'total_tests': total_tests,
+            'total_passed': total_passed,
+            'overall_success_rate': total_passed/total_tests if total_tests > 0 else 0.0,
+            'pass_at_k': pass_at_k_results if pass_at_k_results else {},
+            'avg_pass_ratio': avg_pass_ratio
+        }, f, ensure_ascii=False, indent=2)
 
     return 1 if infra_errors > 0 else 0
 

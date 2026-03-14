@@ -180,9 +180,11 @@ def cmd_infer(
         output_file = output_dir / f"algorithm_methods_data_{example}_output.jsonl"
         progress_file = output_dir / f".{example}_progress.json"
 
-        # --force: wipe previous infer results so everything re-runs
+        # --force: wipe previous infer + eval results so everything re-runs
+        result_file = output_dir / f"algorithm_methods_data_{example}_result.jsonl"
+        metrics_file = output_dir / f"algorithm_methods_data_{example}_result.metrics.json"
         if force:
-            for f in (output_file, progress_file):
+            for f in (output_file, progress_file, result_file, metrics_file):
                 if f.exists():
                     f.unlink()
                     print(f"  Removed (--force): {f.name}")
