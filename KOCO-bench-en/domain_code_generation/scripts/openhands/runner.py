@@ -111,14 +111,21 @@ def _strip_gt_lines(code_dst, gt_locations):
 def _prepare_workspace(workspace_root, knowledge_corpus_root, gt_locations, tmp_dir):
     """Copy workspace + knowledge_corpus, strip GT function bodies and test_code.
 
-    Returns: {"knowledge_corpus": abs_path, "code": abs_path}
+    Both directories are placed under ``tmp_dir/workspace/`` so the agent's
+    cwd can be set there and ``ls .`` shows exactly ``code/`` and
+    ``knowledge_corpus/`` — nothing else (no oh_persist, logs, etc.).
+
+    Returns: {"workspace": abs_path, "knowledge_corpus": abs_path, "code": abs_path}
     """
+    ws_dir = os.path.join(tmp_dir, "workspace")
+    os.makedirs(ws_dir, exist_ok=True)
+
     # Copy knowledge_corpus
-    kc_dst = os.path.join(tmp_dir, "knowledge_corpus")
+    kc_dst = os.path.join(ws_dir, "knowledge_corpus")
     shutil.copytree(knowledge_corpus_root, kc_dst, symlinks=True)
 
     # Copy code/ excluding test_code and caches
-    code_dst = os.path.join(tmp_dir, "code")
+    code_dst = os.path.join(ws_dir, "code")
     def _ignore(_dir, contents):
         return {c for c in contents if c in ("test_code", "__pycache__", ".pytest_cache")}
     shutil.copytree(workspace_root, code_dst, symlinks=True, ignore=_ignore)
@@ -126,14 +133,15 @@ def _prepare_workspace(workspace_root, knowledge_corpus_root, gt_locations, tmp_
     # Strip GT function lines from copied files
     _strip_gt_lines(code_dst, gt_locations)
 
-    return {"knowledge_corpus": kc_dst, "code": code_dst}
+    return {"workspace": ws_dir, "knowledge_corpus": kc_dst, "code": code_dst}
 
 
 def build_prompt(record: dict, framework: str, repo_paths: dict) -> str:
     """Build the task prompt for the OpenHands headless agent.
 
-    The agent runs locally with cwd set to the code directory.
-    ``repo_paths`` has keys ``knowledge_corpus`` and ``code``.
+    The agent runs with cwd set to the workspace directory which contains
+    ``code/`` and ``knowledge_corpus/`` as its only children.
+    ``repo_paths`` has keys ``workspace``, ``knowledge_corpus``, and ``code``.
     """
     function_name = record["function_name"]
 
@@ -277,7 +285,7 @@ def run_single_instance(
     try:
         # --- Workspace isolation (strip GT, exclude test_code) ---
         repo_paths = _prepare_workspace(workspace_root, knowledge_corpus_root, gt_locations, tmp_dir)
-        work_dir = repo_paths["code"]
+        work_dir = repo_paths["workspace"]
 
         prompt = build_prompt(record, framework, repo_paths)
 
@@ -356,7 +364,7 @@ def run_single_instance(
                 print(f"      {line.rstrip()}")
 
         # --- Extract result ---
-        result_file = os.path.join(work_dir, "implementation_result.json")
+        result_file = os.path.join(repo_paths["code"], "implementation_result.json")
         implementation = ""
 
         # Primary: read implementation_result.json
