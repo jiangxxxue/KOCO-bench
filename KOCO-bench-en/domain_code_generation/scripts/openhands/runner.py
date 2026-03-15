@@ -374,6 +374,7 @@ def run_single_instance(
                 {"name": "file_editor", "params": {}},
                 {"name": "task_tracker", "params": {}},
                 {"name": "delegate", "params": {}},
+                {"name": "task", "params": {}},
             ],
             "include_default_tools": ["FinishTool", "ThinkTool"],
         }
