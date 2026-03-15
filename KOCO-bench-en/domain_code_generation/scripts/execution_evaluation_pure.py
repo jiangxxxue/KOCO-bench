@@ -689,7 +689,14 @@ def main():
         try:
             for j, completion in enumerate(record['completions']):
                 print(f"  Testing completion {j+1}/{len(record['completions'])}")
-                
+
+                # Skip empty placeholders (no_result / timeout / error)
+                if not completion or not completion.strip():
+                    results.append(False)
+                    pass_ratios.append(0.0)
+                    print(f"    Result: FAIL (empty completion, status={record.get('status', 'unknown')})")
+                    continue
+
                 try:
                     # 1. Modify source file
                     success = code_replacer.replace_function_in_file(
