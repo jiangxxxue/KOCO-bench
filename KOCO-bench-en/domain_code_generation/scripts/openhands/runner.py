@@ -155,7 +155,7 @@ def build_prompt(record: dict, framework: str, repo_paths: dict) -> str:
             elif msg.get("role") == "user":
                 user_task = msg["content"]
 
-    result_file = os.path.join(repo_paths["code"], "implementation_result.json")
+    result_file = os.path.join(repo_paths["code"], "implementation_result.py")
 
     return f"""You are working in a repository for the {framework} framework.
 {system_context}
@@ -174,10 +174,8 @@ INSTRUCTIONS:
 1. Explore the repositories to understand the codebase, domain knowledge, and callable functions.
 2. Write your implementation of `{function_name}`.
 3. MANDATORY FINAL STEP — you MUST do this before finishing:
-   Write the file {result_file} using the file_editor tool with this EXACT JSON:
-   {{"function_name": "{function_name}", "implementation": "<complete function code here>"}}
-   The "implementation" value must be a valid JSON string with escaped newlines (\\n) and quotes (\\").
-   It MUST contain the COMPLETE function, starting with the def/async def line and including the full body.
+   Write the file {result_file} using the file_editor tool.
+   The file must contain ONLY the function implementation as plain Python code.
 
 RULES:
 - Do NOT run tests. Do NOT create helper scripts. Do NOT debug.
@@ -240,6 +238,55 @@ def _extract_from_events(persist_dir: str, function_name: str) -> str:
     return ""
 
 
+def _sanitize_completion(code: str, function_name: str) -> str:
+    """Clean up agent output to plain Python, enforced in code rather than prompt.
+
+    Handles common agent output issues:
+    - Double-escaped newlines (literal \\n instead of real newlines)
+    - JSON wrapping ({"implementation": "..."})
+    - Markdown fences (```python ... ```)
+    """
+    if not code or not code.strip():
+        return code
+
+    # 1. Unwrap JSON (agent wrote {"implementation": "..."} or similar)
+    #    Must run before escape-fixing so json.loads handles escapes correctly.
+    stripped = code.strip()
+    if stripped.startswith('{') and stripped.endswith('}'):
+        try:
+            obj = json.loads(stripped)
+            if isinstance(obj, dict):
+                for key in ("implementation", "code", "function", function_name):
+                    if key in obj and isinstance(obj[key], str):
+                        code = obj[key]
+                        print(f"    [{function_name}] Sanitize: unwrapped JSON key '{key}'")
+                        break
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # 2. Fix double-escaped newlines (literal \n instead of real newlines)
+    if '\n' not in code and '\\n' in code:
+        code = (code
+                .replace('\\n', '\n')
+                .replace('\\t', '\t')
+                .replace('\\"', '"'))
+        print(f"    [{function_name}] Sanitize: fixed escaped newlines")
+
+    # 3. Strip markdown fences
+    stripped = code.strip()
+    for fence in ('```python', '```py', '```'):
+        if stripped.startswith(fence):
+            code = stripped[len(fence):]
+            end = code.rfind('```')
+            if end != -1:
+                code = code[:end]
+            code = code.strip()
+            print(f"    [{function_name}] Sanitize: stripped markdown fences")
+            break
+
+    return code
+
+
 def _resolve_llm_model(model: str, base_url: str) -> str:
     """Add ``openrouter/`` prefix when the base URL is OpenRouter.
 
@@ -267,15 +314,16 @@ def run_single_instance(
     """Run the OpenHands headless agent for one function.
 
     Steps:
-      1. (optionally) copy workspace to a temp directory for isolation
+      1. copy workspace to a temp directory for isolation
       2. write the task prompt to a temp file
       3. invoke ``openhands --headless`` with cwd set to the workspace
-      4. read ``implementation_result.json`` from the (temp) workspace
+      4. read ``implementation_result.py`` from the (temp) workspace
       5. clean up
 
     Returns the *record* dict augmented with ``completions`` and ``status``.
-    The ``completions`` field is a list of code strings (length 0 or 1),
-    which is what ``execution_evaluation_pure.py`` expects downstream.
+    The ``completions`` field is always a list with exactly one string:
+    the implementation code on success, or an empty string on failure.
+    This ensures failed attempts are counted in the evaluation denominator.
     """
     function_name = record["function_name"]
     print(f"    [{function_name}] Starting agent...")
@@ -364,46 +412,63 @@ def run_single_instance(
                 print(f"      {line.rstrip()}")
 
         # --- Extract result ---
-        result_file = os.path.join(repo_paths["code"], "implementation_result.json")
+        result_py = os.path.join(repo_paths["code"], "implementation_result.py")
+        result_json = os.path.join(repo_paths["code"], "implementation_result.json")
         implementation = ""
 
-        # Primary: read implementation_result.json
-        if os.path.exists(result_file):
+        # Primary: read implementation_result.py (plain Python)
+        if os.path.exists(result_py):
+            with open(result_py, "r", encoding="utf-8") as f:
+                implementation = f.read().strip()
+
+        # Fallback 1: legacy implementation_result.json
+        if not implementation and os.path.exists(result_json):
             try:
-                with open(result_file, "r", encoding="utf-8") as f:
+                with open(result_json, "r", encoding="utf-8") as f:
                     result_data = json.load(f)
                 implementation = result_data.get("implementation", "")
             except (json.JSONDecodeError, KeyError):
                 pass
 
-        # Fallback: scan conversation events for file_editor create actions
+        # Fallback 2: scan conversation events for file_editor create actions
         if not implementation:
             implementation = _extract_from_events(oh_persist_dir, function_name)
+
+        # Sanitize: fix escaping, unwrap JSON/markdown
+        implementation = _sanitize_completion(implementation, function_name)
 
         if implementation:
             record["completions"] = [implementation]
             record["status"] = "success"
             print(f"    [{function_name}] Success ({len(implementation)} chars)")
         else:
-            record["completions"] = []
+            record["completions"] = [""]
             record["status"] = "no_result"
+            record["results"] = [False]
+            record["pass_ratios"] = [0.0]
             print(f"    [{function_name}] No implementation found")
 
     except subprocess.TimeoutExpired:
         print(f"    [{function_name}] Timeout after {max_iterations * 120}s")
-        record["completions"] = []
+        record["completions"] = [""]
         record["status"] = "timeout"
+        record["results"] = [False]
+        record["pass_ratios"] = [0.0]
     except FileNotFoundError:
         print(f"    [{function_name}] Error: 'openhands' command not found.")
         print("      Install with: uv tool install openhands --python 3.12")
-        record["completions"] = []
+        record["completions"] = [""]
         record["status"] = "error"
         record["error"] = "openhands not installed"
+        record["results"] = [False]
+        record["pass_ratios"] = [0.0]
     except Exception as e:
         print(f"    [{function_name}] Error: {e}")
-        record["completions"] = []
+        record["completions"] = [""]
         record["status"] = "error"
         record["error"] = str(e)
+        record["results"] = [False]
+        record["pass_ratios"] = [0.0]
     finally:
         if os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir, ignore_errors=True)
