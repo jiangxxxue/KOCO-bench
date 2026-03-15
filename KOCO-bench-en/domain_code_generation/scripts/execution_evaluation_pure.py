@@ -3,6 +3,7 @@
 Pure mode execution evaluation script - modify file -> run test -> restore file
 """
 
+import ast
 import json
 import sys
 import os
@@ -11,10 +12,78 @@ import argparse
 import subprocess
 import shutil
 import tempfile
+import textwrap
 from typing import List, Dict, Any, Tuple
 import numpy as np
 import itertools
 from datetime import datetime
+
+
+def _extract_target_function(completion: str, function_name: str) -> str:
+    """Extract only the target function from completion, stripping module-level code.
+
+    When the agent's completion contains module-level imports or other
+    statements alongside the function, this extracts just the function
+    definition so that injection into the original file doesn't introduce
+    conflicting imports.
+
+    Falls back to the original ``completion`` if AST parsing fails or
+    the target function is not found.
+    """
+    if not completion or not completion.strip():
+        return completion
+
+    try:
+        tree = ast.parse(completion)
+    except SyntaxError:
+        return completion
+
+    # Support dotted names: "ClassName.method_name"
+    parts = function_name.split(".")
+    if len(parts) == 2:
+        class_name, method_name = parts
+    else:
+        class_name, method_name = None, function_name
+
+    target = None
+    for node in ast.iter_child_nodes(tree):
+        if class_name:
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if item.name == method_name:
+                            target = item
+                            break
+        else:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name == method_name:
+                    target = node
+                    break
+
+    if target is None:
+        return completion
+
+    # Check if there is any module-level code besides the function itself
+    # (imports, assignments, other functions, etc.)
+    top_level_nodes = list(ast.iter_child_nodes(tree))
+    if len(top_level_nodes) <= 1:
+        # Only the function — no stripping needed
+        return completion
+
+    # Extract just the function source lines
+    lines = completion.splitlines(keepends=True)
+    start = target.lineno
+    if target.decorator_list:
+        start = target.decorator_list[0].lineno
+    end = target.end_lineno
+    func_text = "".join(lines[start - 1 : end])
+    func_text = textwrap.dedent(func_text).strip()
+
+    if func_text:
+        print(f"    [{function_name}] Safety net: stripped module-level code from completion")
+        return func_text
+
+    return completion
 
 
 class PureCodeReplacer:
@@ -76,16 +145,21 @@ class PureCodeReplacer:
                 indented_lines.append('')
         return '\n'.join(indented_lines)
     
-    def replace_function_in_file(self, file_path: str, location: str, completion: str) -> bool:
+    def replace_function_in_file(self, file_path: str, location: str, completion: str,
+                                function_name: str = "") -> bool:
         """Replace function implementation in file"""
         try:
+            # Safety net: strip module-level imports from completion
+            if function_name:
+                completion = _extract_target_function(completion, function_name)
+
             # Read original file
             with open(file_path, 'r', encoding='utf-8') as f:
                 source_code = f.read()
-            
+
             start_line, end_line = self.parse_location(location)
             lines = source_code.split('\n')
-            
+
             # Extract code
             extracted_code = self.extract_code_from_markdown(completion)
             normalized_code = self.normalize_indentation(extracted_code)
@@ -702,7 +776,8 @@ def main():
                     success = code_replacer.replace_function_in_file(
                         source_file_path,
                         record['implementation_location'],
-                        completion
+                        completion,
+                        function_name=record.get('function_name', '')
                     )
                     
                     if not success:

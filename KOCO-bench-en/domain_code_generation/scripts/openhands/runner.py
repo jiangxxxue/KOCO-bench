@@ -9,8 +9,10 @@ Provides: prompt construction, single-instance agent execution, JSONL I/O,
 and resume helpers.
 """
 
+import ast
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -92,20 +94,128 @@ def _collect_gt_locations(records):
     return locations
 
 
-def _strip_gt_lines(code_dst, gt_locations):
-    """Remove annotated GT function lines from copied files."""
+def _stub_one_function(lines, start, end):
+    """Replace a single function body with a stub, keeping signature + docstring.
+
+    ``start`` and ``end`` are 1-indexed inclusive line numbers covering the
+    entire function (signature through last body line).  Returns a new list
+    of lines with the body replaced by ``raise NotImplementedError``.
+    """
+    source = "".join(lines)
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # AST parse failed — fall back to regex-based stubbing
+        return _stub_one_function_regex(lines, start, end)
+
+    # Walk AST to find the FunctionDef/AsyncFunctionDef whose lineno is in [start, end]
+    target_node = None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if start <= node.lineno <= end:
+                target_node = node
+                # Don't break — a nested def closer to ``start`` may exist,
+                # but the outermost one matching is what we want.  Actually
+                # we want the one whose lineno is closest to ``start``.
+                if node.lineno == start:
+                    break
+
+    if target_node is None:
+        # No matching function found — fall back to regex
+        return _stub_one_function_regex(lines, start, end)
+
+    node = target_node
+    body = node.body
+
+    # Determine where the stub should start (after signature / docstring)
+    has_docstring = (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    )
+
+    if has_docstring:
+        # Keep the docstring; stub starts after it
+        stub_start = body[0].end_lineno  # 1-indexed, inclusive
+        # Use indentation of the second body element if available, else infer
+        if len(body) > 1:
+            indent = body[1].col_offset
+        else:
+            indent = body[0].col_offset
+    else:
+        # Stub replaces entire body
+        stub_start = body[0].lineno  # 1-indexed
+        indent = body[0].col_offset
+
+    # Build stub lines
+    indent_str = " " * indent
+    stub_lines = [
+        f"{indent_str}# TODO: implement this function\n",
+        f"{indent_str}raise NotImplementedError\n",
+    ]
+
+    # Replace lines after stub_start through end with stub_lines.
+    # When a docstring is present, stub_start is its end_lineno and we
+    # want to *keep* that line, so we slice [:stub_start].
+    # When there is no docstring, stub_start is body[0].lineno and we
+    # replace from that line onward, so we slice [:stub_start - 1].
+    if has_docstring:
+        new_lines = lines[:stub_start] + stub_lines + lines[end:]
+    else:
+        new_lines = lines[: stub_start - 1] + stub_lines + lines[end:]
+    return new_lines
+
+
+def _stub_one_function_regex(lines, start, end):
+    """Regex fallback for _stub_one_function when AST parsing fails."""
+    # Find the def line within [start, end]
+    def_idx = None
+    for i in range(start - 1, min(end, len(lines))):
+        if re.match(r'\s*(async\s+)?def\s+', lines[i]):
+            def_idx = i
+            break
+
+    if def_idx is None:
+        # Can't find def — leave unchanged
+        return lines
+
+    # Infer body indent = def indent + 4
+    def_indent = len(lines[def_idx]) - len(lines[def_idx].lstrip())
+    body_indent = def_indent + 4
+    indent_str = " " * body_indent
+
+    # Find body start: first non-blank, non-decorator, non-def-continuation line
+    body_start = def_idx + 1
+    # Skip continuation lines (lines that are part of multi-line signature)
+    while body_start < end and body_start < len(lines):
+        stripped = lines[body_start].strip()
+        if stripped and not stripped.startswith('#') and not stripped.startswith('@'):
+            break
+        body_start += 1
+
+    stub_lines = [
+        f"{indent_str}# TODO: implement this function\n",
+        f"{indent_str}raise NotImplementedError\n",
+    ]
+
+    new_lines = lines[:body_start] + stub_lines + lines[end:]
+    return new_lines
+
+
+def _stub_gt_functions(code_dst, gt_locations):
+    """Replace GT function bodies with stubs, keeping signature + docstring."""
     for rel_path, ranges in gt_locations.items():
         file_path = os.path.join(code_dst, rel_path)
         if not os.path.exists(file_path):
             continue
-        lines_to_remove = set()
-        for start, end in ranges:
-            lines_to_remove.update(range(start, end + 1))
         with open(file_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
-        new_lines = [l for i, l in enumerate(lines, 1) if i not in lines_to_remove]
+        # Process in reverse order so line numbers stay valid
+        for start, end in sorted(ranges, reverse=True):
+            lines = _stub_one_function(lines, start, end)
         with open(file_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
+            f.writelines(lines)
 
 
 def _prepare_workspace(workspace_root, knowledge_corpus_root, gt_locations, tmp_dir):
@@ -130,13 +240,33 @@ def _prepare_workspace(workspace_root, knowledge_corpus_root, gt_locations, tmp_
         return {c for c in contents if c in ("test_code", "__pycache__", ".pytest_cache")}
     shutil.copytree(workspace_root, code_dst, symlinks=True, ignore=_ignore)
 
-    # Strip GT function lines from copied files
-    _strip_gt_lines(code_dst, gt_locations)
+    # Replace GT function bodies with stubs (signature + docstring kept)
+    _stub_gt_functions(code_dst, gt_locations)
 
     return {"workspace": ws_dir, "knowledge_corpus": kc_dst, "code": code_dst}
 
 
-def build_prompt(record: dict, framework: str, repo_paths: dict) -> str:
+def _parse_impl_location(impl_loc: str):
+    """Parse 'code/path/to/file.py:line 58-133' → (rel_path, start, end).
+
+    ``rel_path`` is relative to the code/ directory (the ``code/`` prefix is
+    stripped).  Returns ``(None, 0, 0)`` on parse failure.
+    """
+    parts = impl_loc.split(":line ")
+    if len(parts) != 2:
+        return None, 0, 0
+    file_part = parts[0].replace("\\", "/")
+    if file_part.startswith("code/"):
+        file_part = file_part[len("code/"):]
+    try:
+        start_s, end_s = parts[1].split("-")
+        return file_part, int(start_s), int(end_s)
+    except ValueError:
+        return None, 0, 0
+
+
+def build_prompt(record: dict, framework: str, repo_paths: dict,
+                 stub_file: str = "", stub_line: int = 0) -> str:
     """Build the task prompt for the OpenHands headless agent.
 
     The agent runs with cwd set to the workspace directory which contains
@@ -155,7 +285,16 @@ def build_prompt(record: dict, framework: str, repo_paths: dict) -> str:
             elif msg.get("role") == "user":
                 user_task = msg["content"]
 
-    result_file = os.path.join(repo_paths["code"], "implementation_result.py")
+    # Build context section about the stub location
+    stub_context = ""
+    if stub_file:
+        stub_context = f"""
+IMPORTANT CONTEXT:
+- The function stub is at: {stub_file} (near line {stub_line})
+  It currently has `raise NotImplementedError` as a placeholder.
+- The file already has imports for commonly used modules.
+  Read the file header before adding any new imports.
+"""
 
     return f"""You are working in a repository for the {framework} framework.
 {system_context}
@@ -169,18 +308,15 @@ You can freely explore the following known repositories to obtain the required i
 - Development Repository: {repo_paths["code"]}
 
 Please use the code in these repositories to implement the required functionality.
-
+{stub_context}
 INSTRUCTIONS:
 1. Explore the repositories to understand the codebase, domain knowledge, and callable functions.
-2. Write your implementation of `{function_name}`.
-3. MANDATORY FINAL STEP — you MUST do this before finishing:
-   Write the file {result_file} using the file_editor tool.
-   The file must contain ONLY the function implementation as plain Python code.
+2. Read {stub_file or "the source file"} to see the existing imports, class structure, and function signature.
+3. Replace the `raise NotImplementedError` with your implementation using the file_editor tool.
 
 RULES:
+- Do NOT modify any other functions or code outside the target function.
 - Do NOT run tests. Do NOT create helper scripts. Do NOT debug.
-- Your ONLY deliverable is {result_file}. If you do not create this file, your work is lost.
-- Finish as soon as you have written {result_file}.
 """
 
 
@@ -287,6 +423,78 @@ def _sanitize_completion(code: str, function_name: str) -> str:
     return code
 
 
+def _extract_function_from_file(file_path, function_name):
+    """Extract implemented function from a modified source file.
+
+    Parses ``file_path`` with AST, locates the function (or method) named
+    ``function_name``, and returns its full source text.  For dotted names
+    like ``ClassName.method``, walks ``ClassDef`` → ``FunctionDef``.
+
+    Returns an empty string if the file cannot be parsed, the function is
+    not found, or the body is still the ``raise NotImplementedError`` stub.
+    """
+    if not os.path.exists(file_path):
+        return ""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            source = f.read()
+        lines = source.splitlines(keepends=True)
+        tree = ast.parse(source)
+    except (OSError, SyntaxError):
+        return ""
+
+    # Support dotted names: "ClassName.method_name"
+    parts = function_name.split(".")
+    if len(parts) == 2:
+        class_name, method_name = parts
+    else:
+        class_name, method_name = None, function_name
+
+    target = None
+    for node in ast.walk(tree):
+        if class_name:
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if item.name == method_name:
+                            target = item
+                            break
+        else:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name == method_name:
+                    target = node
+                    break
+
+    if target is None:
+        return ""
+
+    # Check if body is still the stub
+    body = target.body
+    # Skip docstring if present
+    real_body = body
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)):
+        real_body = body[1:]
+    if (len(real_body) == 1
+            and isinstance(real_body[0], ast.Raise)
+            and isinstance(real_body[0].exc, ast.Name)
+            and real_body[0].exc.id == "NotImplementedError"):
+        return ""
+
+    # Extract full function text (from first decorator or def line to end_lineno)
+    start = target.lineno
+    if target.decorator_list:
+        start = target.decorator_list[0].lineno
+    end = target.end_lineno
+    func_text = "".join(lines[start - 1 : end])
+
+    # Dedent to remove any class-level indentation
+    import textwrap
+    func_text = textwrap.dedent(func_text)
+    return func_text.strip()
+
+
 def _resolve_llm_model(model: str, base_url: str) -> str:
     """Add ``openrouter/`` prefix when the base URL is OpenRouter.
 
@@ -331,11 +539,17 @@ def run_single_instance(
     tmp_dir = tempfile.mkdtemp(prefix=f"oh_{function_name}_")
 
     try:
-        # --- Workspace isolation (strip GT, exclude test_code) ---
+        # --- Workspace isolation (stub GT functions, exclude test_code) ---
         repo_paths = _prepare_workspace(workspace_root, knowledge_corpus_root, gt_locations, tmp_dir)
         work_dir = repo_paths["workspace"]
 
-        prompt = build_prompt(record, framework, repo_paths)
+        # Compute stub file path and line for the prompt
+        impl_loc = record.get("implementation_location", "")
+        rel_path, stub_start, _stub_end = _parse_impl_location(impl_loc)
+        stub_file = os.path.join(repo_paths["code"], rel_path) if rel_path else ""
+
+        prompt = build_prompt(record, framework, repo_paths,
+                              stub_file=stub_file, stub_line=stub_start)
 
         # --- Write prompt to file (avoids shell length limits) ---
         prompt_file = os.path.join(tmp_dir, "task_prompt.txt")
@@ -413,23 +627,20 @@ def run_single_instance(
                 print(f"      {line.rstrip()}")
 
         # --- Extract result ---
-        result_py = os.path.join(repo_paths["code"], "implementation_result.py")
-        result_json = os.path.join(repo_paths["code"], "implementation_result.json")
         implementation = ""
 
-        # Primary: read implementation_result.py (plain Python)
-        if os.path.exists(result_py):
-            with open(result_py, "r", encoding="utf-8") as f:
-                implementation = f.read().strip()
+        # Primary: extract the target function from the modified source file
+        if stub_file and os.path.exists(stub_file):
+            implementation = _extract_function_from_file(stub_file, function_name)
+            if implementation:
+                print(f"    [{function_name}] Extracted from modified source file")
 
-        # Fallback 1: legacy implementation_result.json
-        if not implementation and os.path.exists(result_json):
-            try:
-                with open(result_json, "r", encoding="utf-8") as f:
-                    result_data = json.load(f)
-                implementation = result_data.get("implementation", "")
-            except (json.JSONDecodeError, KeyError):
-                pass
+        # Fallback 1: read implementation_result.py (agent may still create it)
+        if not implementation:
+            result_py = os.path.join(repo_paths["code"], "implementation_result.py")
+            if os.path.exists(result_py):
+                with open(result_py, "r", encoding="utf-8") as f:
+                    implementation = f.read().strip()
 
         # Fallback 2: scan conversation events for file_editor create actions
         if not implementation:
