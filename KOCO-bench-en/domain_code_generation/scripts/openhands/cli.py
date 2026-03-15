@@ -336,7 +336,7 @@ def cmd_eval(framework: str, model: str, test_example: str = None) -> int:
             continue
 
         docker_cmd = [
-            "docker", "run", "--rm",
+            "docker", "run", "--rm", "--gpus", "all",
             "-v", f"{host_root}:{container_mnt}",
             image,
             "python3", f"{container_mnt}/scripts/execution_evaluation_pure.py",

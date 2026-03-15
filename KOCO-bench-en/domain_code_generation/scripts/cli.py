@@ -259,7 +259,7 @@ def cmd_evaluate(framework: str, model: str, test_example: str = None) -> int:
             continue
 
         docker_cmd = [
-            "docker", "run", "--rm",
+            "docker", "run", "--rm", "--gpus", "all",
             "-v", f"{host_root}:{container_mnt}",
             image,
             "python3", f"{container_mnt}/scripts/execution_evaluation_pure.py",
@@ -363,7 +363,7 @@ def cmd_validate_image(framework: str, test_example: str = None) -> int:
         container_runner = f"{container_test_code}/run_tests_with_stats.py"
 
         docker_cmd = [
-            "docker", "run", "--rm",
+            "docker", "run", "--rm", "--gpus", "all",
             "-v", f"{host_root}:{container_mnt}",
             "-w", container_test_code,
             image,
