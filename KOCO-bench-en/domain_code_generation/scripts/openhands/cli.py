@@ -172,6 +172,7 @@ def cmd_infer(
             print(f"  Input data not found, running Step 1-2 (parse + prompts)...")
             if not _ensure_input_data(framework, example):
                 print(f"  Skipping: failed to generate input data")
+                fail += 1
                 continue
 
         # Output directory — under openhands/ to avoid collision with cli.py output
@@ -195,6 +196,7 @@ def cmd_infer(
         )
         if not os.path.isdir(workspace_root):
             print(f"  Skipping: workspace not found ({workspace_root})")
+            fail += 1
             continue
 
         # Knowledge corpus (framework docs the agent can reference)
@@ -203,6 +205,7 @@ def cmd_infer(
         )
         if not os.path.isdir(knowledge_corpus_root):
             print(f"  Skipping: knowledge_corpus not found ({knowledge_corpus_root})")
+            fail += 1
             continue
 
         # Load task data
