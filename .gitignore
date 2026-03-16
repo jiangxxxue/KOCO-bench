@@ -2,6 +2,7 @@
 data
 logs
 results/
+*.log
 
 # Environment variables
 .env
