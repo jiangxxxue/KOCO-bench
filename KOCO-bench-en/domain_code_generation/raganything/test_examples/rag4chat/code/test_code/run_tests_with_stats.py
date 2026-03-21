@@ -138,7 +138,7 @@ def main():
 
     # Define test files (description, filename)
     test_files = [
-        ('create_rag_instance', 'my_test_create_rag_instance.py'),
+        ('create_rag_instance', 'test_create_rag_instance.py'),
     ]
 
     # Run all tests

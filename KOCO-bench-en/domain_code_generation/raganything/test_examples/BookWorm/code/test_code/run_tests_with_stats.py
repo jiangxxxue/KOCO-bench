@@ -138,7 +138,7 @@ def main():
 
     # Define test files (description, filename)
     test_files = [
-        ('process_with_rag', 'my_test_process_with_rag.py'),
+        ('process_with_rag', 'test_process_with_rag.py'),
     ]
 
     # Run all tests

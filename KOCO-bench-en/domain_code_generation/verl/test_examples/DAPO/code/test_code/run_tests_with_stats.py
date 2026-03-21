@@ -210,7 +210,7 @@ def main():
             'category': 'Core Algorithm'
         },
         {
-            'module': 'test_compute_policy_vanilla',
+            'module': 'test_compute_policy_loss_vanilla',
             'description': 'compute_policy_loss_vanilla (Decoupled Clipping Policy Gradient)',
             'category': 'Core Algorithm'
         },

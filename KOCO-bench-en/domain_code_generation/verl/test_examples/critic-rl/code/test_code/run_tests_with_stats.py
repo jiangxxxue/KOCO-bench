@@ -236,7 +236,7 @@ def main():
             'category': 'Code Processing'
         },
         {
-            'module': 'test_sanitze_desanitize',
+            'module': 'test_sanitize_desanitize',
             'description': 'Code Extraction and Sanitization (sanitize/desanitize)',
             'category': 'Code Processing'
         }

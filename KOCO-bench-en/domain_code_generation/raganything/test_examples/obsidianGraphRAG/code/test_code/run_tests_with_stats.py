@@ -138,7 +138,7 @@ def main():
 
     # Define test files (description, filename)
     test_files = [
-        ('initialzie', 'my_test_initialzie.py'),
+        ('initialize', 'test_initialize.py'),
     ]
 
     # Run all tests
