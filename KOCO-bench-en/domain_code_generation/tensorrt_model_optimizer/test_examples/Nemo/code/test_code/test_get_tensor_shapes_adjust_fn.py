@@ -15,14 +15,13 @@ from typing import List
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Mock dependencies
-sys.modules['lightning'] = MagicMock()
-sys.modules['lightning.pytorch'] = MagicMock()
-sys.modules['megatron'] = MagicMock()
-sys.modules['megatron.core'] = MagicMock()
+from _mock_nemo_deps import setup_nemo_mocks, import_nemo_module
+setup_nemo_mocks()
 
 # Import ground truth implementation
 try:
-    from nemo.collections.llm.modelopt.distill.utils import get_tensor_shapes_adjust_fn_for_distillation
+    _mod = import_nemo_module('nemo.collections.llm.modelopt.distill.utils')
+    get_tensor_shapes_adjust_fn_for_distillation = _mod.get_tensor_shapes_adjust_fn_for_distillation
     IMPORT_SUCCESS = True
 except Exception as e:
     print(f"Warning: Unable to import implementation code: {e}")

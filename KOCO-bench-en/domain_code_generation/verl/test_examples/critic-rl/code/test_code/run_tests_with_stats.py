@@ -11,8 +11,8 @@ from io import StringIO
 from typing import Dict, List, Tuple
 import time
 
-# Add code directory to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'code'))
+# Add parent directory (code/) to Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
 class TestResult:
@@ -202,17 +202,21 @@ def main():
     
     # Verify test environment
     print("\nVerifying test environment:")
-    code_path = os.path.join(os.path.dirname(__file__), '..', 'code')
-    if os.path.exists(code_path):
-        print(f"  ✓ Code directory exists: {code_path}")
-    else:
-        print(f"  ⚠ Code directory does not exist: {code_path}")
+    parent_dir = os.path.join(os.path.dirname(__file__), '..')
+    print(f"  • Working directory: {parent_dir}")
     
-    critic_rm_path = os.path.join(code_path, 'ctrl', 'rl', 'critic_rm.py')
-    if os.path.exists(critic_rm_path):
-        print(f"  ✓ critic_rm.py file exists")
-    else:
-        print(f"  ⚠ critic_rm.py file does not exist, tests may fail")
+    # Check key files
+    key_files = [
+        "ctrl/rl/critic_rm.py",
+        "ctrl/gen/prompt.py",
+    ]
+    
+    for file_path in key_files:
+        full_path = os.path.join(parent_dir, file_path)
+        if os.path.exists(full_path):
+            print(f"  ✓ {file_path} exists")
+        else:
+            print(f"  ⚠ {file_path} does not exist")
     
     # Define tests to run
     test_modules = [
@@ -225,6 +229,16 @@ def main():
             'module': 'test_get_reward_all',
             'description': 'Concurrent Sandbox Execution and Reward Calculation (get_reward_all)',
             'category': 'Reward Calculation'
+        },
+        {
+            'module': 'test_normalize_code',
+            'description': 'Code Normalization for Caching (normalize_code)',
+            'category': 'Code Processing'
+        },
+        {
+            'module': 'test_sanitize_desanitize',
+            'description': 'Code Extraction and Sanitization (sanitize/desanitize)',
+            'category': 'Code Processing'
         }
     ]
     

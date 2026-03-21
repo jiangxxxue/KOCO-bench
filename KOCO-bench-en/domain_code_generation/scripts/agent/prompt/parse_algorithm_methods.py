@@ -11,6 +11,16 @@ from typing import Dict, List, Any
 from pathlib import Path
 
 
+def _clean_location(raw: str) -> str:
+    """Normalize a metadata location string: strip backticks, backslash -> slash, remove code/ prefix."""
+    p = raw.strip().strip('`').strip('"').strip("'").replace('\\', '/')
+    if p.startswith('./'):
+        p = p[2:]
+    if p.startswith('code/'):
+        p = p[5:]
+    return p
+
+
 def parse_markdown_file(file_path: str) -> List[Dict[str, Any]]:
     """Parse the markdown file and extract function information."""
     
@@ -124,10 +134,10 @@ def extract_function_implementation(implementation_location: str, function_name:
     if not match:
         return ""
     
-    file_path = match.group(1)
+    file_path = _clean_location(match.group(1))
     start_line = int(match.group(2))
     end_line = int(match.group(3))
-    
+
     # Construct full path
     base_path = Path(code_base_path)
     source_file_path = base_path / file_path
@@ -162,11 +172,11 @@ def process_functions(functions_data: List, code_base_path: str, test_base_path:
             implementation_location, func_data['function_name'], code_base_path
         )
         
-        # Add implementation location from markdown file (now contains full path)
-        func_data['implementation_location'] = implementation_location
-        
-        # Set test code path (now contains full path from markdown)
-        func_data['test_code_path'] = test_code_location
+        # Add implementation location from markdown file (normalized)
+        func_data['implementation_location'] = _clean_location(implementation_location)
+
+        # Set test code path (normalized)
+        func_data['test_code_path'] = _clean_location(test_code_location)
         
         processed_functions.append(func_data)
     

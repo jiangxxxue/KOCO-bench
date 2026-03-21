@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DAPO Core Functionality Test Runner - with detailed statistics
+PURE Core Functionality Test Runner - with detailed statistics
 Run all tests and generate detailed test pass rate reports
 """
 
@@ -105,7 +105,7 @@ def print_final_report(results: List[TestResult]):
     """Print final test report"""
     print("\n\n")
     print("="*100)
-    print(" "*35 + "DAPO Core Functionality Test Report")
+    print(" "*35 + "PURE Core Functionality Test Report")
     print("="*100)
     
     # Calculate overall statistics
@@ -195,29 +195,43 @@ def print_final_report(results: List[TestResult]):
 def main():
     """Main function: Run all tests and generate report"""
     print("="*100)
-    print(" "*30 + "DAPO Core Functionality Tests Starting")
+    print(" "*30 + "PURE Core Functionality Tests Starting")
     print("="*100)
     
-    # Verify environment
+    # Verify test environment
     print("\nVerifying test environment:")
-    print("  ✓ Test environment ready")
+    parent_dir = os.path.join(os.path.dirname(__file__), '..')
+    print(f"  • Working directory: {parent_dir}")
+    
+    # Check key files
+    key_files = [
+        "verl/trainer/ppo/core_algos.py",
+        "verl/workers/fsdp_workers.py",
+    ]
+    
+    for file_path in key_files:
+        full_path = os.path.join(parent_dir, file_path)
+        if os.path.exists(full_path):
+            print(f"  ✓ {file_path} exists")
+        else:
+            print(f"  ⚠ {file_path} does not exist")
     
     # Define tests to run
     test_modules = [
         {
-            'module': 'test_agg_loss',
-            'description': 'agg_loss (flexible loss aggregation)',
+            'module': 'test_compute_return',
+            'description': 'compute_return (Token-level Return Sequence Calculation)',
             'category': 'Core Algorithm'
         },
         {
-            'module': 'test_compute_policy_loss_vanilla',
-            'description': 'compute_policy_loss_vanilla (decoupled clipped policy gradient)',
-            'category': 'Core Algorithm'
+            'module': 'test_compute_rm_score',
+            'description': 'compute_rm_score (Batch PRM Inference and Aggregation)',
+            'category': 'Reward Model'
         },
         {
-            'module': 'test_dapo_reward_manager',
-            'description': 'DAPORewardManager.__call__ (ultra-long reward shaping)',
-            'category': 'Reward Management'
+            'module': 'test_forward_micro_batch',
+            'description': '_forward_micro_batch (Process Reward Model Inference)',
+            'category': 'Reward Model'
         }
     ]
     

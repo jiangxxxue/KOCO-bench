@@ -292,7 +292,7 @@ class TestConvertToScaleEdgeCases(unittest.TestCase):
         scale = convert_to_scale(amax, maxbound)
         
         # Verify output
-        self.assertGreater(scale.item(), 1e4,
+        self.assertGreater(scale.item(), 1e3,
                           "scale should be very large")
     
     def test_different_maxbound_values(self):

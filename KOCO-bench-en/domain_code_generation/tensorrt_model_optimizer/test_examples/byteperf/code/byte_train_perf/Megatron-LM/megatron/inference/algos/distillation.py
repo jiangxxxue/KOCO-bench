@@ -330,39 +330,46 @@ class LogitsAndIntermediatesLossBalancer(mtd.DistillationLossBalancer):
         self._kd_loss_scale = kd_loss_scale
         self._skip_original_loss = skip_original_loss
 
-    from typing import Dict
-    import torch
-    from torch import Tensor
+    def forward(self, loss_dict: Dict[str, Tensor]) -> Tensor:
+        """Forward pass to compute the balanced loss.
 
-    class LogitsAndIntermediatesLossBalancer(torch.nn.Module):
-        def __init__(self, logits_kl_weight: float = 0.5, student_loss_weight: float = 0.5):
-            super(LogitsAndIntermediatesLossBalancer, self).__init__()
-            self.logits_kl_weight = logits_kl_weight
-            self.student_loss_weight = student_loss_weight
+        Dynamically weighs distillation and original losses to balance during training.
 
-        def forward(self, loss_dict: Dict[str, Tensor]) -> Tensor:
-            """
-            Forward pass to compute the balanced loss.
+        Args:
+            loss_dict: Dictionary containing all scalar losses with keys such as
+                ``'student_loss'``, ``'LogitsKLLoss'``, and optional intermediate losses.
 
-            Args:
-                loss_dict (Dict[str, Tensor]): A dictionary containing all scalar losses,
-                    with keys such as 'student_loss' and 'LogitsKLLoss'.
+        Returns:
+            The aggregated total scalar loss tensor.
+        """
+        # Pop original student loss from dict.
+        original_loss = loss_dict.pop("student_loss", torch.tensor(0.0))
 
-            Returns:
-                Tensor: The aggregated total scalar loss tensor.
-            """
-            # Extract the losses from the dictionary
-            student_loss = loss_dict.get('student_loss', 0.0)
-            logits_kl_loss = loss_dict.get('LogitsKLLoss', 0.0)
+        # Separate logits KL loss from intermediate losses.
+        logits_loss = loss_dict.get("LogitsKLLoss", torch.tensor(0.0))
+        intermediate_loss = torch.tensor(0.0)
+        for key, val in loss_dict.items():
+            if key != "LogitsKLLoss":
+                intermediate_loss = intermediate_loss + val
 
-            # Ensure the extracted losses are tensors
-            student_loss = torch.tensor(student_loss) if isinstance(student_loss, (int, float)) else student_loss
-            logits_kl_loss = torch.tensor(logits_kl_loss) if isinstance(logits_kl_loss, (int, float)) else logits_kl_loss
+        # Dynamically scale intermediate losses to match logits loss magnitude.
+        if intermediate_loss.item() > 0:
+            dynamic_scale = logits_loss.detach() / intermediate_loss.detach()
+            intermediate_loss_scaled = intermediate_loss * dynamic_scale
+        else:
+            intermediate_loss_scaled = intermediate_loss
 
-            # Compute the balanced loss
-            balanced_loss = (self.student_loss_weight * student_loss) + (self.logits_kl_weight * logits_kl_loss)
+        if self._skip_original_loss:
+            # Only return distillation losses, excluding original student_loss.
+            total_loss = logits_loss + intermediate_loss_scaled
+        else:
+            # Apply kd_loss_scale (halved) and dynamically scale against original loss.
+            kd_loss_scale = self._kd_loss_scale * 0.5
+            kd_loss = (logits_loss + intermediate_loss_scaled) * kd_loss_scale
+            dynamic_scale2 = original_loss.detach() / kd_loss.detach()
+            total_loss = original_loss + kd_loss * dynamic_scale2
 
-            return balanced_loss
+        return total_loss
 
 
 ########################################################

@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'recipe'))
 class MockVerlF:
     @staticmethod
     def masked_whiten(advantages, mask):
+        advantages = advantages.float()
         masked_adv = advantages[mask.bool()]
         if len(masked_adv) > 0:
             mean = masked_adv.mean()

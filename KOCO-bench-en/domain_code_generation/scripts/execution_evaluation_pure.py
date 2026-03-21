@@ -3,6 +3,7 @@
 Pure mode execution evaluation script - modify file -> run test -> restore file
 """
 
+import ast
 import json
 import sys
 import os
@@ -11,10 +12,78 @@ import argparse
 import subprocess
 import shutil
 import tempfile
+import textwrap
 from typing import List, Dict, Any, Tuple
 import numpy as np
 import itertools
 from datetime import datetime
+
+
+def _extract_target_function(completion: str, function_name: str) -> str:
+    """Extract only the target function from completion, stripping module-level code.
+
+    When the agent's completion contains module-level imports or other
+    statements alongside the function, this extracts just the function
+    definition so that injection into the original file doesn't introduce
+    conflicting imports.
+
+    Falls back to the original ``completion`` if AST parsing fails or
+    the target function is not found.
+    """
+    if not completion or not completion.strip():
+        return completion
+
+    try:
+        tree = ast.parse(completion)
+    except SyntaxError:
+        return completion
+
+    # Support dotted names: "ClassName.method_name"
+    parts = function_name.split(".")
+    if len(parts) == 2:
+        class_name, method_name = parts
+    else:
+        class_name, method_name = None, function_name
+
+    target = None
+    for node in ast.iter_child_nodes(tree):
+        if class_name:
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if item.name == method_name:
+                            target = item
+                            break
+        else:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name == method_name:
+                    target = node
+                    break
+
+    if target is None:
+        return completion
+
+    # Check if there is any module-level code besides the function itself
+    # (imports, assignments, other functions, etc.)
+    top_level_nodes = list(ast.iter_child_nodes(tree))
+    if len(top_level_nodes) <= 1:
+        # Only the function — no stripping needed
+        return completion
+
+    # Extract just the function source lines
+    lines = completion.splitlines(keepends=True)
+    start = target.lineno
+    if target.decorator_list:
+        start = target.decorator_list[0].lineno
+    end = target.end_lineno
+    func_text = "".join(lines[start - 1 : end])
+    func_text = textwrap.dedent(func_text).strip()
+
+    if func_text:
+        print(f"    [{function_name}] Safety net: stripped module-level code from completion")
+        return func_text
+
+    return completion
 
 
 class PureCodeReplacer:
@@ -76,16 +145,21 @@ class PureCodeReplacer:
                 indented_lines.append('')
         return '\n'.join(indented_lines)
     
-    def replace_function_in_file(self, file_path: str, location: str, completion: str) -> bool:
+    def replace_function_in_file(self, file_path: str, location: str, completion: str,
+                                function_name: str = "") -> bool:
         """Replace function implementation in file"""
         try:
+            # Safety net: strip module-level imports from completion
+            if function_name:
+                completion = _extract_target_function(completion, function_name)
+
             # Read original file
             with open(file_path, 'r', encoding='utf-8') as f:
                 source_code = f.read()
-            
+
             start_line, end_line = self.parse_location(location)
             lines = source_code.split('\n')
-            
+
             # Extract code
             extracted_code = self.extract_code_from_markdown(completion)
             normalized_code = self.normalize_indentation(extracted_code)
@@ -566,10 +640,10 @@ class ResultCollector:
             task_id = record.get('function_name', '')
             if not task_id:
                 continue
-            
+
             if task_id not in group:
                 group[task_id] = []
-                
+
             # Prioritize pass_ratios field (new version fine-grained data)
             if 'pass_ratios' in record and record['pass_ratios']:
                 group[task_id].extend(record['pass_ratios'])
@@ -581,6 +655,9 @@ class ResultCollector:
                 # Calculate pass ratio for this completion
                 pass_ratio = sum(record['results']) / len(record['results']) if len(record['results']) > 0 else 0.0
                 group[task_id].append(pass_ratio)
+            else:
+                # Empty completions (agent produced no output) — treat as 0.0
+                group[task_id].append(0.0)
         
         if not group:
             return 0.0
@@ -588,8 +665,11 @@ class ResultCollector:
         # Calculate average pass ratio for each task_id
         task_avg_pass_ratios = []
         for task_id, pass_ratios in group.items():
-            task_avg = np.mean(pass_ratios)
-            task_avg_pass_ratios.append(task_avg)
+            if not pass_ratios:
+                task_avg_pass_ratios.append(0.0)
+            else:
+                task_avg = np.mean(pass_ratios)
+                task_avg_pass_ratios.append(task_avg)
         
         # Return average pass ratio of all tasks
         return np.mean(task_avg_pass_ratios)
@@ -621,26 +701,30 @@ def main():
     print(f"Loading data from {args.input_file}...")
     data_records = result_collector.load_jsonl_data(args.input_file)
     print(f"Processing {len(data_records)} records...")
+
+    infra_errors = 0
     
     for i, record in enumerate(data_records):
         print(f"Processing record {i+1}/{len(data_records)}: {record['function_name']}")
         
-        # Validate that required fields are present
-        location = record.get('implementation_location', '')
-        test_code_path = record.get('test_code_path', '')
+        # Validate that required fields are present (normalize backslash/backtick paths)
+        location = record.get('implementation_location', '').strip().strip('`').replace('\\', '/')
+        test_code_path = record.get('test_code_path', '').strip().strip('`').replace('\\', '/')
         
         if not location or not location.strip():
             print(f"  ❌ Error: 'implementation_location' field is empty or missing")
             print(f"  This field is required to locate the source file to modify")
             record['results'] = [False] * len(record.get('completions', []))
             record['pass_ratios'] = [0.0] * len(record.get('completions', []))
+            infra_errors += 1
             continue
-        
+
         if not test_code_path or not test_code_path.strip():
             print(f"  ❌ Error: 'test_code_path' field is empty or missing")
             print(f"  This field is required to locate the test file to run")
             record['results'] = [False] * len(record.get('completions', []))
             record['pass_ratios'] = [0.0] * len(record.get('completions', []))
+            infra_errors += 1
             continue
         
         source_file = location.split(':')[0]
@@ -656,12 +740,14 @@ def main():
             print(f"  Check that 'implementation_location' contains a valid file path")
             record['results'] = [False] * len(record.get('completions', []))
             record['pass_ratios'] = [0.0] * len(record.get('completions', []))
+            infra_errors += 1
             continue
-        
+
         if not os.path.exists(source_file_path):
             print(f"  ❌ Source file not found: {source_file_path}")
             record['results'] = [False] * len(record.get('completions', []))
             record['pass_ratios'] = [0.0] * len(record.get('completions', []))
+            infra_errors += 1
             continue
         
         if test_code_path.startswith('code/'):
@@ -677,13 +763,21 @@ def main():
         try:
             for j, completion in enumerate(record['completions']):
                 print(f"  Testing completion {j+1}/{len(record['completions'])}")
-                
+
+                # Skip empty placeholders (no_result / timeout / error)
+                if not completion or not completion.strip():
+                    results.append(False)
+                    pass_ratios.append(0.0)
+                    print(f"    Result: FAIL (empty completion, status={record.get('status', 'unknown')})")
+                    continue
+
                 try:
                     # 1. Modify source file
                     success = code_replacer.replace_function_in_file(
                         source_file_path,
                         record['implementation_location'],
-                        completion
+                        completion,
+                        function_name=record.get('function_name', '')
                     )
                     
                     if not success:
@@ -737,7 +831,7 @@ def main():
     print(f"Total tests: {total_tests}")
     print(f"Passed: {total_passed}")
     print(f"Failed: {total_tests - total_passed}")
-    print(f"Success rate: {total_passed/total_tests*100:.1f}%")
+    print(f"Success rate: {total_passed/total_tests*100:.1f}%" if total_tests > 0 else "Success rate: N/A (no tests)")
     
     if pass_at_k_results:
         print("\nPass@k Results:")
@@ -746,19 +840,20 @@ def main():
     
     print(f"\nAvgPassRatio: {avg_pass_ratio:.4f}")
     
-    if pass_at_k_results:
-        metrics_file = args.output_file.replace('_result.jsonl', '_result.metrics.json')
-        print(f"Saving metrics to {metrics_file}...")
-        with open(metrics_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                'total_functions': len(data_records),
-                'total_tests': total_tests,
-                'total_passed': total_passed,
-                'overall_success_rate': total_passed/total_tests if total_tests > 0 else 0.0,
-                'pass_at_k': pass_at_k_results,
-                'avg_pass_ratio': avg_pass_ratio
-            }, f, ensure_ascii=False, indent=2)
+    metrics_file = args.output_file.replace('_result.jsonl', '_result.metrics.json')
+    print(f"Saving metrics to {metrics_file}...")
+    with open(metrics_file, 'w', encoding='utf-8') as f:
+        json.dump({
+            'total_functions': len(data_records),
+            'total_tests': total_tests,
+            'total_passed': total_passed,
+            'overall_success_rate': total_passed/total_tests if total_tests > 0 else 0.0,
+            'pass_at_k': pass_at_k_results if pass_at_k_results else {},
+            'avg_pass_ratio': avg_pass_ratio
+        }, f, ensure_ascii=False, indent=2)
+
+    return 1 if infra_errors > 0 else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

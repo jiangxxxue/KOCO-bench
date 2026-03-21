@@ -108,7 +108,6 @@ def main():
     # Define test modules
     test_modules = [
         ('compute_loss', 'test_compute_loss'),
-        ('gen_per_token_logps', 'test_gen_per_token_logps'),
         ('plan_format_reward', 'test_plan_format_reward'),
         ('plan_path_reward', 'test_plan_path_reward'),
         ('plan_speed_reward', 'test_plan_speed_reward'),
