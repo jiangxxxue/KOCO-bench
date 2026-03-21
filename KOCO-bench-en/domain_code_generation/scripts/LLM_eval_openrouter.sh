@@ -6,19 +6,41 @@
 # 2. DEFAULT_MODEL - OpenRouter model ID (e.g. qwen/qwen-2.5-coder-32b-instruct)
 # 3. DEFAULT_FRAMEWORK - framework name under test_examples
 # 4. PROJECT_DIR - project root (default: parent of scripts/ parent)
+export OPENROUTER_API_KEY='your-api-key'
 
 # Default config (override via environment)
-DEFAULT_MODEL="${DEFAULT_MODEL:-qwen/qwen-2.5-coder-32b-instruct}"
-DEFAULT_FRAMEWORK="${DEFAULT_FRAMEWORK:-your_framework}"
-NUM_COMPLETIONS="${NUM_COMPLETIONS:-1}"
+##meta-llama/llama-3.1-8b-instruct  
+#qwen/qwen2.5-coder-7b-instruct
+#qwen/qwen-2.5-coder-32b-instruct
+#deepseek/deepseek-chat-v3.1
+#moonshotai/kimi-k2-0905
+#google/gemini-2.5-pro
+#anthropic/claude-sonnet-4.5
+#openai/gpt-5-mini
+#openai/o4-mini
+DEFAULT_MODEL="${DEFAULT_MODEL:-openai/gpt-5-mini}"
+DEFAULT_FRAMEWORK="${DEFAULT_FRAMEWORK:-verl}"
+# PASS_ANY controls pass@k experiment mode (recommended: 1 or 10)
+PASS_ANY="${PASS_ANY:-10}"
+NUM_COMPLETIONS="${NUM_COMPLETIONS:-$PASS_ANY}"
 
 # Project root: set PROJECT_DIR or use directory containing domain_code_generation
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
-
+PROJECT_DIR="${PROJECT_DIR}/domain_code_generation"
 # Parse algorithm methods
 # Test example name (empty = process all)
 FRAMEWORK="${FRAMEWORK:-$DEFAULT_FRAMEWORK}"
 TEST_EXAMPLE="${TEST_EXAMPLE:-}"
+
+if ! [[ "$PASS_ANY" =~ ^[0-9]+$ ]] || [ "$PASS_ANY" -lt 1 ]; then
+    echo "❌ Error: PASS_ANY must be a positive integer, got: ${PASS_ANY}"
+    exit 1
+fi
+
+if ! [[ "$NUM_COMPLETIONS" =~ ^[0-9]+$ ]] || [ "$NUM_COMPLETIONS" -lt 1 ]; then
+    echo "❌ Error: NUM_COMPLETIONS must be a positive integer, got: ${NUM_COMPLETIONS}"
+    exit 1
+fi
 
 SCRIPT_DIR="${PROJECT_DIR}/scripts"
 
@@ -315,6 +337,8 @@ run_openrouter_api() {
     echo "========================================================"
     echo "Model: ${MODEL_NAME}"
     echo "Framework: ${FRAMEWORK}"
+    echo "Pass@k target: pass@${PASS_ANY}"
+    echo "Num completions: ${NUM_COMPLETIONS}"
     echo "Data directory: ${DATA_DIR}"
     echo "Output directory: ${MODEL_OUTPUT_DIR}"
     echo "Directory name: ${MODEL_DIR_NAME}"
@@ -339,7 +363,7 @@ run_openrouter_api() {
             --output_file "${OUTPUT_FILE}" \
             --num_completions ${NUM_COMPLETIONS} \
             --max_tokens 30000 \
-            --temperature 0.0 \
+            --temperature 0.8 \
             --top_p 1.0 \
             --delay 0.5 \
             --debug \
@@ -376,7 +400,7 @@ run_openrouter_api() {
                 --output_file "${output_file}" \
                 --num_completions ${NUM_COMPLETIONS} \
                 --max_tokens 30000 \
-                --temperature 0.0 \
+                --temperature 0.8 \
                 --top_p 1.0 \
                 --delay 0.5 \
                 --debug \
@@ -661,6 +685,8 @@ echo "🚀 Run full pipeline"
 echo "============================================================"
 echo "Framework: ${FRAMEWORK}"
 echo "Model: ${DEFAULT_MODEL}"
+echo "PASS_ANY target: pass@${PASS_ANY}"
+echo "Num completions: ${NUM_COMPLETIONS}"
 if [ -n "$TEST_EXAMPLE" ]; then
     echo "Test example: ${TEST_EXAMPLE}"
 else
@@ -720,6 +746,8 @@ echo "🎉 Pipeline completed!"
 echo "============================================================"
 echo "Framework: ${FRAMEWORK}"
 echo "Model: ${DEFAULT_MODEL}"
+echo "PASS_ANY target: pass@${PASS_ANY}"
+echo "Num completions: ${NUM_COMPLETIONS}"
 echo "Steps completed:"
 echo "  ✅ 1. Parse algorithm core methods"
 echo "  ✅ 2. Build prompts"

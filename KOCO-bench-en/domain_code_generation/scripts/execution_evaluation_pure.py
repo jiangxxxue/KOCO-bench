@@ -597,7 +597,7 @@ class ResultCollector:
             for record in data:
                 f.write(json.dumps(record, ensure_ascii=False) + '\n')
     
-    def calculate_pass_at_k(self, data_records: List[Dict[str, Any]], k_values: List[int] = [1, 2, 3, 4]) -> Dict[str, float]:
+    def calculate_pass_at_k(self, data_records: List[Dict[str, Any]], k_values: List[int] = [1, 10]) -> Dict[str, float]:
         total_samples = []
         correct_samples = []
         

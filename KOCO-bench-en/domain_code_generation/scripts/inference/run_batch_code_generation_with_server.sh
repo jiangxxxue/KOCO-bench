@@ -14,14 +14,26 @@ MODEL_NAME="${MODEL_NAME:-your_model}"
 SERVER_URL="${SERVER_URL:-http://localhost:8000}"
 
 # Generation parameters
-NUM_COMPLETIONS="${NUM_COMPLETIONS:-1}"
+# PASS_ANY controls pass@k experiment mode (recommended: 1 or 10)
+PASS_ANY="${PASS_ANY:-1}"
+NUM_COMPLETIONS="${NUM_COMPLETIONS:-$PASS_ANY}"
 MAX_TOKENS="${MAX_TOKENS:-2048}"
-TEMPERATURE="${TEMPERATURE:-0.7}"
+TEMPERATURE="${TEMPERATURE:-0.8}"
 TOP_P="${TOP_P:-0.95}"
 BATCH_SIZE="${BATCH_SIZE:-1}"  # Batch size
 
 # Behavior control
 SKIP_EXISTING="${SKIP_EXISTING:-false}"  # Default: overwrite existing files
+
+if ! [[ "$PASS_ANY" =~ ^[0-9]+$ ]] || [ "$PASS_ANY" -lt 1 ]; then
+    echo "❌ Error: PASS_ANY must be a positive integer, got: ${PASS_ANY}"
+    exit 1
+fi
+
+if ! [[ "$NUM_COMPLETIONS" =~ ^[0-9]+$ ]] || [ "$NUM_COMPLETIONS" -lt 1 ]; then
+    echo "❌ Error: NUM_COMPLETIONS must be a positive integer, got: ${NUM_COMPLETIONS}"
+    exit 1
+fi
 
 # ========================================
 # Color Output
@@ -96,6 +108,8 @@ echo -e "${BLUE}🚀 Batch Code Generation (using inference server)${NC}"
 echo "========================================================"
 echo "Framework: ${FRAMEWORK}"
 echo "Model name: ${MODEL_NAME}"
+echo "PASS_ANY target: pass@${PASS_ANY}"
+echo "Num completions: ${NUM_COMPLETIONS}"
 echo "Server: ${SERVER_URL}"
 echo "Data directory: ${DATA_DIR}"
 echo "Output directory: ${MODEL_OUTPUT_DIR}"

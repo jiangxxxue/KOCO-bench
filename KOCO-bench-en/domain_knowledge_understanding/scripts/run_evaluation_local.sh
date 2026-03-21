@@ -23,10 +23,22 @@ PROBLEMS_DIR="${PROJECT_DIR}/problems"
 RESULTS_DIR="${PROJECT_DIR}/results"
 
 # Evaluation parameters
-TEMPERATURE=0.0
+TEMPERATURE=0.8
 MAX_TOKENS=8192
 TOP_P=1.0
 DELAY=0.5
+PASS_ANY="${PASS_ANY:-1}"
+NUM_COMPLETIONS="${NUM_COMPLETIONS:-$PASS_ANY}"
+
+if ! [[ "$PASS_ANY" =~ ^[0-9]+$ ]] || [ "$PASS_ANY" -lt 1 ]; then
+    echo -e "${RED}❌ Error: PASS_ANY must be a positive integer, got: ${PASS_ANY}${NC}"
+    exit 1
+fi
+
+if ! [[ "$NUM_COMPLETIONS" =~ ^[0-9]+$ ]] || [ "$NUM_COMPLETIONS" -lt 1 ]; then
+    echo -e "${RED}❌ Error: NUM_COMPLETIONS must be a positive integer, got: ${NUM_COMPLETIONS}${NC}"
+    exit 1
+fi
 
 # ========================================
 # Colors
@@ -126,7 +138,8 @@ process_single_problem() {
         --temperature ${TEMPERATURE} \
         --max_tokens ${MAX_TOKENS} \
         --top_p ${TOP_P} \
-        --delay ${DELAY}
+        --delay ${DELAY} \
+        --num_completions ${NUM_COMPLETIONS}
     
     if [ $? -eq 0 ]; then
         echo ""
@@ -253,7 +266,9 @@ generate_summary() {
     
     # Statistics
     TOTAL_PROBLEMS=0
-    TOTAL_CORRECT=0
+    TOTAL_CORRECT_AT_1=0
+    TOTAL_CORRECT_AT_K=0
+    PASS_K_LABEL=""
     
     echo "========================================================"
     echo "📊 Detailed results per dataset"
@@ -273,23 +288,35 @@ try:
         data = json.load(f)
         summary = data.get('summary', {})
         total = summary.get('total', 0)
-        correct = summary.get('correct', 0)
-        accuracy = summary.get('accuracy_percent', 0.0)
-        print(f'{total},{correct},{accuracy:.2f}')
+        pass_k = int(summary.get('pass_k', summary.get('num_completions', 1)))
+        correct_at_1 = summary.get('correct_at_1')
+        if correct_at_1 is None:
+            # Backward compatibility: old result file only had pass@k as correct.
+            correct_at_1 = summary.get('correct', 0) if pass_k == 1 else 0
+        acc_at_1 = summary.get('pass_at_1_accuracy_percent')
+        if acc_at_1 is None:
+            acc_at_1 = summary.get('accuracy_percent', 0.0) if pass_k == 1 else 0.0
+        correct_at_k = summary.get('correct_at_k', summary.get('correct', 0))
+        acc_at_k = summary.get('pass_at_k_accuracy_percent', summary.get('accuracy_percent', 0.0))
+        print(f'{total},{correct_at_1},{acc_at_1:.2f},{correct_at_k},{acc_at_k:.2f},{pass_k}')
 except Exception as e:
-    print('0,0,0.00', file=sys.stderr)
+    print('0,0,0.00,0,0.00,1', file=sys.stderr)
     sys.exit(1)
 ")
         
         if [ $? -eq 0 ]; then
-            IFS=',' read -r total correct accuracy <<< "$stats"
+            IFS=',' read -r total correct_at_1 acc_at_1 correct_at_k acc_at_k pass_k <<< "$stats"
             TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + total))
-            TOTAL_CORRECT=$((TOTAL_CORRECT + correct))
+            TOTAL_CORRECT_AT_1=$((TOTAL_CORRECT_AT_1 + correct_at_1))
+            TOTAL_CORRECT_AT_K=$((TOTAL_CORRECT_AT_K + correct_at_k))
+            PASS_K_LABEL="$pass_k"
             
             echo "【${dataset}】"
             echo "  Total: ${total}"
-            echo "  Correct: ${correct}"
-            echo "  Accuracy: ${accuracy}%"
+            echo "  pass@1 Correct: ${correct_at_1}"
+            echo "  pass@1 Accuracy: ${acc_at_1}%"
+            echo "  pass@${pass_k} Correct: ${correct_at_k}"
+            echo "  pass@${pass_k} Accuracy: ${acc_at_k}%"
             echo ""
         else
             echo "【${dataset}】"
@@ -300,9 +327,11 @@ except Exception as e:
     
     # Overall statistics
     if [ $TOTAL_PROBLEMS -gt 0 ]; then
-        OVERALL_ACCURACY=$(python3 -c "print(f'{$TOTAL_CORRECT / $TOTAL_PROBLEMS * 100:.2f}')")
+        OVERALL_ACCURACY_AT_1=$(python3 -c "print(f'{$TOTAL_CORRECT_AT_1 / $TOTAL_PROBLEMS * 100:.2f}')")
+        OVERALL_ACCURACY_AT_K=$(python3 -c "print(f'{$TOTAL_CORRECT_AT_K / $TOTAL_PROBLEMS * 100:.2f}')")
     else
-        OVERALL_ACCURACY="0.00"
+        OVERALL_ACCURACY_AT_1="0.00"
+        OVERALL_ACCURACY_AT_K="0.00"
     fi
     
     echo "========================================================"
@@ -311,9 +340,12 @@ except Exception as e:
     echo "Model: ${model_name}"
     echo "Number of datasets: ${#result_files[@]}"
     echo "Total problems: ${TOTAL_PROBLEMS}"
-    echo -e "${GREEN}✅ Correct: ${TOTAL_CORRECT}${NC}"
-    echo -e "${RED}❌ Incorrect: $((TOTAL_PROBLEMS - TOTAL_CORRECT))${NC}"
-    echo "🎯 Overall accuracy: ${OVERALL_ACCURACY}%"
+    echo -e "${GREEN}✅ pass@1 Correct: ${TOTAL_CORRECT_AT_1}${NC}"
+    echo -e "${RED}❌ pass@1 Incorrect: $((TOTAL_PROBLEMS - TOTAL_CORRECT_AT_1))${NC}"
+    echo "🎯 pass@1 Overall accuracy: ${OVERALL_ACCURACY_AT_1}%"
+    echo -e "${GREEN}✅ pass@${PASS_K_LABEL:-${NUM_COMPLETIONS}} Correct: ${TOTAL_CORRECT_AT_K}${NC}"
+    echo -e "${RED}❌ pass@${PASS_K_LABEL:-${NUM_COMPLETIONS}} Incorrect: $((TOTAL_PROBLEMS - TOTAL_CORRECT_AT_K))${NC}"
+    echo "🎯 pass@${PASS_K_LABEL:-${NUM_COMPLETIONS}} Overall accuracy: ${OVERALL_ACCURACY_AT_K}%"
     echo "========================================================"
     
     # Save summary to file
@@ -323,11 +355,15 @@ import json
 summary = {
     'model': '${model_name}',
     'server_url': '${server_url}',
+    'pass_k': ${PASS_K_LABEL:-${NUM_COMPLETIONS}},
     'num_datasets': ${#result_files[@]},
     'total_problems': ${TOTAL_PROBLEMS},
-    'total_correct': ${TOTAL_CORRECT},
-    'total_incorrect': ${TOTAL_PROBLEMS} - ${TOTAL_CORRECT},
-    'overall_accuracy_percent': ${OVERALL_ACCURACY}
+    'total_correct_at_1': ${TOTAL_CORRECT_AT_1},
+    'total_incorrect_at_1': ${TOTAL_PROBLEMS} - ${TOTAL_CORRECT_AT_1},
+    'overall_accuracy_at_1_percent': ${OVERALL_ACCURACY_AT_1},
+    'total_correct_at_k': ${TOTAL_CORRECT_AT_K},
+    'total_incorrect_at_k': ${TOTAL_PROBLEMS} - ${TOTAL_CORRECT_AT_K},
+    'overall_accuracy_at_k_percent': ${OVERALL_ACCURACY_AT_K}
 }
 with open('${summary_file}', 'w', encoding='utf-8') as f:
     json.dump(summary, f, indent=2, ensure_ascii=False)
@@ -351,6 +387,8 @@ echo "============================================================"
 echo "🚀 KOCO-BENCH Knowledge Understanding Evaluation (Local)"
 echo "============================================================"
 echo "Server: ${SERVER_URL}"
+echo "PASS_ANY target: pass@${PASS_ANY}"
+echo "Num completions: ${NUM_COMPLETIONS}"
 if [ -n "$DATASET" ]; then
     echo "Dataset: ${DATASET}"
 else

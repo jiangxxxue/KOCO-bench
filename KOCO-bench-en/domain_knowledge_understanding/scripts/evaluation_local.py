@@ -40,6 +40,7 @@ class EvaluationConfig:
     max_tokens: int = 4096
     top_p: float = 1.0
     delay: float = 0.5  # Delay between API calls
+    num_completions: int = 1
     
     # Input/Output
     input_file: str = ""
@@ -186,7 +187,7 @@ class LocalInferenceEvaluator:
         return False
     
     def generate_response(self, prompt: str) -> str:
-        """Generate a response from the local inference server."""
+        """Generate a single response from the local inference server."""
         try:
             evaluate_url = f"{self.config.server_url}/evaluate"
             
@@ -232,7 +233,8 @@ class LocalInferenceEvaluator:
         logger.info(f"Loaded {len(problems)} problems from {input_file}")
 
         results = []
-        correct_count = 0
+        correct_count_at_1 = 0
+        correct_count_at_k = 0
 
         logger.info(f"🚀 Starting evaluation with local model: {self.config.model_name}")
         logger.info("")
@@ -243,23 +245,34 @@ class LocalInferenceEvaluator:
             # Prepare prompt
             prompt = IOParser.prepare_prompt(prob['stem'], prob['instruction'])
             
-            # Generate response
-            raw_output = self.generate_response(prompt)
-            
-            if not raw_output:
-                logger.warning(f"  ⚠️  Empty response for problem {prob['id']}")
-            
-            # Extract predicted letters
-            pred_letters = IOParser.extract_letters(raw_output)
+            # Generate k responses and calculate pass@k (any hit).
+            raw_outputs: List[str] = []
+            pred_letters_list: List[List[str]] = []
+            is_correct_list: List[bool] = []
 
-            # Check correctness
-            is_correct = False
-            if prob['correct']:
-                if pred_letters == prob['correct']:
-                    is_correct = True
+            for _ in range(self.config.num_completions):
+                raw_output = self.generate_response(prompt)
+                raw_outputs.append(raw_output)
 
-            if is_correct:
-                correct_count += 1
+                if not raw_output:
+                    logger.warning(f"  ⚠️  Empty response for problem {prob['id']}")
+
+                pred_letters = IOParser.extract_letters(raw_output)
+                pred_letters_sorted = sorted(list(pred_letters))
+                pred_letters_list.append(pred_letters_sorted)
+                is_correct_list.append(pred_letters == prob['correct'] if prob['correct'] else False)
+
+            is_correct_at_1 = is_correct_list[0] if is_correct_list else False
+            is_correct_at_k = any(is_correct_list)
+
+            if is_correct_at_1:
+                correct_count_at_1 += 1
+            if is_correct_at_k:
+                correct_count_at_k += 1
+
+            # Keep legacy fields for downstream compatibility (use first completion).
+            first_raw_output = raw_outputs[0] if raw_outputs else ""
+            first_pred_letters = pred_letters_list[0] if pred_letters_list else []
 
             results.append({
                 'id': prob['id'],
@@ -267,14 +280,24 @@ class LocalInferenceEvaluator:
                 'instruction': prob['instruction'],
                 'stem': prob['stem'],
                 'explanation': prob['explanation'],
-                'pred_raw': raw_output,
-                'pred_letters': sorted(list(pred_letters)),
+                'pred_raw': first_raw_output,
+                'pred_letters': first_pred_letters,
                 'gt_letters': sorted(list(prob['correct'])),
-                'is_correct': is_correct
+                'is_correct': is_correct_at_k,
+                'is_correct_at_1': is_correct_at_1,
+                'is_correct_at_k': is_correct_at_k,
+                'pred_raws': raw_outputs,
+                'pred_letters_list': pred_letters_list,
+                'is_correct_list': is_correct_list,
+                'pass_any': is_correct_at_k
             })
             
-            status_icon = "✅" if is_correct else "❌"
-            logger.info(f"  {status_icon} Predicted: {sorted(list(pred_letters))} | Ground Truth: {sorted(list(prob['correct']))}")
+            pass1_icon = "✅" if is_correct_at_1 else "❌"
+            passk_icon = "✅" if is_correct_at_k else "❌"
+            logger.info(
+                f"  pass@1 {pass1_icon} | pass@{self.config.num_completions} {passk_icon} | "
+                f"First Predicted: {first_pred_letters} | Ground Truth: {sorted(list(prob['correct']))}"
+            )
             logger.info("")
             
             # Delay to avoid overloading
@@ -282,15 +305,27 @@ class LocalInferenceEvaluator:
                 time.sleep(self.config.delay)
 
         total = len(results)
-        accuracy = correct_count / total * 100 if total > 0 else 0.0
+        accuracy_at_1 = correct_count_at_1 / total * 100 if total > 0 else 0.0
+        accuracy_at_k = correct_count_at_k / total * 100 if total > 0 else 0.0
 
         summary = {
             'model': self.config.model_name,
             'server_url': self.config.server_url,
+            'pass_k': self.config.num_completions,
+            'num_completions': self.config.num_completions,
             'total': total,
-            'correct': correct_count,
-            'incorrect': total - correct_count,
-            'accuracy_percent': accuracy
+            # Legacy fields keep pass@k semantics for backward compatibility.
+            'correct': correct_count_at_k,
+            'incorrect': total - correct_count_at_k,
+            'accuracy_percent': accuracy_at_k,
+            'correct_at_1': correct_count_at_1,
+            'incorrect_at_1': total - correct_count_at_1,
+            'accuracy_at_1_percent': accuracy_at_1,
+            'pass_at_1_accuracy_percent': accuracy_at_1,
+            'correct_at_k': correct_count_at_k,
+            'incorrect_at_k': total - correct_count_at_k,
+            'accuracy_at_k_percent': accuracy_at_k,
+            'pass_at_k_accuracy_percent': accuracy_at_k
         }
 
         logger.info("")
@@ -300,9 +335,10 @@ class LocalInferenceEvaluator:
         logger.info(f"Model: {summary['model']}")
         logger.info(f"Server: {summary['server_url']}")
         logger.info(f"Total problems: {summary['total']}")
-        logger.info(f"✅ Correct: {summary['correct']}")
-        logger.info(f"❌ Incorrect: {summary['incorrect']}")
-        logger.info(f"🎯 Accuracy: {summary['accuracy_percent']:.2f}%")
+        logger.info(f"✅ pass@1 Correct: {summary['correct_at_1']}")
+        logger.info(f"✅ pass@{self.config.num_completions} Correct: {summary['correct_at_k']}")
+        logger.info(f"🎯 pass@1 Accuracy: {summary['pass_at_1_accuracy_percent']:.2f}%")
+        logger.info(f"🎯 pass@{self.config.num_completions} Accuracy: {summary['pass_at_k_accuracy_percent']:.2f}%")
         logger.info("=" * 80)
 
         # Save results
@@ -331,6 +367,8 @@ def main():
                         help="Top-p sampling parameter")
     parser.add_argument("--delay", type=float, default=0.5,
                         help="Delay between requests in seconds")
+    parser.add_argument("--num_completions", type=int, default=1,
+                        help="Number of responses per problem for pass@k evaluation (default: 1)")
     
     # Input/Output
     parser.add_argument("--input", type=str, required=True,
@@ -347,6 +385,7 @@ def main():
         max_tokens=args.max_tokens,
         top_p=args.top_p,
         delay=args.delay,
+        num_completions=args.num_completions,
         input_file=args.input,
         output_file=args.output
     )
@@ -358,6 +397,7 @@ def main():
     logger.info(f"Input: {args.input}")
     logger.info(f"Output: {args.output}")
     logger.info(f"Temperature: {config.temperature}")
+    logger.info(f"Num completions: {config.num_completions}")
     logger.info(f"Max tokens: {config.max_tokens}")
     logger.info("=" * 80)
     logger.info("")

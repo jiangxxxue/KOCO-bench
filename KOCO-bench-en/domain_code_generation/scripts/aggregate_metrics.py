@@ -3,7 +3,7 @@
 """
 aggregate_metrics.py - Aggregate evaluation metrics from multiple test instances
 
-Calculate comprehensive pass@1 and avg_pass_ratio across multiple test instances
+Calculate comprehensive pass@1/pass@10 and avg_pass_ratio across multiple test instances
 """
 
 import json
@@ -95,6 +95,7 @@ def aggregate_metrics(
     total_tests = 0
     total_passed = 0
     weighted_pass_at_1 = 0.0  # Use weighted pass@1
+    weighted_pass_at_10 = 0.0  # Use weighted pass@10 (if available)
     weighted_avg_pass_ratio = 0.0
     
     missing_files = []
@@ -137,6 +138,10 @@ def aggregate_metrics(
                 pass_at_1 = 0.0
             weighted_pass_at_1 += pass_at_1 * num_funcs
 
+            # Weighted average pass@10 (weighted by function count)
+            pass_at_10 = metrics.get('pass_at_k', {}).get('pass@10', 0.0)
+            weighted_pass_at_10 += pass_at_10 * num_funcs
+            
             # Weighted average avg_pass_ratio (weighted by function count)
             avg_ratio = metrics.get('avg_pass_ratio', 0.0)
             if isinstance(avg_ratio, float) and math.isnan(avg_ratio):
@@ -145,6 +150,7 @@ def aggregate_metrics(
             
             print(f"✓ {example}: {num_funcs} functions, "
                   f"pass@1={pass_at_1:.4f}, "
+                  f"pass@10={pass_at_10:.4f}, "
                   f"avg_pass_ratio={avg_ratio:.4f}")
         
         except Exception as e:
@@ -157,6 +163,7 @@ def aggregate_metrics(
     # Calculate comprehensive metrics
     # pass@1 uses weighted average (instead of simple total_passed / total_functions)
     aggregate_pass_at_1 = weighted_pass_at_1 / total_functions if total_functions > 0 else 0.0
+    aggregate_pass_at_10 = weighted_pass_at_10 / total_functions if total_functions > 0 else 0.0
     
     # avg_pass_ratio: weighted average
     aggregate_avg_pass_ratio = weighted_avg_pass_ratio / total_functions if total_functions > 0 else 0.0
@@ -171,6 +178,7 @@ def aggregate_metrics(
             'total_tests': total_tests,
             'total_passed': total_passed,
             'pass@1': aggregate_pass_at_1,
+            'pass@10': aggregate_pass_at_10,
             'avg_pass_ratio': aggregate_avg_pass_ratio,
         },
         'individual_metrics': all_metrics
@@ -199,6 +207,7 @@ def print_summary(result: Dict[str, Any]):
     print(f"Total tests:         {agg['total_tests']}")
     print(f"Passed functions:    {agg['total_passed']}")
     print(f"pass@1:              {agg['pass@1']:.4f} ({agg['pass@1']*100:.2f}%)")
+    print(f"pass@10:             {agg['pass@10']:.4f} ({agg['pass@10']*100:.2f}%)")
     print(f"avg_pass_ratio:     {agg['avg_pass_ratio']:.4f}")
     
     print("\n" + "-" * 70)
@@ -211,6 +220,7 @@ def print_summary(result: Dict[str, Any]):
         print(f"  Functions: {m.get('total_functions', 0)}")
         print(f"  Passed:    {m.get('total_passed', 0)}")
         print(f"  pass@1:    {m.get('pass_at_k', {}).get('pass@1', 0.0):.4f}")
+        print(f"  pass@10:   {m.get('pass_at_k', {}).get('pass@10', 0.0):.4f}")
         print(f"  avg_pass_ratio: {m.get('avg_pass_ratio', 0.0):.4f}")
     
     print("\n" + "=" * 70)
@@ -244,7 +254,8 @@ Example usage:
     --output aggregate_result.json
 
 Output description:
-  - pass@1: Number of passed functions across all instances / Total functions
+  - pass@1: Weighted average of each instance's pass@1 by function count
+  - pass@10: Weighted average of each instance's pass@10 by function count
   - avg_pass_ratio: avg_pass_ratio of all instances weighted by function count
         """
     )

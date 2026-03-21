@@ -15,16 +15,16 @@
 # anthropic/claude-sonnet-4.5
 # openai/gpt-5-mini
 # openai/o4-mini
-#google/gemini-3-pro-preview  这个不行，没办法成功生成 
-#换成 google/gemini-2.5-pro
+# google/gemini-2.5-pro
 
 # 修改为自己的 API key
-export OPENROUTER_API_KEY='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'
+export OPENROUTER_API_KEY='your-api-key'
 
 DEFAULT_MODEL="qwen/qwen2.5-coder-7b-instruct"
 
 # 项目根目录
-PROJECT_DIR="/KOCO-bench/KOCO-bench-en/domain_knowledge_understanding"
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
+PROJECT_DIR="${PROJECT_DIR}/domain_knowledge_understanding"
 
 # 脚本目录
 SCRIPT_DIR="${PROJECT_DIR}/scripts"
@@ -36,10 +36,22 @@ PROBLEMS_DIR="${PROJECT_DIR}/problems"
 RESULTS_DIR="${PROJECT_DIR}/results"
 
 # 测试参数
-TEMPERATURE=0.0
+TEMPERATURE=0.8
 MAX_TOKENS=4096
 TOP_P=1.0
 DELAY=0.5
+PASS_ANY="${PASS_ANY:-10}"
+NUM_COMPLETIONS="${NUM_COMPLETIONS:-$PASS_ANY}"
+
+if ! [[ "$PASS_ANY" =~ ^[0-9]+$ ]] || [ "$PASS_ANY" -lt 1 ]; then
+    echo "❌ 错误: PASS_ANY 必须是正整数，当前为: ${PASS_ANY}"
+    exit 1
+fi
+
+if ! [[ "$NUM_COMPLETIONS" =~ ^[0-9]+$ ]] || [ "$NUM_COMPLETIONS" -lt 1 ]; then
+    echo "❌ 错误: NUM_COMPLETIONS 必须是正整数，当前为: ${NUM_COMPLETIONS}"
+    exit 1
+fi
 
 # ========================================
 # 函数：获取所有问题文件
@@ -106,7 +118,8 @@ process_single_problem() {
         --temperature ${TEMPERATURE} \
         --max_tokens ${MAX_TOKENS} \
         --top_p ${TOP_P} \
-        --delay ${DELAY}
+        --delay ${DELAY} \
+        --num_completions ${NUM_COMPLETIONS}
     
     if [ $? -eq 0 ]; then
         echo ""
@@ -233,7 +246,9 @@ generate_summary() {
     
     # 统计变量
     TOTAL_PROBLEMS=0
-    TOTAL_CORRECT=0
+    TOTAL_CORRECT_AT_1=0
+    TOTAL_CORRECT_AT_K=0
+    PASS_K_LABEL=""
     
     echo "========================================================"
     echo "📊 各数据集详细结果"
@@ -253,23 +268,35 @@ try:
         data = json.load(f)
         summary = data.get('summary', {})
         total = summary.get('total', 0)
-        correct = summary.get('correct', 0)
-        accuracy = summary.get('accuracy_percent', 0.0)
-        print(f'{total},{correct},{accuracy:.2f}')
+        pass_k = int(summary.get('pass_k', summary.get('num_completions', 1)))
+        correct_at_1 = summary.get('correct_at_1')
+        if correct_at_1 is None:
+            # Backward compatibility: old result file only had pass@k as correct.
+            correct_at_1 = summary.get('correct', 0) if pass_k == 1 else 0
+        acc_at_1 = summary.get('pass_at_1_accuracy_percent')
+        if acc_at_1 is None:
+            acc_at_1 = summary.get('accuracy_percent', 0.0) if pass_k == 1 else 0.0
+        correct_at_k = summary.get('correct_at_k', summary.get('correct', 0))
+        acc_at_k = summary.get('pass_at_k_accuracy_percent', summary.get('accuracy_percent', 0.0))
+        print(f'{total},{correct_at_1},{acc_at_1:.2f},{correct_at_k},{acc_at_k:.2f},{pass_k}')
 except Exception as e:
-    print('0,0,0.00', file=sys.stderr)
+    print('0,0,0.00,0,0.00,1', file=sys.stderr)
     sys.exit(1)
 ")
         
         if [ $? -eq 0 ]; then
-            IFS=',' read -r total correct accuracy <<< "$stats"
+            IFS=',' read -r total correct_at_1 acc_at_1 correct_at_k acc_at_k pass_k <<< "$stats"
             TOTAL_PROBLEMS=$((TOTAL_PROBLEMS + total))
-            TOTAL_CORRECT=$((TOTAL_CORRECT + correct))
+            TOTAL_CORRECT_AT_1=$((TOTAL_CORRECT_AT_1 + correct_at_1))
+            TOTAL_CORRECT_AT_K=$((TOTAL_CORRECT_AT_K + correct_at_k))
+            PASS_K_LABEL="$pass_k"
             
             echo "【${dataset}】"
             echo "  Total: ${total}"
-            echo "  Correct: ${correct}"
-            echo "  Accuracy: ${accuracy}%"
+            echo "  pass@1 Correct: ${correct_at_1}"
+            echo "  pass@1 Accuracy: ${acc_at_1}%"
+            echo "  pass@${pass_k} Correct: ${correct_at_k}"
+            echo "  pass@${pass_k} Accuracy: ${acc_at_k}%"
             echo ""
         else
             echo "【${dataset}】"
@@ -280,9 +307,11 @@ except Exception as e:
     
     # 总体统计
     if [ $TOTAL_PROBLEMS -gt 0 ]; then
-        OVERALL_ACCURACY=$(python3 -c "print(f'{$TOTAL_CORRECT / $TOTAL_PROBLEMS * 100:.2f}')")
+        OVERALL_ACCURACY_AT_1=$(python3 -c "print(f'{$TOTAL_CORRECT_AT_1 / $TOTAL_PROBLEMS * 100:.2f}')")
+        OVERALL_ACCURACY_AT_K=$(python3 -c "print(f'{$TOTAL_CORRECT_AT_K / $TOTAL_PROBLEMS * 100:.2f}')")
     else
-        OVERALL_ACCURACY="0.00"
+        OVERALL_ACCURACY_AT_1="0.00"
+        OVERALL_ACCURACY_AT_K="0.00"
     fi
     
     echo "========================================================"
@@ -291,9 +320,12 @@ except Exception as e:
     echo "模型: ${model}"
     echo "数据集数量: ${#result_files[@]}"
     echo "总问题数: ${TOTAL_PROBLEMS}"
-    echo "✅ 正确数: ${TOTAL_CORRECT}"
-    echo "❌ 错误数: $((TOTAL_PROBLEMS - TOTAL_CORRECT))"
-    echo "🎯 总体准确率: ${OVERALL_ACCURACY}%"
+    echo "✅ pass@1 正确数: ${TOTAL_CORRECT_AT_1}"
+    echo "❌ pass@1 错误数: $((TOTAL_PROBLEMS - TOTAL_CORRECT_AT_1))"
+    echo "🎯 pass@1 总体准确率: ${OVERALL_ACCURACY_AT_1}%"
+    echo "✅ pass@${PASS_K_LABEL:-${NUM_COMPLETIONS}} 正确数: ${TOTAL_CORRECT_AT_K}"
+    echo "❌ pass@${PASS_K_LABEL:-${NUM_COMPLETIONS}} 错误数: $((TOTAL_PROBLEMS - TOTAL_CORRECT_AT_K))"
+    echo "🎯 pass@${PASS_K_LABEL:-${NUM_COMPLETIONS}} 总体准确率: ${OVERALL_ACCURACY_AT_K}%"
     echo "========================================================"
     
     # 保存汇总到文件
@@ -302,11 +334,15 @@ except Exception as e:
 import json
 summary = {
     'model': '${model}',
+    'pass_k': ${PASS_K_LABEL:-${NUM_COMPLETIONS}},
     'num_datasets': ${#result_files[@]},
     'total_problems': ${TOTAL_PROBLEMS},
-    'total_correct': ${TOTAL_CORRECT},
-    'total_incorrect': ${TOTAL_PROBLEMS} - ${TOTAL_CORRECT},
-    'overall_accuracy_percent': ${OVERALL_ACCURACY}
+    'total_correct_at_1': ${TOTAL_CORRECT_AT_1},
+    'total_incorrect_at_1': ${TOTAL_PROBLEMS} - ${TOTAL_CORRECT_AT_1},
+    'overall_accuracy_at_1_percent': ${OVERALL_ACCURACY_AT_1},
+    'total_correct_at_k': ${TOTAL_CORRECT_AT_K},
+    'total_incorrect_at_k': ${TOTAL_PROBLEMS} - ${TOTAL_CORRECT_AT_K},
+    'overall_accuracy_at_k_percent': ${OVERALL_ACCURACY_AT_K}
 }
 with open('${summary_file}', 'w', encoding='utf-8') as f:
     json.dump(summary, f, indent=2, ensure_ascii=False)
@@ -330,6 +366,8 @@ echo "============================================================"
 echo "🚀 KOCO-BENCH Knowledge Understanding 评测"
 echo "============================================================"
 echo "模型: ${MODEL}"
+echo "PASS_ANY 目标: pass@${PASS_ANY}"
+echo "生成次数: ${NUM_COMPLETIONS}"
 if [ -n "$DATASET" ]; then
     echo "数据集: ${DATASET}"
 else
