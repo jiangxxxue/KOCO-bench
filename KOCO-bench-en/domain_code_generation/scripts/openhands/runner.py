@@ -465,6 +465,15 @@ def _extract_function_from_file(file_path, function_name):
                     target = node
                     break
 
+    # Fallback: dotted name may be "module.function" rather than
+    # "Class.method".  If no class was found, retry as a top-level function.
+    if target is None and class_name:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name == method_name:
+                    target = node
+                    break
+
     if target is None:
         return ""
 
@@ -507,6 +516,51 @@ def _resolve_llm_model(model: str, base_url: str) -> str:
     return model
 
 
+def _preserve_debug_artifacts(tmp_dir, function_name, framework, example):
+    """Copy agent logs and workspace snapshot on failure for post-mortem.
+
+    Saved to ``scripts/data/{framework}/openhands/debug/{example}/``.
+    """
+    debug_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), os.pardir,
+        "data", framework, "openhands", "debug", example, function_name,
+    )
+    debug_dir = os.path.normpath(debug_dir)
+    try:
+        os.makedirs(debug_dir, exist_ok=True)
+
+        # 1. openhands.log — full agent conversation
+        log_src = os.path.join(tmp_dir, "openhands.log")
+        if os.path.exists(log_src):
+            shutil.copy2(log_src, os.path.join(debug_dir, "openhands.log"))
+
+        # 2. task prompt
+        prompt_src = os.path.join(tmp_dir, "task_prompt.txt")
+        if os.path.exists(prompt_src):
+            shutil.copy2(prompt_src, os.path.join(debug_dir, "task_prompt.txt"))
+
+        # 3. modified stub file (the code/ tree after agent ran)
+        code_dir = os.path.join(tmp_dir, "workspace", "code")
+        if os.path.isdir(code_dir):
+            dst = os.path.join(debug_dir, "code_snapshot")
+            if os.path.exists(dst):
+                shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(code_dir, dst, symlinks=True,
+                            ignore=lambda d, c: {"__pycache__", ".pytest_cache"} & set(c))
+
+        # 4. OpenHands event logs
+        oh_persist = os.path.join(tmp_dir, "oh_persist")
+        if os.path.isdir(oh_persist):
+            dst = os.path.join(debug_dir, "oh_events")
+            if os.path.exists(dst):
+                shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(oh_persist, dst, symlinks=True)
+
+        print(f"    [{function_name}] Debug artifacts saved to {debug_dir}")
+    except Exception as exc:
+        print(f"    [{function_name}] Warning: failed to save debug artifacts: {exc}")
+
+
 def run_single_instance(
     record: dict,
     framework: str,
@@ -518,6 +572,7 @@ def run_single_instance(
     api_key: str,
     base_url: str = "https://openrouter.ai/api/v1",
     max_iterations: int = 50,
+    debug: bool = False,
 ) -> dict:
     """Run the OpenHands headless agent for one function.
 
@@ -682,6 +737,9 @@ def run_single_instance(
         record["results"] = [False]
         record["pass_ratios"] = [0.0]
     finally:
+        status = record.get("status", "")
+        if debug or status in ("no_result", "timeout", "error"):
+            _preserve_debug_artifacts(tmp_dir, function_name, framework, example)
         if os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 

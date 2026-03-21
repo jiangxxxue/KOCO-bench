@@ -126,6 +126,7 @@ def cmd_infer(
     instance_ids: list = None,
     concurrency: int = 3,
     force: bool = False,
+    debug: bool = False,
 ) -> int:
     """Run OpenHands agent inference for code generation.
 
@@ -133,6 +134,8 @@ def cmd_infer(
         force: If True, delete existing progress and output files before
                running, so that all instances are re-inferred from scratch.
                By default (False), completed instances are skipped (resume).
+        debug: If True, preserve workspace artifacts (logs, code snapshot,
+               agent events) for every run, not just failures.
     """
     from runner import (
         run_single_instance,
@@ -259,6 +262,7 @@ def cmd_infer(
                 api_key=api_key,
                 base_url=base_url,
                 max_iterations=max_iterations,
+                debug=debug,
             )
             with lock:
                 existing[result["function_name"]] = result
@@ -468,6 +472,7 @@ def main():
         sp.add_argument("--instance-ids", nargs="+", help="Specific function names to process")
         sp.add_argument("--concurrency", "-j", type=int, default=10, help="Concurrent agents per framework (default: 10)")
         sp.add_argument("--force", action="store_true", help="Discard previous infer results and re-run from scratch")
+        sp.add_argument("--debug", action="store_true", help="Preserve workspace artifacts (logs, code snapshot, agent events) for post-mortem analysis")
 
     # infer
     inf = subparsers.add_parser("infer", help="Run OpenHands agent inference")
@@ -498,6 +503,7 @@ def main():
             Model=args.model,
             TestExample=test_example or "all",
             Concurrency=args.concurrency,
+            Debug=args.debug,
         )
         return cmd_infer(
             args.framework, args.model, test_example,
@@ -507,6 +513,7 @@ def main():
             instance_ids=args.instance_ids,
             concurrency=args.concurrency,
             force=args.force,
+            debug=args.debug,
         )
 
     elif args.command == "eval":
@@ -525,6 +532,7 @@ def main():
             Model=args.model,
             TestExample=test_example or "all",
             Concurrency=args.concurrency,
+            Debug=args.debug,
         )
         return cmd_run(
             args.framework, args.model, test_example,
@@ -534,6 +542,7 @@ def main():
             instance_ids=args.instance_ids,
             concurrency=args.concurrency,
             force=args.force,
+            debug=args.debug,
         )
 
     return 0
