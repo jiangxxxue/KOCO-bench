@@ -29,59 +29,6 @@ Large language models excel at general programming tasks but struggle with domai
 2. **Realistic Evaluation**: Tasks require acquiring and applying domain knowledge, mimicking real-world development workflows
 3. **Challenging Scenarios**: Current state-of-the-art LLMs show limited performance, highlighting the need for better domain specialization methods
 
-## 🏗️ Benchmark Structure
-
-```
-KOCO-bench/
-├── KOCO-bench-en/                      # English version
-│   ├── domain_code_generation/         # Code generation tasks
-│   │   ├── {framework}/                # Framework-specific directories
-│   │   │   ├── knowledge_corpus/       # Curated domain knowledge
-│   │   │   │   ├── {framework}-main/   # Source code repository
-│   │   │   │   └── metadata.json       # Framework metadata
-│   │   │   ├── test_examples/          # Test projects
-│   │   │   │   └── {example}/          # Individual test cases
-│   │   │   │       ├── code/           # Project code
-│   │   │   │       ├── tests/          # Test suites
-│   │   │   │       └── requirements/   # Task specifications
-│   │   │   └── README.md
-│   │   └── scripts/                    # Evaluation scripts
-│   │       ├── README.md               # Detailed documentation
-│   │       ├── QUICK_START_AGGREGATE.md
-│   │       ├── parse_algorithm_methods.py
-│   │       ├── prompts_construction.py
-│   │       ├── execution_evaluation_pure.py
-│   │       ├── aggregate_metrics.py
-│   │       ├── LLM_eval_openrouter.sh  # One-click evaluation
-│   │       ├── agent/                  # agent inference
-│   │       ├── apicall/                # OpenRouter API integration
-│   │       ├── sft/                    # Supervised fine-tuning
-│   │       ├── lora/                   # LoRA training & inference
-│   │       └── inference/              # Local model inference
-│   └── domain_knowledge_understanding/ # Knowledge understanding tasks
-│       ├── problems/                   # Multiple-choice Q&A datasets
-│       │   ├── problems_ascend-transformer-boost_EN.json
-│       │   ├── problems_cosmos-rl_EN.json
-│       │   ├── problems_robocasa_EN.json
-│       │   ├── problems_trackerLab_EN.json
-│       │   ├── problems_triton-ascend_EN.json
-│       │   └── problems_VSLAM-LAB_EN.json
-│       ├── repositories/               # Full source code repositories
-│       │   ├── ascend-transformer-boost/
-│       │   ├── cosmos-rl/
-│       │   ├── robocasa/
-│       │   ├── trackerLab/
-│       │   ├── triton-ascend/
-│       │   └── VSLAM-LAB/
-│       ├── results/                    # Evaluation results
-│       └── scripts/                    # Evaluation scripts
-│           ├── README.md
-│           ├── evaluation_openrouter.py
-│           ├── run_evaluation_openrouter.sh
-│           └── evaluation_local.py
-└── KOCO-bench-ch/                      # Chinese version 
-```
-
 ## 🎯 Evaluation Tasks
 
 ### Task 1: Domain Code Generation
@@ -119,77 +66,28 @@ Each question assesses:
 
 ## 🔧 Build Environment
 
-### Framework: Verl & Open-R1
-
-#### Step 1: Pull the Base Image
-First, pull the official verl base image from Docker Hub:
-
-```
-docker pull verlai/verl:base-verl0.4-cu124-cudnn9.8-torch2.6-fa2.7.4
-```
-Step 2: Build the Custom Image
-Navigate to the Dockerfile directory and build:
-
-```
-cd KOCO-bench/Build-Env/Docker
-
-# Build the image
-docker build \
-  -f Dockerfile.app.kocobench.verl.openr1 \
-  -t kocobench/verl-openr1:v0.4 \
-  .
-```
-
-
-### Framework: RAGAnything & SmolAgents
-
-#### Step 1: Pull the Base Image
-
-First, pull the official Python base image from Docker Hub:
+We provide pre-built Docker images for all frameworks. Simply pull and tag them:
 
 ```bash
-docker pull python:3.10-slim
+# ~80.6 GB
+docker pull drunkpiano2005/koco-verl-openr1:1.0
+docker tag drunkpiano2005/koco-verl-openr1:1.0 kocobench/verl-openr1:v0.4
+
+# ~42.4 GB
+docker pull drunkpiano2005/koco-tensorrt:1.0
+docker tag drunkpiano2005/koco-tensorrt:1.0 tensorrt:latest
+
+# ~5 GB
+docker pull drunkpiano2005/koco-raganything-smolagents:1.0
+docker tag drunkpiano2005/koco-raganything-smolagents:1.0 raganything-smolagents:test
 ```
 
-#### Step 2: Build the Custom Image
-
-Navigate to the Dockerfile directory and build:
+Then configure your API key:
 
 ```bash
-cd KOCO-bench/Build-Env/Docker
-
-# Build the image
-docker build \
-  -f Dockerfile.raganything.smolagents \
-  -t raganything-smolagents:test \
-  .
-```
-
-
-### Framework: Tensorrt-Model-Optimizer
-
-#### Step 1: Pull the Base Image
-
-First, pull the official NVIDIA CUDA base image from Docker Hub:
-
-```bash
-docker pull nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
-```
-
----
-
-#### Step 2: Build the Custom Image
-
-Navigate to the Dockerfile directory and build:
-
-```bash
-cd KOCO-bench/Build-Env/Docker/tensorrt-env
-
-# Use Conda
-./build.sh
-
-# Or Use Pip
-./build.sh -p
+cd KOCO-bench-en/domain_code_generation/scripts
+cp .env.example .env
+# Edit .env and fill in your OpenRouter API key
 ```
 
 
@@ -197,43 +95,34 @@ cd KOCO-bench/Build-Env/Docker/tensorrt-env
 
 ### Task 1: Domain Code Generation Evaluation
 
-#### Option 1: One-Click Evaluation with OpenRouter
+#### Option 1: Single LLM Evaluation
 
-```bash
-# Configure API key in the script first
-export OPENROUTER_API_KEY='sk-or-v1-xxx'
-
-# Run complete code generation evaluation pipeline
-bash KOCO-bench-en/domain_code_generation/scripts/LLM_eval_openrouter.sh
-```
-
-#### Option 2: Step-by-Step Evaluation
+Evaluate a single LLM's code generation ability via the CLI pipeline (prompt construction → API call → Docker execution → metrics):
 
 ```bash
 cd KOCO-bench-en/domain_code_generation/scripts
 
-# 1. Parse algorithm methods
-bash run_parse_algorithm_methods.sh
+# Full pipeline (generate + evaluate + aggregate)
+python cli.py run --framework verl --model deepseek/deepseek-v3.2
 
-# 2. Construct prompts
-bash run_prompts_construction.sh
+# Or run steps separately:
+python cli.py generate  --framework verl --model deepseek/deepseek-v3.2   # steps 1-3
+python cli.py score     --framework verl --model deepseek/deepseek-v3.2   # steps 4-5
+```
 
-# 3. Generate code 
-# (using OpenRouter API)
-bash apicall/run_openrouter.sh --framework verl --model qwen/qwen2.5-coder-32b-instruct
+#### Option 2: OpenHands Agent Evaluation
 
-# (using local model)
-bash inference/start_inference_server.sh
-bash inference/run_batch_code_generation_with_server.sh
-bash inference/stop_inference_server.sh
+Evaluate an OpenHands agent that explores repositories and implements functions autonomously:
 
-# 4. Execute evaluation
-bash run_batch_execution_evaluation_pure.sh
+```bash
+cd KOCO-bench-en/domain_code_generation/scripts
 
-# 5. Aggregate metrics
-python aggregate_metrics.py \
-  --model_dir data/verl/qwen2.5-coder-32b-instruct-simple \
-  --test_examples prime ARES LUFFY PURE
+# Full pipeline (agent infer + evaluate)
+python openhands/cli.py run --framework verl --model deepseek/deepseek-v3.2
+
+# Or run steps separately:
+python openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2   # agent inference
+python openhands/cli.py eval  --framework verl --model deepseek/deepseek-v3.2   # evaluation
 ```
 
 #### Option 3: Training Custom Models
