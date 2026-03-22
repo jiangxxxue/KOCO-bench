@@ -567,7 +567,6 @@ def run_single_instance(
     example: str,
     workspace_root: str,
     knowledge_corpus_root: str,
-    gt_locations: dict,
     model: str,
     api_key: str,
     base_url: str = "https://openrouter.ai/api/v1",
@@ -594,14 +593,21 @@ def run_single_instance(
     tmp_dir = tempfile.mkdtemp(prefix=f"oh_{function_name}_")
 
     try:
-        # --- Workspace isolation (stub GT functions, exclude test_code) ---
-        repo_paths = _prepare_workspace(workspace_root, knowledge_corpus_root, gt_locations, tmp_dir)
+        # --- Workspace isolation (stub only THIS function's GT, exclude test_code) ---
+        # Filter gt_locations to only the current record's GT location so
+        # other functions' implementations remain intact in the workspace.
+        impl_loc = record.get("implementation_location", "")
+        my_rel_path, my_start, my_end = _parse_impl_location(impl_loc)
+        if my_rel_path and my_start:
+            my_gt_locations = {my_rel_path: [(my_start, my_end)]}
+        else:
+            my_gt_locations = {}
+        repo_paths = _prepare_workspace(workspace_root, knowledge_corpus_root, my_gt_locations, tmp_dir)
         work_dir = repo_paths["workspace"]
 
-        # Compute stub file path and line for the prompt
-        impl_loc = record.get("implementation_location", "")
-        rel_path, stub_start, _stub_end = _parse_impl_location(impl_loc)
-        stub_file = os.path.join(repo_paths["code"], rel_path) if rel_path else ""
+        # Compute stub file path and line for the prompt (reuse parsed location)
+        stub_file = os.path.join(repo_paths["code"], my_rel_path) if my_rel_path else ""
+        stub_start = my_start
 
         prompt = build_prompt(record, framework, repo_paths,
                               stub_file=stub_file, stub_line=stub_start)

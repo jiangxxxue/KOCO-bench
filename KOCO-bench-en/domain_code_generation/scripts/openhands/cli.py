@@ -215,11 +215,6 @@ def cmd_infer(
         all_records = load_jsonl(str(data_file))
         print(f"  Loaded {len(all_records)} functions")
 
-        # Collect GT locations from ALL records (before filtering) so every
-        # ground-truth body is stripped even when running a subset via --instance-ids.
-        from runner import _collect_gt_locations
-        gt_locations = _collect_gt_locations(all_records)
-
         # Filter by specific function names
         records = all_records
         if instance_ids:
@@ -257,7 +252,6 @@ def cmd_infer(
                 example=example,
                 workspace_root=workspace_root,
                 knowledge_corpus_root=knowledge_corpus_root,
-                gt_locations=gt_locations,
                 model=model,
                 api_key=api_key,
                 base_url=base_url,
