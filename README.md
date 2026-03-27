@@ -96,7 +96,7 @@ cp .env.example .env
 The OpenHands agent evaluation requires its own Python environment (Python ≥ 3.12). Set it up with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-cd KOCO-bench-en/domain_code_generation/scripts/openhands
+cd KOCO-bench-en/domain_code_generation/scripts/koco_openhands
 uv sync              # creates .venv and installs all dependencies
 uv run pytest tools/knowledge_search/test_knowledge_search.py -v   # verify (optional)
 ```
@@ -128,7 +128,7 @@ python cli.py score     --framework verl --model deepseek/deepseek-v3.2   # step
 Evaluate an OpenHands agent that explores repositories and implements functions autonomously:
 
 ```bash
-cd KOCO-bench-en/domain_code_generation/scripts/openhands
+cd KOCO-bench-en/domain_code_generation/scripts/koco_openhands
 uv sync   # first time only — installs openhands-sdk, regex, etc.
 
 # Full pipeline (agent infer + evaluate)

@@ -7,25 +7,25 @@ implement functions, then evaluates via the existing Docker pipeline.
 
 Usage (run from the scripts/ directory):
     # agent inference: explore repo, read code, generate implementation
-    python openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2
+    python koco_openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2
 
     # agent inference: single test example only
-    python openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2 --test-example ARES
+    python koco_openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2 --test-example ARES
 
     # agent inference: specific functions only
-    python openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2 --instance-ids compute_score
+    python koco_openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2 --instance-ids compute_score
 
     # agent inference: discard previous results and re-run from scratch
-    python openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2 --force
+    python koco_openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2 --force
 
     # evaluation: run execution evaluation inside Docker + aggregate metrics (reuses cli.py steps 4-5)
-    python openhands/cli.py eval  --framework verl --model deepseek/deepseek-v3.2
+    python koco_openhands/cli.py eval  --framework verl --model deepseek/deepseek-v3.2
 
     # full pipeline: infer + eval (resumes by default, skipping completed instances)
-    python openhands/cli.py run   --framework verl --model deepseek/deepseek-v3.2
+    python koco_openhands/cli.py run   --framework verl --model deepseek/deepseek-v3.2
 
     # full pipeline: discard previous infer results and re-run everything from scratch
-    python openhands/cli.py run   --framework verl --model deepseek/deepseek-v3.2 --force
+    python koco_openhands/cli.py run   --framework verl --model deepseek/deepseek-v3.2 --force
 
 Prerequisites:
     pip install openhands-ai numpy

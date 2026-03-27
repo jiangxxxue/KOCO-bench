@@ -11,7 +11,7 @@ import pytest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
-# Insert openhands dir BEFORE scripts dir to resolve imports
+# Insert koco_openhands dir BEFORE scripts dir to resolve imports
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
@@ -19,7 +19,7 @@ _SCRIPTS_DIR = str(Path(_HERE).parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-# Import openhands/cli.py by path to avoid collision with scripts/cli.py
+# Import koco_openhands/cli.py by path to avoid collision with scripts/cli.py
 import importlib.util
 _cli_spec = importlib.util.spec_from_file_location(
     "oh_cli", os.path.join(_HERE, "cli.py"))
