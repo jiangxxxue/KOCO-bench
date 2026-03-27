@@ -87,8 +87,21 @@ Then configure your API key:
 ```bash
 cd KOCO-bench-en/domain_code_generation/scripts
 cp .env.example .env
-# Edit .env and fill in your OpenRouter API key
+# Edit .env and fill in your OPENROUTER_API_KEY (required)
+# Optionally add OPENAI_API_KEY for the knowledge_search embedding tool
 ```
+
+### OpenHands Agent Environment
+
+The OpenHands agent evaluation requires its own Python environment (Python ≥ 3.12). Set it up with [uv](https://docs.astral.sh/uv/):
+
+```bash
+cd KOCO-bench-en/domain_code_generation/scripts/openhands
+uv sync              # creates .venv and installs all dependencies
+uv run pytest tools/knowledge_search/test_knowledge_search.py -v   # verify (optional)
+```
+
+> **Without uv**: `python3.12 -m venv .venv && .venv/bin/pip install -e ".[test]"` also works.
 
 
 ## 🚀 Quick Start
@@ -115,14 +128,15 @@ python cli.py score     --framework verl --model deepseek/deepseek-v3.2   # step
 Evaluate an OpenHands agent that explores repositories and implements functions autonomously:
 
 ```bash
-cd KOCO-bench-en/domain_code_generation/scripts
+cd KOCO-bench-en/domain_code_generation/scripts/openhands
+uv sync   # first time only — installs openhands-sdk, regex, etc.
 
 # Full pipeline (agent infer + evaluate)
-python openhands/cli.py run --framework verl --model deepseek/deepseek-v3.2
+uv run python cli.py run --framework verl --model deepseek/deepseek-v3.2
 
 # Or run steps separately:
-python openhands/cli.py infer --framework verl --model deepseek/deepseek-v3.2   # agent inference
-python openhands/cli.py eval  --framework verl --model deepseek/deepseek-v3.2   # evaluation
+uv run python cli.py infer --framework verl --model deepseek/deepseek-v3.2   # agent inference
+uv run python cli.py eval  --framework verl --model deepseek/deepseek-v3.2   # evaluation
 ```
 
 #### Option 3: Training Custom Models
