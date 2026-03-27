@@ -20,7 +20,6 @@ from runner import (
     _extract_from_events,
     _extract_function_from_file,
     _parse_impl_location,
-    _resolve_llm_model,
     _sanitize_completion,
     _stub_gt_functions,
     _stub_one_function,
@@ -32,6 +31,7 @@ from runner import (
     save_completed_ids,
     save_jsonl,
 )
+from agent.sdk import _resolve_llm_model
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -802,50 +802,50 @@ class TestSanitizeCompletion:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+class _FakeEvent:
+    """Minimal mock for SDK event objects used by _extract_from_events."""
+    def __init__(self, tool_name=None, action=None):
+        self.tool_name = tool_name
+        self.action = action
+
+
 class TestExtractFromEvents:
+    """Tests for _extract_from_events (SDK event list version)."""
 
-    def _create_event(self, persist_dir, event_id, content):
-        """Create a fake OpenHands event file."""
-        events_dir = os.path.join(persist_dir, "conversations", "conv1", "events")
-        os.makedirs(events_dir, exist_ok=True)
-        path = os.path.join(events_dir, f"{event_id:04d}.json")
-        with open(path, "w") as f:
-            json.dump(content, f)
-
-    def test_no_conversations(self, tmp_path):
-        result = _extract_from_events(str(tmp_path), "foo")
+    def test_empty_events(self):
+        result = _extract_from_events([], "foo")
         assert result == ""
 
-    def test_no_file_editor_events(self, tmp_path):
-        self._create_event(str(tmp_path), 1, {"tool_name": "terminal"})
-        result = _extract_from_events(str(tmp_path), "foo")
+    def test_no_file_editor_events(self):
+        events = [_FakeEvent(tool_name="terminal")]
+        result = _extract_from_events(events, "foo")
         assert result == ""
 
-    def test_extracts_function_from_created_file(self, tmp_path):
+    def test_extracts_function_from_created_file(self):
         code = "def target(x):\n    return x * 2\n"
-        self._create_event(str(tmp_path), 1, {
-            "tool_name": "file_editor",
-            "action": {
+        events = [_FakeEvent(
+            tool_name="file_editor",
+            action={
                 "command": "create",
                 "path": "/workspace/result.py",
                 "file_text": code,
             },
-        })
-        result = _extract_from_events(str(tmp_path), "target")
+        )]
+        result = _extract_from_events(events, "target")
         assert "return x * 2" in result
 
-    def test_async_def_not_matched(self, tmp_path):
+    def test_async_def_not_matched(self):
         """BUG: regex doesn't handle async def."""
         code = "async def fetch(url):\n    return await get(url)\n"
-        self._create_event(str(tmp_path), 1, {
-            "tool_name": "file_editor",
-            "action": {
+        events = [_FakeEvent(
+            tool_name="file_editor",
+            action={
                 "command": "create",
                 "path": "/workspace/result.py",
                 "file_text": code,
             },
-        })
-        result = _extract_from_events(str(tmp_path), "fetch")
+        )]
+        result = _extract_from_events(events, "fetch")
         # Current implementation misses async def — documenting this bug
         assert result == ""  # BUG: should find async def fetch
 
