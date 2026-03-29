@@ -13,8 +13,48 @@ from tools.knowledge_search.chunker import Chunk, chunk_file
 from tools.knowledge_search.hybrid import bm25_rank_to_score, build_fts_query
 
 EMBEDDING_MODEL = "text-embedding-3-small"
-FILE_EXTENSIONS = {".py", ".md", ".rst"}
 EMBED_BATCH_SIZE = 64
+MAX_FILE_SIZE = 512 * 1024  # 512 KB
+
+# Known text extensions — always indexed
+TEXT_EXTENSIONS = {
+    # code
+    ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".css", ".html",
+    ".cpp", ".h", ".cu", ".c",
+    # docs
+    ".md", ".rst", ".txt",
+    # config
+    ".yaml", ".yml", ".json", ".toml", ".cfg", ".ini", ".conf",
+    # scripts
+    ".sh", ".bash", ".slurm",
+    # templates & misc
+    ".in", ".jinja", ".example",
+    # notebooks
+    ".ipynb",
+}
+
+# Known binary extensions — always skipped
+BINARY_EXTENSIONS = {
+    # images / media
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".mp4", ".wav",
+    ".webm", ".bmp", ".tiff",
+    # fonts
+    ".ttf", ".woff", ".woff2", ".eot",
+    # binary documents
+    ".pdf", ".docx", ".xlsx", ".pptx",
+    # data / models
+    ".parquet", ".safetensors", ".onnx", ".pickle", ".pkl",
+    ".bin", ".pt", ".pth", ".npz", ".npy", ".h5", ".hdf5",
+    # compiled / archives
+    ".pyc", ".pyo", ".so", ".dylib", ".o", ".a",
+    ".jar", ".class", ".egg", ".whl",
+    ".zip", ".tar", ".gz", ".bz2", ".xz",
+    # other binary
+    ".encrypted", ".lock",
+}
+
+# Extensionless filenames that are text — always indexed
+TEXT_BASENAMES = {"Dockerfile", "Makefile", "LICENSE", "NOTICE"}
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -36,28 +76,59 @@ class SearchIndex:
 
     def build(
         self,
-        corpus_dir: str,
-        file_extensions: set[str] | None = None,
+        corpus_dirs: str | list[str],
         embed: bool = True,
     ) -> None:
-        """Walk *corpus_dir*, chunk files, build FTS5 + embedding index."""
-        exts = file_extensions or FILE_EXTENSIONS
+        """Walk one or more directories, chunk files, build FTS5 + embedding index.
+
+        File selection uses a three-tier strategy:
+        1. White-list (``TEXT_EXTENSIONS``) — always indexed.
+        2. Black-list (``BINARY_EXTENSIONS``) — always skipped.
+        3. Grey zone — attempt a UTF-8 read; indexed only if decodable.
+
+        Files larger than ``MAX_FILE_SIZE`` (512 KB) are always skipped.
+        """
+        if isinstance(corpus_dirs, str):
+            corpus_dirs = [corpus_dirs]
 
         # Collect and chunk files
         all_chunks: list[Chunk] = []
-        for root, _dirs, files in os.walk(corpus_dir):
-            for fname in files:
-                if os.path.splitext(fname)[1] not in exts:
-                    continue
-                abs_path = os.path.join(root, fname)
-                rel_path = os.path.relpath(abs_path, corpus_dir)
-                try:
-                    with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
-                except OSError:
-                    continue
-                file_chunks = chunk_file(rel_path, content=content)
-                all_chunks.extend(file_chunks)
+        for corpus_dir in corpus_dirs:
+            if not corpus_dir or not os.path.isdir(corpus_dir):
+                continue
+            for root, _dirs, files in os.walk(corpus_dir):
+                for fname in files:
+                    abs_path = os.path.join(root, fname)
+
+                    # Size guard
+                    try:
+                        if os.path.getsize(abs_path) > MAX_FILE_SIZE:
+                            continue
+                    except OSError:
+                        continue
+
+                    ext = os.path.splitext(fname)[1].lower()
+
+                    if ext in BINARY_EXTENSIONS:
+                        continue
+
+                    if ext not in TEXT_EXTENSIONS and fname not in TEXT_BASENAMES:
+                        # Grey zone: try reading as UTF-8
+                        try:
+                            with open(abs_path, "r", encoding="utf-8") as f:
+                                content = f.read()
+                        except (OSError, UnicodeDecodeError):
+                            continue
+                    else:
+                        try:
+                            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                                content = f.read()
+                        except OSError:
+                            continue
+
+                    rel_path = os.path.relpath(abs_path, corpus_dir)
+                    file_chunks = chunk_file(rel_path, content=content)
+                    all_chunks.extend(file_chunks)
 
         if not all_chunks:
             return
