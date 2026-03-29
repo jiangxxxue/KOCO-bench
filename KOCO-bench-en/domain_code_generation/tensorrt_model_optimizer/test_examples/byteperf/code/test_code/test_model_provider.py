@@ -22,13 +22,7 @@ MinimalMock.setup_megatron_mocks()
 # Add the parent directory to sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'byte_train_perf', 'Megatron-LM'))
 
-# Defensive import
-try:
-    from megatron.inference.gpt.model_provider import model_provider
-    IMPORT_SUCCESS = True
-except Exception as e:
-    print(f"Warning: Unable to import implementation code: {e}")
-    IMPORT_SUCCESS = False
+from megatron.inference.gpt.model_provider import model_provider
 
 
 class TestModelProvider(unittest.TestCase):
@@ -59,7 +53,6 @@ class TestModelProvider(unittest.TestCase):
         self.mock_args.manual_gc = False
         self.mock_args.export_kd_cfg = None
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('megatron.inference.gpt.model_provider.get_tensor_model_parallel_rank')
     @patch('megatron.inference.gpt.model_provider._add_load_convert_hooks')
     @patch('megatron.inference.gpt.model_provider.load_modelopt_state')
@@ -129,7 +122,6 @@ class TestModelProvider(unittest.TestCase):
         # Verify: model is returned
         self.assertEqual(result, mock_model)
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('megatron.inference.gpt.model_provider.get_tensor_model_parallel_rank')
     @patch('megatron.inference.gpt.model_provider._add_load_convert_hooks')
     @patch('megatron.inference.gpt.model_provider.load_modelopt_state')
@@ -162,7 +154,6 @@ class TestModelProvider(unittest.TestCase):
         self.assertIn("ModelOpt", str(context.exception))
         self.assertIn("MCore", str(context.exception))
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('megatron.inference.gpt.model_provider.get_tensor_model_parallel_rank')
     @patch('megatron.inference.gpt.model_provider._add_load_convert_hooks')
     @patch('megatron.inference.gpt.model_provider.mto.restore_from_modelopt_state')
@@ -213,7 +204,6 @@ class TestModelProvider(unittest.TestCase):
         # Verify: hooks are added to restored model
         mock_add_hooks.assert_called_once_with(restored_model)
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('megatron.inference.gpt.model_provider.get_tensor_model_parallel_rank')
     @patch('megatron.inference.gpt.model_provider.distillation.adjust_distillation_model_for_mcore')
     @patch('megatron.inference.gpt.model_provider.distillation.load_distillation_config')
@@ -294,7 +284,6 @@ class TestModelProvider(unittest.TestCase):
         # Verify: adjust_distillation_model_for_mcore is called
         mock_adjust.assert_called_once_with(mock_distill_model, mock_distill_cfg)
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('megatron.inference.gpt.model_provider.get_tensor_model_parallel_rank')
     @patch('megatron.inference.gpt.model_provider.mtd.export')
     @patch('megatron.inference.gpt.model_provider._add_load_convert_hooks')
@@ -349,7 +338,6 @@ class TestModelProvider(unittest.TestCase):
             # Verify: Exported model is returned
             self.assertEqual(result, exported_model)
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('megatron.inference.gpt.model_provider.get_tensor_model_parallel_rank')
     @patch('megatron.inference.gpt.model_provider._add_load_convert_hooks')
     @patch('megatron.inference.gpt.model_provider.load_modelopt_state')
@@ -394,7 +382,6 @@ class TestModelProvider(unittest.TestCase):
         # VerifyError message
         self.assertIn("manual-gc", str(context.exception))
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('megatron.inference.gpt.model_provider.get_tensor_model_parallel_rank')
     @patch('megatron.inference.gpt.model_provider._add_load_convert_hooks')
     @patch('megatron.inference.gpt.model_provider.load_modelopt_state')
@@ -477,7 +464,6 @@ class TestModelProviderEdgeCases(unittest.TestCase):
         self.mock_args.manual_gc = False
         self.mock_args.export_kd_cfg = None
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     @patch('megatron.inference.gpt.model_provider.get_tensor_model_parallel_rank')
     @patch('megatron.inference.gpt.model_provider._add_load_convert_hooks')
     @patch('megatron.inference.gpt.model_provider.load_modelopt_state')
