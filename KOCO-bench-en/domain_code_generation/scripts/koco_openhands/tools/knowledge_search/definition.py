@@ -1,7 +1,7 @@
 """OpenHands SDK tool definition for hybrid knowledge search.
 
 Registers ``knowledge_search`` as a custom OpenHands tool that can be used
-via ``Tool(name="knowledge_search", params={"corpus_dir": "/path"})``.
+via ``Tool(name="knowledge_search", params={"corpus_dirs": ["/path1", "/path2"]})``.
 """
 
 from __future__ import annotations
@@ -84,10 +84,10 @@ TEXT_WEIGHT = 0.3
 class KnowledgeSearchExecutor(ToolExecutor[KnowledgeSearchAction, KnowledgeSearchObservation]):
     """Orchestrates hybrid search (port of OpenClaw's manager.search())."""
 
-    def __init__(self, corpus_dir: str = ""):
+    def __init__(self, corpus_dirs: str | list[str] = ""):
         self.index = SearchIndex()
-        if corpus_dir:
-            self.index.build(corpus_dir)
+        if corpus_dirs:
+            self.index.build(corpus_dirs)
 
     def __call__(
         self,
@@ -229,10 +229,10 @@ class KnowledgeSearchTool(ToolDefinition[KnowledgeSearchAction, KnowledgeSearchO
     def create(
         cls,
         conv_state: "ConversationState | None" = None,
-        corpus_dir: str = "",
+        corpus_dirs: str | list[str] = "",
         **kwargs,
     ) -> Sequence["KnowledgeSearchTool"]:
-        executor = KnowledgeSearchExecutor(corpus_dir=corpus_dir)
+        executor = KnowledgeSearchExecutor(corpus_dirs=corpus_dirs)
         return [cls(
             description=TOOL_DESCRIPTION,
             action_type=KnowledgeSearchAction,

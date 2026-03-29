@@ -35,16 +35,16 @@ def _resolve_llm_model(model: str, base_url: str) -> str:
 
 
 def run_sdk_agent(prompt, workspace, model, api_key, base_url,
-                  max_iterations=50, corpus_dir=""):
+                  max_iterations=50, corpus_dirs=None):
     """Run the OpenHands SDK agent and return (events, status).
 
     Creates an ephemeral LLM → Agent → Conversation pipeline, sends
     ``prompt``, and blocks until the agent finishes.
 
     Parameters:
-        corpus_dir: Path to the knowledge corpus directory.  When non-empty,
-            the ``knowledge_search`` hybrid-search tool is registered and
-            added to the agent's tool list.
+        corpus_dirs: List of directories to index for knowledge search.
+            When non-empty, the ``knowledge_search`` hybrid-search tool is
+            registered and added to the agent's tool list.
 
     Returns:
         (events, status) where *events* is a list of SDK event objects and
@@ -74,9 +74,9 @@ def run_sdk_agent(prompt, workspace, model, api_key, base_url,
         Tool(name="terminal"),
         Tool(name="file_editor"),
     ]
-    if corpus_dir:
+    if corpus_dirs:
         import tools.knowledge_search  # noqa: F401 — triggers register_tool()
-        tools_list.append(Tool(name="knowledge_search", params={"corpus_dir": corpus_dir}))
+        tools_list.append(Tool(name="knowledge_search", params={"corpus_dirs": corpus_dirs}))
 
     agent = Agent(
         llm=llm,

@@ -637,7 +637,7 @@ def run_single_instance(
             api_key=api_key,
             base_url=base_url,
             max_iterations=max_iterations,
-            corpus_dir=repo_paths["knowledge_corpus"],
+            corpus_dirs=[repo_paths["knowledge_corpus"], repo_paths["code"]],
         )
 
         print(f"    [{function_name}] SDK status: {conv_status.value}")
