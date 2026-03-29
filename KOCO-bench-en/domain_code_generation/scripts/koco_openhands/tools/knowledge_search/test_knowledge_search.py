@@ -231,7 +231,7 @@ class TestSearchIndex:
             "This function computes the accuracy score by comparing\n"
             "predictions against ground truth labels.\n"
         )
-        (tmp_path / "config.yaml").write_text("key: value\n")  # should be skipped
+        (tmp_path / "config.yaml").write_text("key: value\n")
         return str(tmp_path)
 
     def test_build_and_keyword_search(self, corpus_dir):
@@ -239,9 +239,16 @@ class TestSearchIndex:
         idx.build(corpus_dir, embed=False)
         results = idx.search_keyword("compute_score", limit=10)
         assert len(results) > 0
-        # Should find the function
         paths = {r[2]["path"] for r in results}
         assert "module.py" in paths
+
+    def test_yaml_now_indexed(self, corpus_dir):
+        """YAML is in TEXT_EXTENSIONS and should be indexed."""
+        idx = SearchIndex()
+        idx.build(corpus_dir, embed=False)
+        results = idx.search_keyword("key value", limit=5)
+        paths = {info["path"] for _, _, info in results}
+        assert "config.yaml" in paths
 
     def test_fts_returns_score(self, corpus_dir):
         idx = SearchIndex()
@@ -256,13 +263,68 @@ class TestSearchIndex:
         results = idx.search_keyword("xyznonexistent", limit=5)
         assert results == []
 
-    def test_yaml_excluded(self, corpus_dir):
+    def test_binary_excluded(self, tmp_path):
+        """Binary files (e.g. .png) should never be indexed."""
+        (tmp_path / "code.py").write_text("def hello(): pass\n")
+        (tmp_path / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
         idx = SearchIndex()
-        idx.build(corpus_dir, embed=False)
-        # config.yaml should not be indexed (not in FILE_EXTENSIONS)
-        results = idx.search_keyword("key value", limit=5)
-        for _, _, info in results:
-            assert not info["path"].endswith(".yaml")
+        idx.build(str(tmp_path), embed=False)
+        results = idx.search_keyword("hello", limit=10)
+        paths = {info["path"] for _, _, info in results}
+        assert "code.py" in paths
+        assert "image.png" not in paths
+
+    def test_grey_zone_text_file_indexed(self, tmp_path):
+        """Files with unknown extension but valid UTF-8 should be indexed."""
+        (tmp_path / "config.myext").write_text("special_setting = true\n")
+        idx = SearchIndex()
+        idx.build(str(tmp_path), embed=False)
+        results = idx.search_keyword("special_setting", limit=5)
+        assert len(results) > 0
+
+    def test_grey_zone_binary_file_skipped(self, tmp_path):
+        """Files with unknown extension and invalid UTF-8 should be skipped."""
+        (tmp_path / "data.mybin").write_bytes(b"\x80\x81\x82\xff\xfe" * 100)
+        (tmp_path / "code.py").write_text("def marker(): pass\n")
+        idx = SearchIndex()
+        idx.build(str(tmp_path), embed=False)
+        paths = {info["path"] for _, _, info in idx.search_keyword("marker", limit=10)}
+        assert "code.py" in paths
+
+    def test_extensionless_dockerfile_indexed(self, tmp_path):
+        """Dockerfile (no extension) should be indexed via TEXT_BASENAMES."""
+        (tmp_path / "Dockerfile").write_text("FROM python:3.12\nRUN pip install torch\n")
+        idx = SearchIndex()
+        idx.build(str(tmp_path), embed=False)
+        results = idx.search_keyword("torch", limit=5)
+        paths = {info["path"] for _, _, info in results}
+        assert "Dockerfile" in paths
+
+    def test_large_file_skipped(self, tmp_path):
+        """Files exceeding MAX_FILE_SIZE should be skipped."""
+        (tmp_path / "huge.py").write_text("x = 1\n" * 200_000)  # > 512 KB
+        (tmp_path / "small.py").write_text("def tiny(): pass\n")
+        idx = SearchIndex()
+        idx.build(str(tmp_path), embed=False)
+        paths = {info["path"] for _, _, info in idx.search_keyword("tiny", limit=10)}
+        assert "small.py" in paths
+
+    def test_multi_directory_build(self, tmp_path):
+        """build() should accept a list of directories."""
+        dir_a = tmp_path / "corpus"
+        dir_a.mkdir()
+        (dir_a / "api.py").write_text("def api_call(): pass\n")
+
+        dir_b = tmp_path / "code"
+        dir_b.mkdir()
+        (dir_b / "app.py").write_text("def app_main(): pass\n")
+
+        idx = SearchIndex()
+        idx.build([str(dir_a), str(dir_b)], embed=False)
+        paths_api = {info["path"] for _, _, info in idx.search_keyword("api_call", limit=10)}
+        paths_app = {info["path"] for _, _, info in idx.search_keyword("app_main", limit=10)}
+        assert "api.py" in paths_api
+        assert "app.py" in paths_app
 
     def test_has_embeddings_false_without_api_key(self, corpus_dir, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -316,7 +378,7 @@ class TestKnowledgeSearchExecutor:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         # Import here to avoid SDK import issues at module level
         from tools.knowledge_search.definition import KnowledgeSearchExecutor, KnowledgeSearchAction
-        executor = KnowledgeSearchExecutor(corpus_dir=corpus_dir)
+        executor = KnowledgeSearchExecutor(corpus_dirs=corpus_dir)
         action = KnowledgeSearchAction(query="compute_loss", max_results=6, min_score=0.1)
         obs = executor(action)
         assert obs.num_results > 0
@@ -326,7 +388,7 @@ class TestKnowledgeSearchExecutor:
     def test_min_score_filtering(self, corpus_dir, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         from tools.knowledge_search.definition import KnowledgeSearchExecutor, KnowledgeSearchAction
-        executor = KnowledgeSearchExecutor(corpus_dir=corpus_dir)
+        executor = KnowledgeSearchExecutor(corpus_dirs=corpus_dir)
         # Very high min_score should filter out everything
         action = KnowledgeSearchAction(query="compute_loss", max_results=6, min_score=0.99)
         obs = executor(action)
@@ -335,7 +397,7 @@ class TestKnowledgeSearchExecutor:
     def test_file_type_filter(self, corpus_dir, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         from tools.knowledge_search.definition import KnowledgeSearchExecutor, KnowledgeSearchAction
-        executor = KnowledgeSearchExecutor(corpus_dir=corpus_dir)
+        executor = KnowledgeSearchExecutor(corpus_dirs=corpus_dir)
         action = KnowledgeSearchAction(query="compute_loss", max_results=6, min_score=0.1, file_type="py")
         obs = executor(action)
         for r in obs.results:
@@ -345,7 +407,7 @@ class TestKnowledgeSearchExecutor:
         """BM25-only mode uses keyword extraction for conversational queries."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         from tools.knowledge_search.definition import KnowledgeSearchExecutor, KnowledgeSearchAction
-        executor = KnowledgeSearchExecutor(corpus_dir=corpus_dir)
+        executor = KnowledgeSearchExecutor(corpus_dirs=corpus_dir)
         # Conversational query — stop words should be stripped
         action = KnowledgeSearchAction(
             query="what is the helper function",
