@@ -13,10 +13,6 @@ dependencies = [
     "regex~=2026.2",
     "litellm~=1.80",
     "pydantic~=2.12",
-]
-
-[project.optional-dependencies]
-test = [
     "pytest~=9.0",
 ]
 
