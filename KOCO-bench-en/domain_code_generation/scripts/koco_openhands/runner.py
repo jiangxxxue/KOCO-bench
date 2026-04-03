@@ -1,9 +1,8 @@
 """OpenHands agent logic for KOCO-bench code generation.
 
-Invokes the OpenHands headless CLI (subprocess) to run an agent that explores
-a repository and implements a function.  Each invocation gets an isolated
-workspace copy so agents cannot interfere with each other or pollute the
-source tree.
+Uses the OpenHands SDK to run an agent that explores a repository and
+implements a function.  Each invocation gets an isolated workspace copy
+so agents cannot interfere with each other or pollute the source tree.
 
 Provides: prompt construction, single-instance agent execution, JSONL I/O,
 and resume helpers.
@@ -14,8 +13,15 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
+
+from agent.sdk import (
+    SDK_AVAILABLE as _SDK_AVAILABLE,
+    ConversationExecutionStatus,
+    ConversationRunError,
+    run_sdk_agent,
+    _resolve_llm_model,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -324,27 +330,30 @@ RULES:
 # Single-instance agent execution
 # ---------------------------------------------------------------------------
 
-def _extract_from_events(persist_dir: str, function_name: str) -> str:
-    """Fallback: scan OpenHands conversation events for created .py files
-    and extract the function body for ``function_name``."""
-    import glob
+def _extract_from_events(events, function_name: str) -> str:
+    """Fallback: scan SDK conversation events for file_editor create actions
+    and extract the function body for ``function_name``.
+
+    ``events`` is a list of SDK event objects (from ``conversation.state.events``).
+    """
     import re as _re
 
-    conv_dirs = glob.glob(os.path.join(persist_dir, "conversations", "*", "events"))
-    if not conv_dirs:
-        return ""
-
-    events_dir = conv_dirs[0]
-    # Collect file_editor create actions (newest last)
+    # Collect file content from file_editor create actions (newest last)
     created_files = {}
-    for evt_path in sorted(glob.glob(os.path.join(events_dir, "*.json"))):
+    for evt in events:
         try:
-            with open(evt_path, "r", encoding="utf-8") as f:
-                evt = json.load(f)
-            if evt.get("tool_name") == "file_editor":
-                action = evt.get("action", {})
-                if action.get("command") == "create" and action.get("file_text"):
-                    created_files[action["path"]] = action["file_text"]
+            # SDK events are pydantic models; check for file_editor actions
+            if not hasattr(evt, "tool_name") or evt.tool_name != "file_editor":
+                continue
+            action = getattr(evt, "action", None)
+            if action is None:
+                continue
+            # action may be a pydantic model or dict
+            cmd = action.get("command") if isinstance(action, dict) else getattr(action, "command", None)
+            path = action.get("path") if isinstance(action, dict) else getattr(action, "path", None)
+            text = action.get("file_text") if isinstance(action, dict) else getattr(action, "file_text", None)
+            if cmd == "create" and text and path:
+                created_files[path] = text
         except Exception:
             continue
 
@@ -354,7 +363,6 @@ def _extract_from_events(persist_dir: str, function_name: str) -> str:
     # Look for a file containing the target function
     for path, content in reversed(list(created_files.items())):
         if function_name in content:
-            # Try to extract the function body
             pattern = _re.compile(
                 rf'^(def\s+{_re.escape(function_name)}\s*\(.*?\)\s*.*?:\s*\n)'
                 r'((?:(?:[ \t]+.+|[ \t]*#.+|[ \t]*)\n)*)',
@@ -363,12 +371,11 @@ def _extract_from_events(persist_dir: str, function_name: str) -> str:
             m = pattern.search(content)
             if m:
                 body = m.group(2)
-                # Dedent the body
                 lines = body.rstrip('\n').split('\n')
                 if lines:
                     indent = len(lines[0]) - len(lines[0].lstrip())
                     body = '\n'.join(l[indent:] for l in lines)
-                print(f"    [{function_name}] Fallback: extracted from {os.path.basename(path)}")
+                print(f"    [{function_name}] Fallback: extracted from SDK events ({os.path.basename(path)})")
                 return body
 
     return ""
@@ -504,19 +511,9 @@ def _extract_function_from_file(file_path, function_name):
     return func_text.strip()
 
 
-def _resolve_llm_model(model: str, base_url: str) -> str:
-    """Add ``openrouter/`` prefix when the base URL is OpenRouter.
 
-    litellm uses the model-name prefix for provider routing.  Without the
-    ``openrouter/`` prefix, ``deepseek/…`` gets routed directly to the
-    DeepSeek API, ignoring the custom base URL.
-    """
-    if "openrouter.ai" in base_url and not model.startswith("openrouter/"):
-        return f"openrouter/{model}"
-    return model
-
-
-def _preserve_debug_artifacts(tmp_dir, function_name, framework, example):
+def _preserve_debug_artifacts(tmp_dir, function_name, framework, example,
+                              sdk_events=None):
     """Copy agent logs and workspace snapshot on failure for post-mortem.
 
     Saved to ``scripts/data/{framework}/openhands/debug/{example}/``.
@@ -529,17 +526,12 @@ def _preserve_debug_artifacts(tmp_dir, function_name, framework, example):
     try:
         os.makedirs(debug_dir, exist_ok=True)
 
-        # 1. openhands.log — full agent conversation
-        log_src = os.path.join(tmp_dir, "openhands.log")
-        if os.path.exists(log_src):
-            shutil.copy2(log_src, os.path.join(debug_dir, "openhands.log"))
-
-        # 2. task prompt
+        # 1. task prompt
         prompt_src = os.path.join(tmp_dir, "task_prompt.txt")
         if os.path.exists(prompt_src):
             shutil.copy2(prompt_src, os.path.join(debug_dir, "task_prompt.txt"))
 
-        # 3. modified stub file (the code/ tree after agent ran)
+        # 2. modified stub file (the code/ tree after agent ran)
         code_dir = os.path.join(tmp_dir, "workspace", "code")
         if os.path.isdir(code_dir):
             dst = os.path.join(debug_dir, "code_snapshot")
@@ -548,13 +540,20 @@ def _preserve_debug_artifacts(tmp_dir, function_name, framework, example):
             shutil.copytree(code_dir, dst, symlinks=True,
                             ignore=lambda d, c: {"__pycache__", ".pytest_cache"} & set(c))
 
-        # 4. OpenHands event logs
-        oh_persist = os.path.join(tmp_dir, "oh_persist")
-        if os.path.isdir(oh_persist):
-            dst = os.path.join(debug_dir, "oh_events")
-            if os.path.exists(dst):
-                shutil.rmtree(dst, ignore_errors=True)
-            shutil.copytree(oh_persist, dst, symlinks=True)
+        # 3. SDK conversation events (replaces openhands.log / oh_events)
+        if sdk_events:
+            events_file = os.path.join(debug_dir, "sdk_events.json")
+            try:
+                serialized = []
+                for evt in sdk_events:
+                    if hasattr(evt, "model_dump"):
+                        serialized.append(evt.model_dump(mode="json"))
+                    else:
+                        serialized.append(str(evt))
+                with open(events_file, "w", encoding="utf-8") as f:
+                    json.dump(serialized, f, indent=2, default=str)
+            except Exception as exc:
+                print(f"    [{function_name}] Warning: failed to serialize SDK events: {exc}")
 
         print(f"    [{function_name}] Debug artifacts saved to {debug_dir}")
     except Exception as exc:
@@ -573,13 +572,13 @@ def run_single_instance(
     max_iterations: int = 50,
     debug: bool = False,
 ) -> dict:
-    """Run the OpenHands headless agent for one function.
+    """Run the OpenHands SDK agent for one function.
 
     Steps:
       1. copy workspace to a temp directory for isolation
-      2. write the task prompt to a temp file
-      3. invoke ``openhands --headless`` with cwd set to the workspace
-      4. read ``implementation_result.py`` from the (temp) workspace
+      2. build the task prompt
+      3. run the SDK agent (LLM + tools) in the workspace
+      4. extract the implementation from the modified source file
       5. clean up
 
     Returns the *record* dict augmented with ``completions`` and ``status``.
@@ -590,7 +589,18 @@ def run_single_instance(
     function_name = record["function_name"]
     print(f"    [{function_name}] Starting agent...")
 
+    if not _SDK_AVAILABLE:
+        print(f"    [{function_name}] Error: openhands-sdk not installed.")
+        print("      Install with: uv pip install openhands-sdk openhands-tools --python 3.12")
+        record["completions"] = [""]
+        record["status"] = "error"
+        record["error"] = "openhands-sdk not installed"
+        record["results"] = [False]
+        record["pass_ratios"] = [0.0]
+        return record
+
     tmp_dir = tempfile.mkdtemp(prefix=f"oh_{function_name}_")
+    conv_events = []
 
     try:
         # --- Workspace isolation (stub only THIS function's GT, exclude test_code) ---
@@ -612,80 +622,25 @@ def run_single_instance(
         prompt = build_prompt(record, framework, repo_paths,
                               stub_file=stub_file, stub_line=stub_start)
 
-        # --- Write prompt to file (avoids shell length limits) ---
+        # Save prompt for debug artifacts
         prompt_file = os.path.join(tmp_dir, "task_prompt.txt")
         with open(prompt_file, "w", encoding="utf-8") as f:
             f.write(prompt)
 
-        # --- Environment for OpenHands ---
-        env = os.environ.copy()
-        llm_model = _resolve_llm_model(model, base_url)
-        env["LLM_API_KEY"] = api_key
-        env["LLM_MODEL"] = llm_model
-        if base_url:
-            env["LLM_BASE_URL"] = base_url
+        # --- Run SDK agent ---
+        print(f"    [{function_name}] Running SDK agent (model={_resolve_llm_model(model, base_url)}) ...")
 
-        # Use an isolated persistence dir so we can write
-        # agent_settings.json without polluting ~/.openhands.
-        oh_persist_dir = os.path.join(tmp_dir, "oh_persist")
-        os.makedirs(oh_persist_dir, exist_ok=True)
-        env["OPENHANDS_PERSISTENCE_DIR"] = oh_persist_dir
+        conv_events, conv_status = run_sdk_agent(
+            prompt=prompt,
+            workspace=work_dir,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            max_iterations=max_iterations,
+            corpus_dirs=[repo_paths["knowledge_corpus"], repo_paths["code"]],
+        )
 
-        # Write agent_settings.json — sets max_output_tokens to a sane
-        # value.  litellm's model_info reports max_output_tokens=163840
-        # for deepseek-v3.2, which equals the full context window and
-        # causes every request to fail with "context length exceeded".
-        agent_settings = {
-            "llm": {
-                "model": llm_model,
-                "api_key": api_key,
-                "base_url": base_url,
-                "max_output_tokens": 65536,
-                "temperature": 0.0,
-                "usage_id": "agent",
-            },
-            "tools": [
-                {"name": "terminal", "params": {}},
-                {"name": "file_editor", "params": {}},
-                {"name": "task_tracker", "params": {}},
-                {"name": "delegate", "params": {}},
-                {"name": "task", "params": {}},
-            ],
-            "include_default_tools": ["FinishTool", "ThinkTool"],
-        }
-        with open(os.path.join(oh_persist_dir, "agent_settings.json"), "w") as f:
-            json.dump(agent_settings, f)
-
-        # --- Invoke OpenHands headless ---
-        cmd = [
-            "openhands", "--headless",
-            "--override-with-envs",
-            "-f", prompt_file,
-        ]
-
-        print(f"    [{function_name}] Running: openhands --headless (model={llm_model}) ...")
-        log_file = os.path.join(tmp_dir, "openhands.log")
-        with open(log_file, "w", encoding="utf-8") as log_fh:
-            proc = subprocess.run(
-                cmd,
-                env=env,
-                cwd=work_dir,
-                stdout=log_fh,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=max_iterations * 120,
-            )
-
-        if proc.returncode != 0:
-            print(f"    [{function_name}] openhands exited with code {proc.returncode}")
-
-        # Show last lines of log for diagnostics
-        if os.path.exists(log_file):
-            with open(log_file, "r", encoding="utf-8") as f:
-                log_lines = f.readlines()
-            tail = log_lines[-20:] if len(log_lines) > 20 else log_lines
-            for line in tail:
-                print(f"      {line.rstrip()}")
+        print(f"    [{function_name}] SDK status: {conv_status.value}")
 
         # --- Extract result ---
         implementation = ""
@@ -703,9 +658,9 @@ def run_single_instance(
                 with open(result_py, "r", encoding="utf-8") as f:
                     implementation = f.read().strip()
 
-        # Fallback 2: scan conversation events for file_editor create actions
+        # Fallback 2: scan SDK conversation events for file_editor actions
         if not implementation:
-            implementation = _extract_from_events(oh_persist_dir, function_name)
+            implementation = _extract_from_events(conv_events, function_name)
 
         # Sanitize: fix escaping, unwrap JSON/markdown
         implementation = _sanitize_completion(implementation, function_name)
@@ -714,6 +669,18 @@ def run_single_instance(
             record["completions"] = [implementation]
             record["status"] = "success"
             print(f"    [{function_name}] Success ({len(implementation)} chars)")
+        elif conv_status == ConversationExecutionStatus.STUCK:
+            record["completions"] = [""]
+            record["status"] = "stuck"
+            record["results"] = [False]
+            record["pass_ratios"] = [0.0]
+            print(f"    [{function_name}] Agent stuck")
+        elif conv_status == ConversationExecutionStatus.ERROR:
+            record["completions"] = [""]
+            record["status"] = "max_iterations"
+            record["results"] = [False]
+            record["pass_ratios"] = [0.0]
+            print(f"    [{function_name}] Reached max iterations ({max_iterations})")
         else:
             record["completions"] = [""]
             record["status"] = "no_result"
@@ -721,18 +688,11 @@ def run_single_instance(
             record["pass_ratios"] = [0.0]
             print(f"    [{function_name}] No implementation found")
 
-    except subprocess.TimeoutExpired:
-        print(f"    [{function_name}] Timeout after {max_iterations * 120}s")
-        record["completions"] = [""]
-        record["status"] = "timeout"
-        record["results"] = [False]
-        record["pass_ratios"] = [0.0]
-    except FileNotFoundError:
-        print(f"    [{function_name}] Error: 'openhands' command not found.")
-        print("      Install with: uv tool install openhands --python 3.12")
+    except ConversationRunError as e:
+        print(f"    [{function_name}] SDK error: {e}")
         record["completions"] = [""]
         record["status"] = "error"
-        record["error"] = "openhands not installed"
+        record["error"] = str(e.original_exception)
         record["results"] = [False]
         record["pass_ratios"] = [0.0]
     except Exception as e:
@@ -744,8 +704,11 @@ def run_single_instance(
         record["pass_ratios"] = [0.0]
     finally:
         status = record.get("status", "")
-        if debug or status in ("no_result", "timeout", "error"):
-            _preserve_debug_artifacts(tmp_dir, function_name, framework, example)
+        if debug or status in ("no_result", "max_iterations", "stuck", "error"):
+            _preserve_debug_artifacts(
+                tmp_dir, function_name, framework, example,
+                sdk_events=conv_events,
+            )
         if os.path.exists(tmp_dir):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
