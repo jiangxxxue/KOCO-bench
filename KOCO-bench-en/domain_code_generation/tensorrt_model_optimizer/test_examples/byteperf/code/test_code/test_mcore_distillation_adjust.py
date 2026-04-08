@@ -23,14 +23,8 @@ MinimalMock.setup_megatron_mocks()
 # Add the parent directory to sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'byte_train_perf', 'Megatron-LM'))
 
-# Defensive import
-try:
-    from megatron.inference.algos.distillation import adjust_distillation_model_for_mcore
-    import modelopt.torch.distill as mtd
-    IMPORT_SUCCESS = True
-except Exception as e:
-    print(f"Warning: Unable to import implementation code: {e}")
-    IMPORT_SUCCESS = False
+from megatron.inference.algos.distillation import adjust_distillation_model_for_mcore
+import modelopt.torch.distill as mtd
 
 
 class TestAdjustDistillationModelForMCore(unittest.TestCase):
@@ -71,7 +65,6 @@ class TestAdjustDistillationModelForMCore(unittest.TestCase):
         
         return model
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     def test_sharded_state_dict_wrapping(self):
         """
         Testcase1: sharded_state_dict method correctly wrapped
@@ -96,7 +89,6 @@ class TestAdjustDistillationModelForMCore(unittest.TestCase):
         # Verify: New method is types.MethodType
         self.assertIsInstance(model.sharded_state_dict, types.MethodType)
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     def test_skip_lm_loss_when_enabled(self):
         """
         Testcase2: When skip_lm_loss=True, training mode returns zero loss
@@ -129,7 +121,6 @@ class TestAdjustDistillationModelForMCore(unittest.TestCase):
         expected_zeros = torch.zeros_like(labels)
         torch.testing.assert_close(loss, expected_zeros, atol=1e-6, rtol=1e-6)
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     def test_skip_lm_loss_eval_mode(self):
         """
         Testcase3: When skip_lm_loss=True but eval mode, still compute real loss
@@ -160,7 +151,6 @@ class TestAdjustDistillationModelForMCore(unittest.TestCase):
         self.assertTrue(isinstance(loss, torch.Tensor))
         # Since it calls the original method, should return actual CE loss
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     def test_skip_lm_loss_disabled(self):
         """
         Testcase4: When skip_lm_loss=False, do not modify compute_language_model_loss
@@ -182,7 +172,6 @@ class TestAdjustDistillationModelForMCore(unittest.TestCase):
         # Verify: compute_language_model_loss still the original method
         # (Although there may be subtle differences in actual scenarios, the main logic should remain unchanged)
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     def test_sharded_state_dict_calls_hide_teacher(self):
         """
         Testcase5: New sharded_state_dict calls hide_teacher_model
@@ -212,7 +201,6 @@ class TestAdjustDistillationModelForMCore(unittest.TestCase):
         self.assertTrue(len(hide_called) > 0)
         self.assertTrue(isinstance(result, dict))
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     def test_method_binding(self):
         """
         Testcase6: Verify methods correctly bound to model instance
@@ -233,7 +221,6 @@ class TestAdjustDistillationModelForMCore(unittest.TestCase):
         self.assertIsInstance(model.compute_language_model_loss, types.MethodType)
         self.assertEqual(model.compute_language_model_loss.__self__, model)
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     def test_multiple_calls_idempotence(self):
         """
         Testcase7: Idempotence of multiple function calls
@@ -255,7 +242,6 @@ class TestAdjustDistillationModelForMCore(unittest.TestCase):
         self.assertTrue(callable(model.sharded_state_dict))
         self.assertTrue(hasattr(model, '_sharded_state_dict'))
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     def test_zero_loss_shape_matches_labels(self):
         """
         Testcase8: Zero tensor returned by skip_lm_loss matches labels shape
@@ -320,7 +306,6 @@ class TestAdjustDistillationEdgeCases(unittest.TestCase):
             
         return model
         
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     def test_empty_distill_cfg(self):
         """
         Testcase9: Empty distill_cfg (only required fields)
@@ -336,7 +321,6 @@ class TestAdjustDistillationEdgeCases(unittest.TestCase):
         # Verify basic wrapping completed
         self.assertTrue(hasattr(model, '_sharded_state_dict'))
     
-    @unittest.skipIf(not IMPORT_SUCCESS, "Implementation code import failed")
     def test_training_mode_toggle(self):
         """
         Testcase10: Training mode toggle
